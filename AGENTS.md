@@ -6,7 +6,7 @@ Minimal operating guide for AI agents in this repo.
 
 - **Single source of truth:** `docs/guidebook/` (see [guidebook README](docs/guidebook/README.md))
 
-## How to use the guidebook
+## Steps to do for any task
 
 For every task:
 1. Read the relevant chapter(s) in `docs/guidebook/`.
