@@ -249,3 +249,29 @@ These commands are handled directly by the interpreter (not the command registry
 ## Control Flow Signals
 
 `break`, `continue`, and `return` use a signal mechanism (enum variant or special result type) that propagates up through nested execution to the correct loop or function level. `break N` and `continue N` support optional numeric arguments for breaking out of nested loops.
+
+## Shell Options Enforcement
+
+The `ShellOpts` struct tracks shell options set via `set` builtin. All options are fully enforced:
+
+### `set -e` (errexit)
+
+When enabled, the shell exits immediately when a command returns a non-zero exit code. Exceptions (matching bash behavior):
+
+- Commands in `if`/`while`/`until` conditions
+- Left side of `&&`/`||` chains
+- Negated commands (`! cmd`)
+- Commands in subshells (subshell may exit, but parent only sees exit code)
+
+Implementation uses an `errexit_suppressed` counter on `InterpreterState` to track exception context nesting.
+
+### `set -u` (nounset)
+
+Errors on expansion of unset variables. Exceptions:
+
+- `${VAR:-default}` and other default/alternative value expansions
+- Special variables (`$@`, `$*`, `$#`, `$?`, `$-`, etc.)
+
+### `set -o pipefail`
+
+Pipeline exit code becomes the rightmost non-zero exit code (instead of just the last command's exit code). E.g., `false | true` returns 1 instead of 0.

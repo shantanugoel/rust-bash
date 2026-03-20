@@ -16,53 +16,53 @@
 
 **Goal**: A correct, reliable interpreter that handles the bash features AI agents actually use.
 
-### M1.1 — VFS Trait Extraction
+### M1.1 — VFS Trait Extraction ✅
 
-Extract `VirtualFs` trait from `InMemoryFs`. Update `CommandContext` to `&dyn VirtualFs`, `InterpreterState` to `Box<dyn VirtualFs>`. Use `parking_lot::RwLock` to avoid lock poisoning.
+Extract `VirtualFs` trait from `InMemoryFs`. Update `CommandContext` to `&dyn VirtualFs`, `InterpreterState` to `Arc<dyn VirtualFs>`. Use `parking_lot::RwLock` to avoid lock poisoning.
 
 **Why first**: every subsequent component depends on the trait abstraction.
 
-### M1.2 — Compound List Output Accumulation
+### M1.2 — Compound List Output Accumulation ✅
 
-Fix compound list execution to accumulate stdout/stderr across all items. Currently `echo a; echo b` may only return the last statement's output.
+Fix compound list execution to accumulate stdout/stderr across all items. `echo a; echo b` correctly returns `"a\nb\n"`.
 
-### M1.3 — Word Splitting and Quoting Correctness
+### M1.3 — Word Splitting and Quoting Correctness ✅
 
 Implement IFS-based word splitting after variable expansion. Respect quoting rules: double-quoted expansions don't word-split, single-quoted are literal. Handle `"$@"` vs `"$*"`.
 
-### M1.4 — Command Substitution
+### M1.4 — Command Substitution ✅
 
 Implement `$(...)` and backtick expansion. Requires interior mutability refactor (`RefCell` or `&mut` restructuring) since command substitution executes commands during word expansion.
 
-### M1.5 — Exec Callback for Sub-Commands
+### M1.5 — Exec Callback for Sub-Commands ✅
 
 Add `exec` callback to `CommandContext` so commands can invoke sub-commands. Implement `eval` and `source` builtins. This unblocks `xargs`, `find -exec`, etc.
 
-### M1.6 — test/[ and [[ (Extended Test)
+### M1.6 — test/[ and [[ (Extended Test) ✅
 
 Implement conditional expressions: file tests (`-f`, `-d`, `-e`), string tests (`-z`, `-n`, `=`), numeric comparisons (`-eq`, `-lt`, etc.). Implement `[[ ]]` with pattern matching and regex.
 
-### M1.7 — break/continue
+### M1.7 — break/continue ✅
 
 Implement loop control flow with optional numeric arguments (`break 2`). Uses a signal mechanism that propagates through nested execution.
 
-### M1.8 — Glob Expansion
+### M1.8 — Glob Expansion ✅
 
 Implement `VirtualFs::glob()` on InMemoryFs. Integrate into word expansion for unquoted wildcards. Include a simple numeric guard against unbounded results (formalized as part of `ExecutionLimits` in M3.1).
 
-### M1.9 — Brace Expansion
+### M1.9 — Brace Expansion ✅
 
 Implement `{a,b,c}` alternation and `{1..10}` sequence expansion. Include a simple numeric guard against unbounded expansion (formalized as part of `ExecutionLimits` in M3.1).
 
-### M1.10 — Here-Documents and Here-Strings
+### M1.10 — Here-Documents and Here-Strings ✅
 
 Handle `<<EOF` and `<<<word`. The heredoc body is already in the AST from brush-parser — just feed it as stdin. Support variable expansion within unquoted heredocs.
 
-### M1.11 — Arithmetic Expansion
+### M1.11 — Arithmetic Expansion ✅
 
 Implement `$((...))` evaluator: arithmetic operators, comparisons, boolean logic, ternary, variable references, increment/decrement. Implement `let` and `((...))`.
 
-### M1.12 — Functions and Local Variables
+### M1.12 — Functions and Local Variables ✅
 
 Store function definitions. Implement function call with positional parameters. `local` for function-scoped variables. `return` builtin. Distinguish exported vs non-exported variables.
 
@@ -74,7 +74,7 @@ Implement `case` with glob pattern matching, `|` alternation, `;;`/`;&`/`;;&` te
 
 File ops: `cp`, `mv`, `rm`, `tee`, `stat`, `chmod`. Text: `cut`, `printf`, `rev`, `fold`, `nl`. Navigation: `find`, `realpath`. Utilities: `expr`, `date`, `sleep`, `env`, `which`, `xargs`, `read`, `base64`, `md5sum`, `sha256sum`, `whoami`, `hostname`, `uname`. Minimal `trap EXIT` support.
 
-### M1.15 — Error Handling
+### M1.15 — Error Handling ✅
 
 Define `RustBashError` enum. All public APIs return `Result<T, RustBashError>`. Implement `set -e`, `set -u`, `set -o pipefail`.
 

@@ -1,0 +1,8 @@
+---
+source: tests/integration.rs
+assertion_line: 654
+expression: r.stdout
+---
+-rw-r--r-- alpha.txt
+-rw-r--r-- beta.txt
+drwxr-xr-x docs

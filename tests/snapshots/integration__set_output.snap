@@ -1,0 +1,8 @@
+---
+source: tests/integration.rs
+assertion_line: 677
+expression: r.stdout
+---
+HOME='/home/user'
+LANG='en_US.UTF-8'
+LOCAL_VAR='local_value'

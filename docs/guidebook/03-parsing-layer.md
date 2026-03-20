@@ -108,15 +108,20 @@ CompoundCommand (each variant wraps a dedicated struct)
 
 `brush_parser::word::parse()` decomposes a word into these piece types. Less common variants (e.g., `AnsiCQuotedText`, `EscapeSequence`, `GettextDoubleQuotedSequence`) are omitted.
 
+> **Note (brush-parser 0.3.0 API):** `word::parse()` takes `(&str, &ParserOptions)` and returns
+> `Vec<WordPieceWithSource>`. Each element has a `.piece: WordPiece` field. The `DoubleQuotedSequence`
+> variant wraps `Vec<WordPieceWithSource>`, not `Vec<WordPiece>`. The arithmetic variant is
+> `ArithmeticExpression(ast::UnexpandedArithmeticExpr)`, not `ArithmeticExpansion(String)`.
+
 | Piece | Example | Description |
 |-------|---------|-------------|
 | `Text(String)` | `hello` | Literal text |
 | `SingleQuotedText(String)` | `'no expansion'` | Literal, no expansion |
-| `DoubleQuotedSequence(Vec<WordPiece>)` | `"hello $x"` | Sequence of pieces, expanded but not word-split |
+| `DoubleQuotedSequence(Vec<WordPieceWithSource>)` | `"hello $x"` | Sequence of pieces, expanded but not word-split |
 | `ParameterExpansion(ParameterExpr)` | `$VAR`, `${VAR:-default}` | Variable reference with optional operators (complex enum) |
 | `CommandSubstitution(String)` | `$(cmd)` | Execute command, capture stdout |
 | `BackquotedCommandSubstitution(String)` | `` `cmd` `` | Legacy syntax for command substitution |
-| `ArithmeticExpansion(String)` | `$((1+2))` | Evaluate arithmetic expression |
+| `ArithmeticExpression(UnexpandedArithmeticExpr)` | `$((1+2))` | Evaluate arithmetic expression |
 | `TildePrefix(String)` | `~`, `~user` | Expand to home directory |
 
 ## Redirection Types
@@ -136,13 +141,17 @@ The parser produces `IoRedirect` nodes for redirections. The actual enum has fou
 
 ## Parser Configuration
 
+> **Note (brush-parser 0.3.0 API):** `parse_tokens()` takes three arguments:
+> `(&Vec<Token>, &ParserOptions, &SourceInfo)`. The `SourceInfo` struct has a single `source: String`
+> field. The field `tilde_expansion_at_word_start` was renamed to `tilde_expansion`, and
+> `tilde_expansion_after_colon` was removed.
+
 ```rust
 let parse_options = brush_parser::ParserOptions {
     sh_mode: false,                       // bash mode, not POSIX sh
     posix_mode: false,                    // allow bash extensions
     enable_extended_globbing: true,       // @(...), +(...), etc.
-    tilde_expansion_at_word_start: true,  // ~ → $HOME
-    tilde_expansion_after_colon: false,   // PATH-style ~: expansion
+    tilde_expansion: true,                // ~ → $HOME
     ..Default::default()
 };
 ```
@@ -155,11 +164,11 @@ brush-parser returns `Result` from both tokenization and parsing. Parse errors a
 
 ## Dependency Pinning
 
-brush-parser is pinned to a specific git revision in `Cargo.toml`:
+brush-parser is available on crates.io:
 
 ```toml
 [dependencies]
-brush-parser = { git = "https://github.com/reubeno/brush", rev = "..." }
+brush-parser = "0.3.0"
 ```
 
-This ensures reproducible builds. When upgrading, run the full test suite and check for AST type changes. Consider wrapping brush-parser types in adapter types if upstream churn becomes a problem.
+When upgrading, run the full test suite and check for AST type changes. Consider wrapping brush-parser types in adapter types if upstream churn becomes a problem.

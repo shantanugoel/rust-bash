@@ -8,13 +8,13 @@ Minimal operating guide for AI agents in this repo.
 
 ## Steps to do for any task
 
-For every task:
+Agents MUST follow these steps for every task:
 1. Read the relevant chapter(s) in `docs/guidebook/`.
 2. Map the task to the milestones in Chapter 10.
 3. Understand how the task relates to other subsystems before implementing.
 4. Implement without over-engineering. Prioritize readability and maintainability. The project currently has a low user base and MUST NOT implement any backward compatibility or legacy handling.
 5. Review your own changes thoroughly to fix any issues found and verify the original goal was met.
-6. If any oracle agent is available to you, ask it to review your changes as well thoroughly in paralell and check and fix the comments received from it.
+6. If any oracle agent is available to you, ask it to review your changes as well thoroughly in parallel and check which comments make sense, and fix those.
 7. Check if the changes done in the task need an update to `README.md` or `docs/guidebook` and make the changes if so including, but not limited to, marking the completed items appropriately in the plan.
 
 ## Agent execution rules

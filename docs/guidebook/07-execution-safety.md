@@ -112,7 +112,7 @@ This prevents an allowed URL from redirecting to a malicious endpoint.
 | Path traversal | VFS path normalization handles `..`; OverlayFs restricts reads to specified base | Core design |
 | Host time leakage | `SystemTime::now()` exposes real clock; future: inject clock abstraction | Known limitation |
 | Lock poisoning | `parking_lot::RwLock` (non-poisoning) prevents command panics from killing VFS | Design decision |
-| Glob DoS | `max_glob_results` prevents unbounded glob expansion | **(planned)** |
+| Glob DoS | `max_glob_results` prevents unbounded glob expansion | ✅ |
 | Nested substitution | `max_substitution_depth` prevents `$($($(...)))` stack overflow | **(planned)** |
 
 ### What We Guarantee

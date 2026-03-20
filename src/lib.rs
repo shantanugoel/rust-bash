@@ -1,14 +1,16 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+pub mod api;
+pub mod commands;
+pub mod error;
+pub mod interpreter;
+pub mod vfs;
+
+pub use api::{RustBash, RustBashBuilder};
+pub use commands::{CommandContext, CommandResult, ExecCallback, VirtualCommand};
+pub use error::{RustBashError, VfsError};
+pub use interpreter::{
+    ExecResult, ExecutionCounters, ExecutionLimits, InterpreterState, ShellOpts, Variable,
+};
+pub use vfs::{InMemoryFs, VirtualFs};
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+mod parser_smoke_tests;
