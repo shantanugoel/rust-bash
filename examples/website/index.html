@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>rust-bash — A sandboxed shell for AI Agents, in Rust</title>
+<meta name="description" content="Execute bash scripts safely with a virtual filesystem — no containers, no VMs, no host access. Written in Rust.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦀</text></svg>">
+<style>
+  *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+  @font-face{font-family:'Fira Mono';font-display:swap;src:local('Fira Mono'),local('FiraMono-Regular')}
+  body{
+    background:#0a0a0a;
+    color:#00ff41;
+    font-family:'Fira Mono','Cascadia Code','JetBrains Mono','SF Mono',Consolas,'Liberation Mono',Menlo,monospace;
+    min-height:100vh;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    overflow:hidden;
+    position:relative;
+  }
+
+  /* Matrix rain canvas */
+  #matrix{position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;opacity:0.12}
+  #comingSoonCanvas{position:fixed;top:0;left:0;width:100%;height:100%;z-index:1;pointer-events:none}
+
+  /* Scanline overlay */
+  body::after{
+    content:'';
+    position:fixed;
+    top:0;left:0;right:0;bottom:0;
+    background:repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.15) 2px,
+      rgba(0,0,0,0.15) 4px
+    );
+    pointer-events:none;
+    z-index:10;
+  }
+
+  /* CRT vignette */
+  body::before{
+    content:'';
+    position:fixed;
+    top:0;left:0;right:0;bottom:0;
+    background:radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,0.6) 100%);
+    pointer-events:none;
+    z-index:10;
+  }
+
+  .terminal{
+    position:relative;
+    z-index:5;
+    max-width:760px;
+    width:90%;
+    padding:2rem;
+  }
+
+  .prompt{color:#888;user-select:none}
+  .prompt .path{color:#5af}
+  .prompt .symbol{color:#00ff41}
+
+  .line{
+    margin:0.3rem 0;
+    line-height:1.6;
+    font-size:clamp(0.8rem, 2vw, 1rem);
+    white-space:pre-wrap;
+    word-break:break-word;
+  }
+
+  .output{color:#00ff41}
+  .comment{color:#555;font-style:italic}
+  .accent{color:#ff6e00}
+  .rust{color:#f74c00}
+  .highlight{color:#ffcc00}
+  .link{color:#5af;text-decoration:none}
+  .link:hover{text-decoration:underline}
+  .dim{color:#555}
+
+  /* Blinking cursor */
+  .cursor{
+    display:inline-block;
+    width:0.6em;
+    height:1.1em;
+    background:#00ff41;
+    vertical-align:text-bottom;
+    animation:blink 1s step-end infinite;
+  }
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+
+  /* Typing animation */
+  .typed{
+    overflow:hidden;
+    white-space:nowrap;
+    border-right:none;
+    width:0;
+    animation:typing 1.5s steps(40,end) 0.5s forwards;
+  }
+  @keyframes typing{from{width:0}to{width:100%}}
+
+  /* ASCII art glow */
+  .ascii-art{
+    color:#f74c00;
+    font-size:clamp(0.35rem, 1.2vw, 0.75rem);
+    line-height:1.15;
+    text-shadow:0 0 10px rgba(247,76,0,0.4);
+    margin:1.5rem 0;
+    white-space:pre;
+    overflow-x:auto;
+  }
+
+  /* Feature list animation */
+  .features .line{
+    opacity:0;
+    animation:fadeIn 0.4s ease forwards;
+  }
+  .features .line:nth-child(1){animation-delay:2.2s}
+  .features .line:nth-child(2){animation-delay:2.5s}
+  .features .line:nth-child(3){animation-delay:2.8s}
+  .features .line:nth-child(4){animation-delay:3.1s}
+  .features .line:nth-child(5){animation-delay:3.4s}
+  .features .line:nth-child(6){animation-delay:3.7s}
+  .features .line:nth-child(7){animation-delay:4.0s}
+  .features .line:nth-child(8){animation-delay:4.3s}
+
+  @keyframes fadeIn{to{opacity:1}}
+
+  .coming-soon{
+    opacity:0;
+    animation:fadeIn 0.6s ease 4.8s forwards;
+  }
+
+  .bottom-section{
+    opacity:0;
+    animation:fadeIn 0.6s ease 5.2s forwards;
+  }
+
+  /* Subtle glow pulse on the title */
+  .glow{
+    text-shadow:0 0 8px rgba(0,255,65,0.5),0 0 20px rgba(0,255,65,0.2);
+  }
+
+  .separator{color:#333;margin:1rem 0}
+
+  @media(max-width:500px){
+    .ascii-art{font-size:0.28rem;line-height:1.1}
+    .terminal{padding:1rem}
+  }
+</style>
+</head>
+<body>
+
+<canvas id="matrix"></canvas>
+<canvas id="comingSoonCanvas"></canvas>
+
+<div class="terminal">
+  <div class="ascii-art" aria-hidden="true">
+                    __  __               __  
+   _______  _______/ /_/ /_  ____ ______/ /_ 
+  / ___/ / / / ___/ __/ __ \/ __ `/ ___/ __ \
+ / /  / /_/ (__  ) /_/ /_/ / /_/ (__  ) / / /
+/_/   \__,_/____/\__/_.___/\__,_/____/_/ /_/ 
+  </div>
+
+  <div class="line">
+    <span class="prompt"><span class="path">~</span> <span class="symbol">$</span></span>
+    <span class="typed"> cat README.md</span>
+  </div>
+
+  <div class="features">
+    <div class="line output">
+      <span class="rust">⚡</span> A sandboxed shell for AI Agents, built in <span class="rust">Rust</span>.
+    </div>
+    <div class="line output">
+      <span class="dim">│</span>
+    </div>
+    <div class="line output">
+      <span class="dim">├──</span> <span class="highlight">80+ commands</span> <span class="dim">— echo, grep, awk, sed, jq, curl …</span>
+    </div>
+    <div class="line output">
+      <span class="dim">├──</span> <span class="highlight">Virtual filesystem</span> <span class="dim">— in-memory, overlay, passthrough</span>
+    </div>
+    <div class="line output">
+      <span class="dim">├──</span> <span class="highlight">Full bash syntax</span> <span class="dim">— pipes, redirects, functions, globs</span>
+    </div>
+    <div class="line output">
+      <span class="dim">├──</span> <span class="highlight">Execution limits</span> <span class="dim">— 10 configurable safety bounds</span>
+    </div>
+    <div class="line output">
+      <span class="dim">├──</span> <span class="highlight">Network sandboxing</span> <span class="dim">— URL allow-lists for curl</span>
+    </div>
+    <div class="line output">
+      <span class="dim">└──</span> <span class="highlight">Embeddable</span> <span class="dim">— use as a crate, CLI, WASM, or C FFI</span>
+    </div>
+  </div>
+
+  <div class="separator line">─────────────────────────────────────────────────</div>
+
+  <div class="coming-soon">
+    <div class="line">
+      <span class="prompt"><span class="path">~</span> <span class="symbol">$</span></span>
+      <span class="output"> echo $STATUS</span>
+    </div>
+    <div class="line output glow" style="font-size:clamp(1rem, 3vw, 1.5rem);margin:0.8rem 0;">
+      🚧  COMING SOON  🚧
+    </div>
+    <div class="line comment"># No containers. No VMs. No host access. Just Rust.</div>
+  </div>
+
+  <div class="bottom-section">
+    <div class="separator line">─────────────────────────────────────────────────</div>
+    <div class="line">
+      <span class="prompt"><span class="path">~</span> <span class="symbol">$</span></span>
+      <span class="output"> git remote -v</span>
+    </div>
+    <div class="line">
+      <span class="dim">origin</span>  <a class="link" href="https://github.com/shantanugoel/rust-bash" target="_blank" rel="noopener">github.com/shantanugoel/rust-bash</a>
+    </div>
+  </div>
+
+  <div class="line" style="margin-top:1.5rem;opacity:0;animation:fadeIn 0.5s ease 5.6s forwards">
+    <span class="prompt"><span class="path">~</span> <span class="symbol">$</span></span>
+    <span class="cursor"></span>
+  </div>
+</div>
+
+<script>
+// Matrix rain effect
+const canvas = document.getElementById('matrix');
+const ctx = canvas.getContext('2d');
+let w, h, columns, drops;
+
+function resize() {
+  w = canvas.width = window.innerWidth;
+  h = canvas.height = window.innerHeight;
+  const fontSize = 14;
+  columns = Math.floor(w / fontSize);
+  drops = Array.from({length: columns}, () => Math.random() * -100);
+}
+resize();
+window.addEventListener('resize', resize);
+
+const chars = 'アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン0123456789abcdef{}[]|/<>$#@!~';
+
+function draw() {
+  ctx.fillStyle = 'rgba(10, 10, 10, 0.06)';
+  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#00ff41';
+  ctx.font = '14px monospace';
+  for (let i = 0; i < columns; i++) {
+    const char = chars[Math.floor(Math.random() * chars.length)];
+    ctx.fillText(char, i * 14, drops[i] * 14);
+    if (drops[i] * 14 > h && Math.random() > 0.975) {
+      drops[i] = 0;
+    }
+    drops[i]++;
+  }
+}
+setInterval(draw, 50);
+
+// "COMING SOON" on a separate full-opacity canvas
+const csCanvas = document.getElementById('comingSoonCanvas');
+const csCtx = csCanvas.getContext('2d');
+let csW, csH;
+function csResize() {
+  csW = csCanvas.width = window.innerWidth;
+  csH = csCanvas.height = window.innerHeight;
+}
+csResize();
+window.addEventListener('resize', csResize);
+
+const comingSoonText = 'COMINGSOON';
+const csFontSize = 20;
+const csLineHeight = csFontSize * 1.3;
+let csBars = []; // [{x, y, speed}]
+
+function spawnComingSoon() {
+  const x = Math.random() * (csW - csFontSize);
+  const totalHeight = comingSoonText.length * csLineHeight;
+  csBars.push({ x, y: -totalHeight, speed: 2 + Math.random() * 1.5 });
+}
+spawnComingSoon();
+setInterval(spawnComingSoon, 8000);
+
+function drawComingSoon() {
+  csCtx.clearRect(0, 0, csW, csH);
+  csCtx.font = 'bold ' + csFontSize + 'px monospace';
+  csCtx.fillStyle = '#00ff41';
+  csCtx.shadowColor = '#00ff41';
+  csCtx.shadowBlur = 18;
+  for (let i = csBars.length - 1; i >= 0; i--) {
+    const b = csBars[i];
+    for (let j = 0; j < comingSoonText.length; j++) {
+      csCtx.fillText(comingSoonText[j], b.x, b.y + j * csLineHeight);
+    }
+    b.y += b.speed;
+    if (b.y > csH + csFontSize) {
+      csBars.splice(i, 1);
+    }
+  }
+  csCtx.shadowBlur = 0;
+  requestAnimationFrame(drawComingSoon);
+}
+requestAnimationFrame(drawComingSoon);
+</script>
+</body>
+</html>
