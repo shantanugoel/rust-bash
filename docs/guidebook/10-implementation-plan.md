@@ -9,7 +9,7 @@
 | M3 | Execution Safety | Limits enforcement, network policy |
 | M4 | Filesystem Backends | OverlayFs, ReadWriteFs, MountableFs |
 | M5 | Integration | C FFI, WASM, CLI binary, AI SDK wrapper |
-| M6 | Shell Language Completeness | Arrays, shopt, process substitution, missing builtins |
+| M6 | Shell Language Completeness | Arrays, shopt, process substitution, special vars, advanced redirections, missing builtins |
 | M7 | Command Coverage & Discoverability | Missing commands, `--help` for all commands |
 | M8 | Embedded Runtimes & Data Formats | Python, JavaScript, SQLite, yq, xan |
 | M9 | Platform & API Features | Cancellation, lazy files, AST transforms, sandbox API |
@@ -146,9 +146,9 @@ Composite backend with path-based delegation. Longest-prefix mount matching.
 
 Static binary. `--files`, `--cwd`, `--env` flags. Interactive REPL. `--json` output mode.
 
-### M5.2 — C FFI
+### M5.2 — C FFI ✅
 
-Stable C ABI: `rust_bash_create`, `rust_bash_exec`, `rust_bash_free`. JSON config. Generated C header.
+Stable C ABI: 6 exported functions (`rust_bash_create`, `rust_bash_exec`, `rust_bash_result_free`, `rust_bash_free`, `rust_bash_last_error`, `rust_bash_version`). JSON config. Generated C header.
 
 ### M5.3 — WASM Target
 
@@ -206,6 +206,48 @@ Extend `builtin_declare` and `Variable` to support all attribute flags: `-i` (in
 ### M6.7 — Process Substitution
 
 Implement `<(cmd)` and `>(cmd)`. brush-parser already produces `ProcessSubstitution` AST nodes (interpreter currently returns an error). For `<(cmd)`: execute command, capture stdout, write to temp VFS file (`/tmp/.proc_sub_XXXX`), substitute the temp path into the argument list. For `>(cmd)`: create temp file, after outer command completes read it and pipe to inner command. Clean up temp files with RAII guard. Enables `diff <(sort file1) <(sort file2)` pattern.
+
+### M6.8 — Special Variable Tracking
+
+Several special variables are missing or broken:
+
+- **`$LINENO`** — currently hardcoded to `"0"`. Must track the actual source line number from the AST during execution, updating it at each statement. Critical for error messages and debugging.
+- **`$SECONDS`** — elapsed seconds since shell start. Store `Instant::now()` at shell creation, return elapsed on access.
+- **`$_`** — last argument of the previous command. Update after each simple command execution.
+- **`FUNCNAME`** array — stack of function names during call chain. Push on function entry, pop on return. (Requires M6.1 arrays.)
+- **`BASH_SOURCE`** array — stack of source files. Track which file/string each function was defined in.
+- **`BASH_LINENO`** array — stack of line numbers where each function call originated.
+
+### M6.9 — Shell Option Enforcement
+
+Several `set`/`shopt` options are parsed but produce no effect:
+
+- **`set -x` (xtrace)** — print each command to stderr before execution, prefixed with `$PS4` (default `"+ "`). Show expanded words, not raw source. Currently the flag is stored but no trace output is generated.
+- **`set -v` (verbose)** — print each source line to stderr before parsing/expansion.
+- **`set -n` (noexec)** — parse but do not execute commands. Useful for syntax checking.
+- **`set -o noclobber`** — prevent `>` from overwriting existing files. Require `>|` to force overwrite.
+
+### M6.10 — Advanced Redirections
+
+Several redirection features that just-bash supports are missing:
+
+- **`exec` builtin** — when invoked with only redirections (`exec > file`, `exec 3< file`), permanently redirect file descriptors for the rest of the shell session. Without redirections, `exec cmd` replaces the shell (in sandbox: just run the command).
+- **`/dev/stdin`, `/dev/stdout`, `/dev/stderr`** — special-case these paths in redirection handling (currently only `/dev/null` is handled). `/dev/zero` (reads return empty) and `/dev/full` (writes return ENOSPC) are also useful.
+- **FD variable allocation `{varname}>file`** — automatically allocate a file descriptor number, store it in the named variable. Used for advanced I/O multiplexing.
+- **Read-write file descriptors `N<>file`** — open file for both reading and writing on FD N.
+- **FD movement `N>&M-`** — duplicate FD M to N, then close M.
+- **Pipe stderr `|&`** — shorthand for `2>&1 |`, piping both stdout and stderr to next command.
+
+### M6.11 — Parameter Transformation Operators
+
+Implement `${var@operator}` syntax for variable transformations:
+
+- **`${var@Q}`** — quote value for shell reuse (wraps in `$'...'` for control characters).
+- **`${var@E}`** — expand backslash escape sequences in value.
+- **`${var@A}`** — produce an assignment statement that recreates the variable (e.g., `declare -- var="value"`).
+- **`${var@a}`** — return the variable's attribute flags (e.g., `x` for exported, `r` for readonly).
+
+Also add `printf` format specifiers `%b` (interpret backslash escapes) and `%q` (shell-quote output).
 
 ---
 
@@ -361,11 +403,17 @@ M5.1–M5.4 ──────────────── (depend on M1 + M2 
 M6.1 (arrays) ─────┬── M6.2 (PIPESTATUS/BASH_REMATCH)
                     ├── M6.4 (mapfile/readarray — needs arrays)
                     ├── M6.5 (read -a — needs arrays)
-                    └── M6.6 (declare -a/-A — needs arrays)
+                    ├── M6.6 (declare -a/-A — needs arrays)
+                    └── M6.8 (FUNCNAME/BASH_SOURCE — needs arrays)
 M6.3 (shopt) ──────────── (independent — wires into M1.8 globs)
 M6.7 (process sub) ────── (independent — parser support exists)
+M6.8 (special vars) ───── (independent except FUNCNAME arrays)
+M6.9 (set -x/-v/-n) ──── (independent)
+M6.10 (adv redirections)  (independent)
+M6.11 (param transforms)  (independent)
 M7.1 (--help) ─────────── (independent — can start anytime)
 M7.2–M7.6 ─────────────── (independent — new command implementations)
+M7.7 (default fs layout) ─ (should happen early — affects M7.2+ command testing)
 M8.1–M8.3 ─────────────── (depend on M1 command infrastructure)
 M8.4–M8.5 ─────────────── (require design exploration — feature-gated)
 M9.1–M9.6 ─────────────── (depend on M1–M5 for full platform)
@@ -373,7 +421,7 @@ M9.1–M9.6 ─────────────── (depend on M1–M5 for
 
 **Recommended order (M1–M5)**: M1.1 → M1.2 → M1.3 → M1.4 → M1.5 → M1.6 → M1.7 → M1.8/M1.9/M1.10/M1.11 (parallel) → M1.12 → M1.13 → M1.14 → M1.15 → M3.1 → M2.1 → M2.2 → M2.3 → M2.4 → M4.1 → M5.1 → M5.2 → M5.3
 
-**Recommended order (M6–M9)**: M6.1 (arrays — critical path) → M6.2/M6.3 (parallel) → M6.4/M6.5/M6.6 (parallel, unlocked by arrays) → M6.7 → M7.1 → M7.2/M7.3/M7.4/M7.5/M7.6 (parallel) → M8.1 → M8.2 → M8.3 → M8.4/M8.5 (design exploration first) → M9.1 → M9.2 → M9.3 → M9.4 → M9.5 → M9.6
+**Recommended order (M6–M9)**: M6.1 (arrays — critical path) → M6.8 ($LINENO/$SECONDS — quick wins) → M6.2/M6.3 (parallel) → M6.4/M6.5/M6.6 (parallel, unlocked by arrays) → M6.9/M6.10/M6.11 (parallel) → M6.7 → M7.7 (default fs layout — do before other M7 work) → M7.1 → M7.2/M7.3/M7.4/M7.5/M7.6/M7.8 (parallel) → M8.1 → M8.2 → M8.3 → M8.4/M8.5 (design exploration first) → M9.1 → M9.2 → M9.3 → M9.4 → M9.5 → M9.6
 
 ---
 
