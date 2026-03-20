@@ -281,68 +281,327 @@ func main() {
 }
 ```
 
-## WASM Target **(planned)**
+## WASM Target
 
-For browser and edge runtime embedding.
+For browser and edge runtime embedding. The Rust interpreter compiles to `wasm32-unknown-unknown` via `wasm-bindgen`.
 
 ### Build
 
 ```bash
-cargo build --target wasm32-unknown-unknown
-wasm-bindgen target/wasm32-unknown-unknown/release/rust_bash.wasm --out-dir pkg
+# Using the build script
+./scripts/build-wasm.sh
+
+# Or manually
+cargo build --target wasm32-unknown-unknown --features wasm --no-default-features --release
+wasm-bindgen target/wasm32-unknown-unknown/release/rust_bash.wasm --out-dir pkg --target bundler
 ```
 
-### JavaScript API
+### Platform Abstraction
 
-```javascript
-import { createSandbox } from 'rust-bash-wasm';
+- `std::time::{SystemTime, Instant}` → `crate::platform::*` (uses `web-time` crate on WASM)
+- `std::thread::sleep` → returns error "sleep: not supported in browser environment"
+- `chrono` uses `wasmbind` feature on WASM for timezone support
+- `ureq`/`url` (networking) feature-gated behind `network` — disabled on WASM
+- `OverlayFs`/`ReadWriteFs` feature-gated behind `native-fs` — WASM only gets `InMemoryFs`/`MountableFs`
+- `parking_lot` compiles to WASM (falls back to spin-locks)
 
-const sandbox = createSandbox({
-  files: { '/data.txt': 'content' },
-  env: { USER: 'agent' },
-});
+### Cargo Features for WASM
 
-const result = shell.exec('cat /data.txt | grep content');
-console.log(result.stdout);  // "content\n"
+```toml
+[features]
+default = ["cli", "network", "native-fs"]
+wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:serde", "dep:serde-wasm-bindgen"]
+network = ["dep:ureq", "dep:url"]    # disabled on WASM
+native-fs = []                         # disabled on WASM
 ```
 
 ### Compatibility Notes
 
-- brush-parser already compiles to `wasm32-unknown-unknown`
+- brush-parser compiles to `wasm32-unknown-unknown`
 - The interpreter and VFS are pure Rust with no OS dependencies
-- `SystemTime` needs stubbing for WASM (use a monotonic counter or injected clock)
-- Networking (`curl`) must be feature-gated out or use `fetch()` API
-- Estimated bundle size: ~800KB–1.2MB gzipped
+- `web-time` crate provides `SystemTime`/`Instant` replacements for WASM
+- Networking (`curl`) is feature-gated out; returns "command not found" on WASM
 
-### npm Package
+## npm Package (`@rust-bash/core`)
 
-Distributed as an npm package with TypeScript type definitions:
+The TypeScript npm package wraps both WASM and native addon backends behind a unified API.
+
+### Installation
+
+```bash
+npm install @rust-bash/core
+```
+
+### Architecture
+
+The package ships three layers:
+
+1. **TypeScript API** (`Bash` class, `defineCommand`, tool primitives) — the public interface
+2. **Native addon** (napi-rs, planned) — near-native performance for Node.js
+3. **WASM backend** — browser and edge runtime support
+
+Backend detection is automatic on Node.js (native first, WASM fallback). Browsers use the `@rust-bash/core/browser` entry point (WASM only).
+
+### Quick Start (Node.js)
 
 ```typescript
-interface RustBashOptions {
-  files?: Record<string, string>;
-  env?: Record<string, string>;
-  cwd?: string;
-  limits?: Partial<ExecutionLimits>;
+import { Bash, tryLoadNative, createNativeBackend, initWasm, createWasmBackend } from '@rust-bash/core';
+
+// Auto-detect backend
+let createBackend;
+if (await tryLoadNative()) {
+  createBackend = createNativeBackend;
+} else {
+  await initWasm();
+  createBackend = createWasmBackend;
 }
 
-interface ExecResult {
-  stdout: string;
-  stderr: string;
-  exitCode: number;
-}
+const bash = await Bash.create(createBackend, {
+  files: { '/data.txt': 'hello world' },
+  env: { USER: 'agent' },
+});
 
-function createSandbox(options?: RustBashOptions): RustBash;
+const result = await bash.exec('cat /data.txt | grep hello');
+console.log(result.stdout); // "hello world\n"
+```
 
-interface RustBash {
-  exec(command: string): ExecResult;
-  free(): void;
+### Quick Start (Browser)
+
+```typescript
+import { Bash, initWasm, createWasmBackend } from '@rust-bash/core/browser';
+
+await initWasm();
+const bash = await Bash.create(createWasmBackend, {
+  files: { '/hello.txt': 'Hello from WASM!' },
+  cwd: '/home/user',
+});
+
+const result = await bash.exec('cat /hello.txt');
+console.log(result.stdout); // "Hello from WASM!\n"
+```
+
+### Bash Class API
+
+```typescript
+const bash = await Bash.create(createBackend, {
+  files: {
+    '/data.txt': 'hello world',              // eager
+    '/lazy.txt': () => 'lazy content',        // lazy sync
+    '/async.txt': async () => fetchData(),    // lazy async
+  },
+  env: { USER: 'agent', HOME: '/home/agent' },
+  cwd: '/',
+  executionLimits: {
+    maxCommandCount: 10000,
+    maxExecutionTimeSecs: 30,
+  },
+  customCommands: [myCommand],
+});
+
+// Execute commands
+const result = await bash.exec('echo hello | tr a-z A-Z');
+// { stdout: "HELLO\n", stderr: "", exitCode: 0 }
+
+// Per-exec overrides
+const result2 = await bash.exec('cat /data.txt', {
+  env: { LANG: 'en_US.UTF-8' },
+  cwd: '/data',
+  stdin: 'input data',
+});
+
+// Direct VFS access
+bash.fs.writeFileSync('/output.txt', 'content');
+const data = bash.fs.readFileSync('/output.txt');
+```
+
+### Custom Commands
+
+```typescript
+import { defineCommand } from '@rust-bash/core';
+
+const fetch = defineCommand('fetch', async (args, ctx) => {
+  const url = args[0];
+  const response = await globalThis.fetch(url);
+  return { stdout: await response.text(), stderr: '', exitCode: 0 };
+});
+
+const bash = await Bash.create(createBackend, {
+  customCommands: [fetch],
+});
+```
+
+### Package Exports
+
+| Export | Description |
+|--------|-------------|
+| `Bash` | Main class — `Bash.create(backend, options)` |
+| `defineCommand` | Create custom commands |
+| `bashToolDefinition` | JSON Schema tool definition for AI integration |
+| `createBashToolHandler` | Factory for tool handlers |
+| `formatToolForProvider` | Format tools for OpenAI, Anthropic, MCP |
+| `handleToolCall` | Multi-tool dispatcher |
+| `initWasm` / `createWasmBackend` | WASM backend |
+| `tryLoadNative` / `createNativeBackend` | Native addon backend |
+
+## AI SDK Tool Definition
+
+For use with OpenAI, Anthropic, and other function-calling LLM APIs. Available via both the TypeScript npm package and the Rust CLI's MCP server mode.
+
+### TypeScript: Framework-Agnostic Primitives
+
+`@rust-bash/core` exports JSON Schema tool definitions and a handler factory that work with **any** AI agent framework — no framework dependencies required.
+
+```typescript
+import { bashToolDefinition, createBashToolHandler, formatToolForProvider, createNativeBackend } from '@rust-bash/core';
+
+// bashToolDefinition is a plain JSON Schema object:
+// {
+//   name: 'bash',
+//   description: 'Execute bash commands in a sandboxed environment...',
+//   inputSchema: {
+//     type: 'object',
+//     properties: { command: { type: 'string', description: '...' } },
+//     required: ['command'],
+//   },
+// }
+
+// createBashToolHandler returns a framework-agnostic handler:
+const { handler, definition, bash } = createBashToolHandler(createNativeBackend, {
+  files: { '/data.txt': 'hello world' },
+  maxOutputLength: 10000,
+});
+
+const result = await handler({ command: 'grep hello /data.txt' });
+// { stdout: 'hello world\n', stderr: '', exitCode: 0 }
+
+// Format for specific providers (thin wrappers, no dependencies)
+const openaiTool = formatToolForProvider(bashToolDefinition, 'openai');
+// { type: "function", function: { name: "bash", description: "...", parameters: {...} } }
+
+const anthropicTool = formatToolForProvider(bashToolDefinition, 'anthropic');
+// { name: "bash", description: "...", input_schema: {...} }
+
+const mcpTool = formatToolForProvider(bashToolDefinition, 'mcp');
+// { name: "bash", description: "...", inputSchema: {...} }
+```
+
+Additional exports for agent loops:
+
+- `handleToolCall(bash, toolName, args)` — dispatches `bash`, `readFile`/`read_file`, `writeFile`/`write_file`, `listDirectory`/`list_directory` tool calls (supports both camelCase and snake_case)
+- `writeFileToolDefinition`, `readFileToolDefinition`, `listDirectoryToolDefinition` — JSON Schema definitions for file operation tools
+
+### Recipe: OpenAI
+
+```typescript
+import OpenAI from 'openai';
+import { createBashToolHandler, formatToolForProvider, bashToolDefinition, createNativeBackend } from '@rust-bash/core';
+
+const { handler } = createBashToolHandler(createNativeBackend, { files: myFiles });
+
+const response = await openai.chat.completions.create({
+  model: 'gpt-4o',
+  tools: [formatToolForProvider(bashToolDefinition, 'openai')],
+  messages: [{ role: 'user', content: 'List files in /data' }],
+});
+
+for (const toolCall of response.choices[0].message.tool_calls ?? []) {
+  const result = await handler(JSON.parse(toolCall.function.arguments));
 }
 ```
 
-## AI SDK Tool Definition **(planned)**
+### Recipe: Anthropic
 
-For use with OpenAI, Anthropic, and other function-calling LLM APIs.
+```typescript
+import Anthropic from '@anthropic-ai/sdk';
+import { createBashToolHandler, formatToolForProvider, bashToolDefinition, createNativeBackend } from '@rust-bash/core';
+
+const { handler } = createBashToolHandler(createNativeBackend, { files: myFiles });
+
+const response = await anthropic.messages.create({
+  model: 'claude-sonnet-4-20250514',
+  max_tokens: 1024,
+  tools: [formatToolForProvider(bashToolDefinition, 'anthropic')],
+  messages: [{ role: 'user', content: 'List files in /data' }],
+});
+
+for (const block of response.content) {
+  if (block.type === 'tool_use') {
+    const result = await handler(block.input);
+  }
+}
+```
+
+### Recipe: Vercel AI SDK
+
+```typescript
+import { tool } from 'ai';
+import { z } from 'zod';
+import { createBashToolHandler, createNativeBackend } from '@rust-bash/core';
+
+const { handler } = createBashToolHandler(createNativeBackend, { files: myFiles });
+const bashTool = tool({
+  description: 'Execute bash commands in a sandbox',
+  parameters: z.object({ command: z.string() }),
+  execute: async ({ command }) => handler({ command }),
+});
+```
+
+### Recipe: LangChain.js
+
+```typescript
+import { tool } from '@langchain/core/tools';
+import { z } from 'zod';
+import { createBashToolHandler, createNativeBackend } from '@rust-bash/core';
+
+const { handler, definition } = createBashToolHandler(createNativeBackend, { files: myFiles });
+const bashTool = tool(
+  async ({ command }) => JSON.stringify(await handler({ command })),
+  { name: definition.name, description: definition.description, schema: z.object({ command: z.string() }) },
+);
+```
+
+See [AI Agent Tool Recipe](../recipes/ai-agent-tool.md) for complete examples with full agent loops.
+
+### MCP Server Mode
+
+The CLI binary includes a built-in MCP (Model Context Protocol) server for direct integration with Claude Desktop, Cursor, VS Code, Windsurf, Cline, and the OpenAI Agents SDK:
+
+```bash
+rust-bash --mcp
+```
+
+Exposed tools: `bash`, `write_file`, `read_file`, `list_directory`.
+
+Configuration for Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+
+```json
+{
+  "mcpServers": {
+    "rust-bash": {
+      "command": "rust-bash",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+Configuration for VS Code (`.vscode/mcp.json`):
+
+```json
+{
+  "servers": {
+    "rust-bash": {
+      "type": "stdio",
+      "command": "rust-bash",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+The MCP server maintains a stateful shell session across all tool calls — variables, files, and working directory persist between invocations.
+
+See [MCP Server Setup](../recipes/mcp-server.md) for detailed setup instructions for all supported clients.
 
 ### Tool Schema
 
@@ -366,7 +625,7 @@ For use with OpenAI, Anthropic, and other function-calling LLM APIs.
 }
 ```
 
-### Integration Pattern
+### Rust Integration Pattern
 
 ```rust
 // Create sandbox once per agent session
@@ -387,17 +646,39 @@ match tool_call.name.as_str() {
 }
 ```
 
-### Vercel AI SDK Compatibility **(planned)**
+## Browser Integration (WASM)
 
-A TypeScript wrapper using the WASM target for `@vercel/ai` compatibility:
+rust-bash runs in the browser via WebAssembly. The `@rust-bash/core` npm package provides a browser entry point that loads the WASM binary.
+
+### Architecture
+
+The showcase website at `examples/website/` demonstrates the full browser integration:
+
+1. **xterm.js** renders a terminal in the browser
+2. **rust-bash WASM** (or a development mock) executes commands
+3. An **AI agent** (via Cloudflare Worker → Gemini API) can request tool calls
+4. Tool calls execute **locally** in the browser — no server roundtrip for bash
+
+### Key Concepts
+
+- **Shared state**: The user and agent share the same bash instance and VFS. Files created by the agent are visible to the user and vice versa.
+- **Client-side execution**: All bash commands run locally in the WASM module. The only network call is to the LLM proxy for the `agent` command.
+- **Cached responses**: The initial demo uses a hand-crafted `AgentEvent[]` array, avoiding API calls on first load.
+
+### Usage
 
 ```typescript
-import { createBashTool } from 'rust-bash-ai';
+import { Bash, initWasm, createWasmBackend } from '@rust-bash/core/browser';
 
-const tools = {
-  bash: createBashTool({
-    files: { '/project/data.csv': csvContent },
-    limits: { maxCommandCount: 1000 },
-  }),
-};
+// Initialize WASM module
+await initWasm();
+
+// Create a bash instance with preloaded files
+const bash = await Bash.create(createWasmBackend, {
+  files: { '/hello.txt': 'Hello from WASM!' },
+  cwd: '/home/user',
+});
+
+const result = await bash.exec('cat /hello.txt');
+console.log(result.stdout); // "Hello from WASM!"
 ```

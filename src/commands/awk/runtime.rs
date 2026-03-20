@@ -1068,8 +1068,8 @@ impl AwkRuntime {
             "srand" => {
                 let old_seed = self.rng_state;
                 self.rng_state = if args.is_empty() {
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
+                    crate::platform::SystemTime::now()
+                        .duration_since(crate::platform::UNIX_EPOCH)
                         .map(|d| d.as_nanos() as u64)
                         .unwrap_or(0)
                 } else {

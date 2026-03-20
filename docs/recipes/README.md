@@ -7,23 +7,24 @@ Task-oriented guides for common use cases. Each recipe is a self-contained docum
 | Recipe | Description |
 |--------|-------------|
 | [CLI Usage](cli-usage.md) | Run commands, seed files, and use the interactive REPL from the command line |
-| [Getting Started](getting-started.md) | Embed rust-bash in a Rust application, execute scripts, inspect results |
-| [Custom Commands](custom-commands.md) | Implement and register domain-specific commands via the `VirtualCommand` trait |
-| [Filesystem Backends](filesystem-backends.md) | Choose between InMemoryFs, OverlayFs, ReadWriteFs, and MountableFs |
-| [Execution Limits](execution-limits.md) | Configure resource bounds for different trust levels |
-| [Network Access](network-access.md) | Allow controlled HTTP access for `curl` with URL allow-lists |
+| [Getting Started](getting-started.md) | Embed rust-bash in a Rust or TypeScript application, execute scripts, inspect results |
+| [Custom Commands](custom-commands.md) | Implement and register domain-specific commands (Rust `VirtualCommand` trait + TypeScript `defineCommand()`) |
+| [Filesystem Backends](filesystem-backends.md) | Choose between InMemoryFs, OverlayFs, ReadWriteFs, and MountableFs; lazy file loading |
+| [Execution Limits](execution-limits.md) | Configure resource bounds for different trust levels (Rust + TypeScript) |
+| [Network Access](network-access.md) | Allow controlled HTTP access for `curl` with URL allow-lists (Rust + TypeScript) |
 | [Multi-Step Sessions](multi-step-sessions.md) | Maintain state across multiple `exec()` calls for agents and REPLs |
 | [Text Processing Pipelines](text-processing.md) | Build data pipelines with grep, sed, awk, jq, sort, and more |
-| [Embedding in an AI Agent](ai-agent-tool.md) | Set up rust-bash as a sandboxed tool for LLM function calling |
+| [Embedding in an AI Agent](ai-agent-tool.md) | Set up rust-bash as a sandboxed tool for LLM function calling (OpenAI, Anthropic, Vercel AI SDK, LangChain) |
+| [MCP Server](mcp-server.md) | Built-in MCP server for Claude Desktop, Cursor, VS Code, Windsurf, Cline |
 | [Error Handling](error-handling.md) | Handle errors, use `set -e`/`set -u`/`set -o pipefail`, and recover gracefully |
 | [Shell Scripting Features](shell-scripting.md) | Variables, control flow, functions, arithmetic, subshells, and more |
 | [FFI Usage](ffi-usage.md) | Embed rust-bash in Python, Go, or any C-compatible language via the shared library |
+| [Migrating from just-bash](migrating-from-just-bash.md) | Step-by-step migration guide for just-bash users |
 
 ## Planned Recipes
 
 The following recipes will be written as the corresponding features become available:
 
-- **WASM in the Browser** — run bash in the browser with the WASM target (Milestone 5)
 - **Differential Testing** — compare rust-bash output against real bash
 
 ## Contributing a Recipe

@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets --features ffi -- -D warnings
+      - run: cargo clippy --no-default-features -- -D warnings
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test
+      - run: cargo test --no-default-features
+
+  wasm-build:
+    name: WASM Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Build WASM
+        run: |
+          cargo build --target wasm32-unknown-unknown \
+            --features wasm --no-default-features --release
+      - name: Check WASM binary size
+        run: |
+          WASM_FILE="target/wasm32-unknown-unknown/release/rust_bash.wasm"
+          RAW_SIZE=$(stat -c%s "$WASM_FILE")
+          GZIP_SIZE=$(gzip -c "$WASM_FILE" | wc -c)
+          RAW_MB=$(echo "scale=2; $RAW_SIZE / 1048576" | bc)
+          GZIP_MB=$(echo "scale=2; $GZIP_SIZE / 1048576" | bc)
+          echo "## WASM Binary Size" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Metric | Size |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Raw | ${RAW_MB} MB |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Gzipped | ${GZIP_MB} MB |" >> "$GITHUB_STEP_SUMMARY"
+          echo ""
+          echo "WASM size: raw=${RAW_MB}MB, gzipped=${GZIP_MB}MB"
+          # Budget: < 2MB gzipped (hard limit), < 1.5MB target
+          BUDGET_BYTES=2097152 # 2MB
+          if [ "$GZIP_SIZE" -gt "$BUDGET_BYTES" ]; then
+            echo "::error::WASM gzipped size (${GZIP_MB}MB) exceeds 2MB budget!"
+            exit 1
+          fi
+          TARGET_BYTES=1572864 # 1.5MB
+          if [ "$GZIP_SIZE" -gt "$TARGET_BYTES" ]; then
+            echo "::warning::WASM gzipped size (${GZIP_MB}MB) exceeds 1.5MB target"
+          fi
+
+  npm-test:
+    name: npm Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: packages/core/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test

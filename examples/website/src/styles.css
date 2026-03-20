@@ -1,0 +1,152 @@
+@import "tailwindcss";
+
+/* ── Base ──────────────────────────────────────────────────────────── */
+
+:root {
+  --bg: #0a0a0a;
+  --fg: #b0ffb0;
+  --green: #00ff41;
+  --cyan: #00d4ff;
+  --red: #ff4444;
+  --yellow: #ffcc00;
+  --blue: #5af;
+  --dim: #555;
+  --font-mono: 'Fira Mono', 'JetBrains Mono', 'Cascadia Code', 'SF Mono', Consolas, monospace;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f5f5f0;
+    --fg: #1a1a2e;
+    --green: #16a34a;
+    --cyan: #0891b2;
+    --red: #dc2626;
+    --yellow: #ca8a04;
+    --blue: #2563eb;
+    --dim: #9ca3af;
+  }
+}
+
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-mono);
+}
+
+/* ── Matrix Rain Canvas ───────────────────────────────────────────── */
+
+#matrix-canvas {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 50;
+  transition: opacity 0.8s ease-out;
+}
+
+#matrix-canvas.fade-out {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ── App Layout ───────────────────────────────────────────────────── */
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  opacity: 0;
+  transition: opacity 0.5s ease-in;
+}
+
+#app.visible {
+  opacity: 1;
+}
+
+.hidden {
+  visibility: hidden;
+}
+
+/* ── Header ───────────────────────────────────────────────────────── */
+
+#header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 1rem;
+  flex-shrink: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--dim) 30%, transparent);
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.header-logo {
+  font-size: 1.2rem;
+}
+
+.header-title {
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: var(--green);
+}
+
+.header-github {
+  color: var(--dim);
+  transition: color 0.2s;
+}
+
+.header-github:hover {
+  color: var(--fg);
+}
+
+/* ── Terminal Container ───────────────────────────────────────────── */
+
+#terminal-container {
+  flex: 1;
+  padding: 0.5rem;
+  overflow: hidden;
+  min-height: 0;
+}
+
+#terminal {
+  height: 100%;
+  width: 100%;
+}
+
+/* xterm.js overrides for theme consistency */
+.xterm {
+  padding: 0.25rem;
+}
+
+/* ── Footer ───────────────────────────────────────────────────────── */
+
+#footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.4rem 1rem;
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: var(--dim);
+  border-top: 1px solid color-mix(in srgb, var(--dim) 30%, transparent);
+}
+
+.footer-sep {
+  opacity: 0.5;
+}

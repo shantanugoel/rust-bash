@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+
+use crate::platform::SystemTime;
 
 use super::{InMemoryFs, NodeType, VirtualFs};
 use crate::error::VfsError;

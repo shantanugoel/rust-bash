@@ -126,3 +126,91 @@ println!("Available commands: {}", names.join(", "));
 - [Custom Commands](custom-commands.md) — register your own domain-specific commands
 - [Execution Limits](execution-limits.md) — configure safety bounds
 - [Filesystem Backends](filesystem-backends.md) — use OverlayFs, ReadWriteFs, or MountableFs
+
+---
+
+## Getting Started with TypeScript / npm
+
+If you're using TypeScript or JavaScript, see the npm package:
+
+```bash
+npm install @rust-bash/core
+```
+
+### Minimal Example (Node.js)
+
+```typescript
+import { Bash, tryLoadNative, createNativeBackend, initWasm, createWasmBackend } from '@rust-bash/core';
+
+// Auto-detect backend: native addon (fast) or WASM (universal)
+let createBackend;
+if (await tryLoadNative()) {
+  createBackend = createNativeBackend;
+} else {
+  await initWasm();
+  createBackend = createWasmBackend;
+}
+
+const bash = await Bash.create(createBackend, {
+  files: { '/data.txt': 'hello world' },
+  env: { USER: 'agent' },
+});
+
+const result = await bash.exec('cat /data.txt | grep hello');
+console.log(result.stdout);   // "hello world\n"
+console.log(result.exitCode); // 0
+```
+
+### Minimal Example (Browser)
+
+```typescript
+import { Bash, initWasm, createWasmBackend } from '@rust-bash/core/browser';
+
+await initWasm();
+const bash = await Bash.create(createWasmBackend, {
+  files: { '/hello.txt': 'Hello from WASM!' },
+});
+
+const result = await bash.exec('cat /hello.txt');
+console.log(result.stdout); // "Hello from WASM!\n"
+```
+
+### Pre-populating Files
+
+```typescript
+const bash = await Bash.create(createBackend, {
+  files: {
+    '/data.json': '{"name": "world"}',
+    '/config.yml': 'debug: true',
+    '/lazy.txt': () => 'resolved on first read',           // lazy sync
+    '/async.txt': async () => fetchDataFromAPI(),           // lazy async
+  },
+  env: { HOME: '/home/user', APP_ENV: 'production' },
+  cwd: '/app',
+});
+```
+
+### Inspecting Results
+
+```typescript
+const result = await bash.exec('echo hello; echo oops >&2; exit 42');
+console.log(result.stdout);   // "hello\n"
+console.log(result.stderr);   // "oops\n"
+console.log(result.exitCode); // 42
+```
+
+### Direct Filesystem Access
+
+```typescript
+bash.fs.writeFileSync('/output.txt', 'content');
+const data = bash.fs.readFileSync('/output.txt');
+const exists = bash.fs.existsSync('/output.txt');
+bash.fs.mkdirSync('/dir', { recursive: true });
+const entries = bash.fs.readdirSync('/');
+```
+
+### TypeScript Next Steps
+
+- [npm package README](../../packages/core/README.md) — full TypeScript API reference
+- [Embedding in an AI Agent](ai-agent-tool.md) — use as a tool for LLM function calling
+- [MCP Server](mcp-server.md) — built-in MCP server for Claude Desktop, Cursor, VS Code

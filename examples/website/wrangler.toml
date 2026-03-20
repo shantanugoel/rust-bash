@@ -1,0 +1,6 @@
+name = "rust-bash-website"
+compatibility_date = "2025-06-01"
+pages_build_output_dir = "dist"
+
+# Secrets (set via `wrangler secret put GEMINI_API_KEY`):
+# - GEMINI_API_KEY: Google Gemini API key

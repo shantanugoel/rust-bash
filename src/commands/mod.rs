@@ -6,6 +6,7 @@ pub(crate) mod exec_cmds;
 pub(crate) mod file_ops;
 pub(crate) mod jq_cmd;
 pub(crate) mod navigation;
+#[cfg(feature = "network")]
 pub(crate) mod net;
 pub(crate) mod regex_util;
 pub(crate) mod sed;
@@ -308,7 +309,7 @@ impl VirtualCommand for TouchCommand {
 
             if ctx.fs.exists(&path) {
                 // Update mtime
-                if let Err(e) = ctx.fs.utimes(&path, std::time::SystemTime::now()) {
+                if let Err(e) = ctx.fs.utimes(&path, crate::platform::SystemTime::now()) {
                     stderr.push_str(&format!("touch: cannot touch '{}': {}\n", file, e));
                     exit_code = 1;
                 }
@@ -682,11 +683,14 @@ pub fn register_default_commands() -> HashMap<String, Box<dyn VirtualCommand>> {
         Box::new(jq_cmd::JqCommand),
         // M2.3: awk
         Box::new(awk::AwkCommand),
-        // M3.2: network
-        Box::new(net::CurlCommand),
     ];
     for cmd in defaults {
         commands.insert(cmd.name().to_string(), cmd);
+    }
+    // M3.2: network (feature-gated)
+    #[cfg(feature = "network")]
+    {
+        commands.insert("curl".to_string(), Box::new(net::CurlCommand));
     }
     commands
 }

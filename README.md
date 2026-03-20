@@ -2,9 +2,12 @@
 
 A sandboxed bash interpreter built in Rust. Execute bash scripts safely with a virtual filesystem — no containers, no VMs, no host access.
 
-> ⚠️ **Status: Pre-alpha / Milestones 1–4 + M5.1–M5.2 Complete** — Core interpreter, text processing,
-> execution safety, filesystem backends, CLI binary, and C FFI are implemented.
-> Embeddable from C, Python, Go, or any language with C interop. WASM is planned.
+> **Status: Pre-alpha / Milestones 1–5 Complete** — Core interpreter, text processing,
+> execution safety, filesystem backends, CLI binary, C FFI, WASM target, npm package, and AI SDK integration are implemented.
+
+### 🌐 [Try it in the browser →](https://rustbash.dev)
+
+Interactive showcase with 80+ commands running via WASM. Includes an AI agent you can talk to. See [`examples/website/`](examples/website/) for the source.
 
 ## Highlights
 
@@ -14,12 +17,21 @@ A sandboxed bash interpreter built in Rust. Execute bash scripts safely with a v
 - **Execution limits** — 10 configurable bounds (time, commands, loops, output size, call depth, string length, glob results, substitution depth, heredoc size, brace expansion).
 - **Network policy** — sandboxed `curl` with URL allow-lists, method restrictions, redirect and response-size limits.
 - **Multiple filesystem backends** — InMemoryFs (default), OverlayFs (copy-on-write), ReadWriteFs (passthrough), MountableFs (composite).
+- **npm package** — `@rust-bash/core` with TypeScript types, native Node.js addon, and WASM support.
+- **AI tool integration** — framework-agnostic JSON Schema tool definitions for OpenAI, Anthropic, Vercel AI SDK, LangChain.js.
+- **MCP server** — built-in Model Context Protocol server for Claude Desktop, Cursor, VS Code.
 - **Embeddable** — use as a Rust crate with a builder API. Custom commands via the `VirtualCommand` trait.
-- **CLI binary** — standalone `rust-bash` command with `-c`, `--files`, `--env`, `--cwd`, `--json` flags and an interactive REPL.
+- **CLI binary** — standalone `rust-bash` command with `-c`, `--files`, `--env`, `--cwd`, `--json` flags, MCP server mode, and an interactive REPL.
 
 ## Installation
 
-### Build from source
+### npm (TypeScript / JavaScript)
+
+```bash
+npm install @rust-bash/core
+```
+
+### Build from source (Rust)
 
 ```bash
 git clone https://github.com/shantanugoel/rust-bash.git
@@ -34,16 +46,34 @@ cargo build --release
 cargo install --path .
 ```
 
-## Quick Start
+## Quick Start (TypeScript)
 
-Add to `Cargo.toml`:
+```typescript
+import { Bash, tryLoadNative, createNativeBackend, initWasm, createWasmBackend } from '@rust-bash/core';
 
-```toml
-[dependencies]
-rust-bash = { path = "..." }  # or a git/registry reference once published
+// Auto-detect backend: native addon (fast) or WASM (universal)
+let createBackend;
+if (await tryLoadNative()) {
+  createBackend = createNativeBackend;
+} else {
+  await initWasm();
+  createBackend = createWasmBackend;
+}
+
+const bash = await Bash.create(createBackend, {
+  files: {
+    '/data.json': '{"name": "world"}',
+    '/script.sh': 'echo "Hello, $(jq -r .name /data.json)!"',
+  },
+  env: { USER: 'agent' },
+});
+
+const result = await bash.exec('bash /script.sh');
+console.log(result.stdout);   // "Hello, world!\n"
+console.log(result.exitCode); // 0
 ```
 
-### Basic usage
+## Quick Start (Rust)
 
 ```rust
 use rust_bash::RustBashBuilder;
@@ -64,18 +94,223 @@ assert_eq!(result.stdout, "hello world\n");
 assert_eq!(result.exit_code, 0);
 ```
 
-### Interactive REPL (example)
+## Custom Commands
 
-An interactive shell is also available as a minimal library embedding example:
+### TypeScript
 
-```bash
-cargo run --example shell
+```typescript
+import { Bash, defineCommand } from '@rust-bash/core';
 
-# Seed environment variables and files from a host directory
-cargo run --example shell -- --env KEY=VAL --files ./seed-dir
+const fetch = defineCommand('fetch', async (args, ctx) => {
+  const url = args[0];
+  const response = await globalThis.fetch(url);
+  return { stdout: await response.text(), stderr: '', exitCode: 0 };
+});
+
+const bash = await Bash.create(createBackend, {
+  customCommands: [fetch],
+});
+
+await bash.exec('fetch https://api.example.com/data');
 ```
 
-### CLI Binary
+### Rust
+
+```rust
+use rust_bash::{RustBashBuilder, VirtualCommand, CommandContext, CommandResult};
+
+struct MyCommand;
+
+impl VirtualCommand for MyCommand {
+    fn name(&self) -> &str { "my-cmd" }
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
+        CommandResult {
+            stdout: format!("got {} args\n", args.len()),
+            ..Default::default()
+        }
+    }
+}
+
+let mut shell = RustBashBuilder::new()
+    .command(Box::new(MyCommand))
+    .build()
+    .unwrap();
+
+let result = shell.exec("my-cmd foo bar").unwrap();
+assert_eq!(result.stdout, "got 2 args\n");
+```
+
+## AI Tool Integration
+
+`@rust-bash/core` exports framework-agnostic tool primitives — use with any AI agent framework:
+
+```typescript
+import {
+  bashToolDefinition,
+  createBashToolHandler,
+  formatToolForProvider,
+  createNativeBackend,
+} from '@rust-bash/core';
+
+const { handler } = createBashToolHandler(createNativeBackend, {
+  files: { '/data.txt': 'hello world' },
+  maxOutputLength: 10000,
+});
+
+// Format for your provider
+const openaiTool = formatToolForProvider(bashToolDefinition, 'openai');
+const anthropicTool = formatToolForProvider(bashToolDefinition, 'anthropic');
+
+// Handle tool calls from the LLM
+const result = await handler({ command: 'grep hello /data.txt' });
+// { stdout: 'hello world\n', stderr: '', exitCode: 0 }
+```
+
+### OpenAI
+
+```typescript
+import OpenAI from 'openai';
+import { createBashToolHandler, formatToolForProvider, bashToolDefinition, createNativeBackend } from '@rust-bash/core';
+
+const { handler } = createBashToolHandler(createNativeBackend, { files: myFiles });
+const openai = new OpenAI();
+
+const response = await openai.chat.completions.create({
+  model: 'gpt-4o',
+  tools: [formatToolForProvider(bashToolDefinition, 'openai')],
+  messages: [{ role: 'user', content: 'Count lines in /data.txt' }],
+});
+
+for (const toolCall of response.choices[0].message.tool_calls ?? []) {
+  const result = await handler(JSON.parse(toolCall.function.arguments));
+}
+```
+
+### Anthropic
+
+```typescript
+import Anthropic from '@anthropic-ai/sdk';
+import { createBashToolHandler, formatToolForProvider, bashToolDefinition, createNativeBackend } from '@rust-bash/core';
+
+const { handler } = createBashToolHandler(createNativeBackend, { files: myFiles });
+const anthropic = new Anthropic();
+
+const response = await anthropic.messages.create({
+  model: 'claude-sonnet-4-20250514',
+  max_tokens: 1024,
+  tools: [formatToolForProvider(bashToolDefinition, 'anthropic')],
+  messages: [{ role: 'user', content: 'Count lines in /data.txt' }],
+});
+
+for (const block of response.content) {
+  if (block.type === 'tool_use') {
+    const result = await handler(block.input);
+  }
+}
+```
+
+### Vercel AI SDK
+
+```typescript
+import { tool } from 'ai';
+import { z } from 'zod';
+import { createBashToolHandler, createNativeBackend } from '@rust-bash/core';
+
+const { handler } = createBashToolHandler(createNativeBackend, { files: myFiles });
+const bashTool = tool({
+  description: 'Execute bash commands in a sandbox',
+  parameters: z.object({ command: z.string() }),
+  execute: async ({ command }) => handler({ command }),
+});
+```
+
+### LangChain.js
+
+```typescript
+import { tool } from '@langchain/core/tools';
+import { z } from 'zod';
+import { createBashToolHandler, createNativeBackend } from '@rust-bash/core';
+
+const { handler, definition } = createBashToolHandler(createNativeBackend, { files: myFiles });
+const bashTool = tool(
+  async ({ command }) => JSON.stringify(await handler({ command })),
+  { name: definition.name, description: definition.description, schema: z.object({ command: z.string() }) },
+);
+```
+
+See [AI Agent Tool Recipe](docs/recipes/ai-agent-tool.md) for complete agent loop examples.
+
+## MCP Server
+
+The CLI binary includes a built-in [Model Context Protocol](https://modelcontextprotocol.io/) server:
+
+```bash
+rust-bash --mcp
+```
+
+Exposed tools: `bash`, `write_file`, `read_file`, `list_directory`. State persists across calls.
+
+### Claude Desktop
+
+```json
+{
+  "mcpServers": {
+    "rust-bash": {
+      "command": "rust-bash",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+### VS Code (GitHub Copilot)
+
+```json
+{
+  "servers": {
+    "rust-bash": {
+      "type": "stdio",
+      "command": "rust-bash",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+See [MCP Server Setup](docs/recipes/mcp-server.md) for Cursor, Windsurf, Cline, and other clients.
+
+## Browser / WASM
+
+```typescript
+import { Bash, initWasm, createWasmBackend } from '@rust-bash/core/browser';
+
+await initWasm();
+const bash = await Bash.create(createWasmBackend, {
+  files: { '/hello.txt': 'Hello from WASM!' },
+});
+
+const result = await bash.exec('cat /hello.txt');
+console.log(result.stdout); // "Hello from WASM!\n"
+```
+
+## Performance
+
+| Feature | just-bash | @rust-bash/core |
+|---------|-----------|-----------------|
+| Language | Pure TypeScript | Rust → WASM + native addon |
+| Performance | JS-speed | Near-native (native addon) / WASM |
+| API | `new Bash(opts)` | `Bash.create(backend, opts)` |
+| Custom commands | `defineCommand()` | `defineCommand()` (same API) |
+| AI integration | Vercel AI SDK only | Framework-agnostic (OpenAI, Anthropic, Vercel, LangChain) |
+| MCP server | ❌ | ✅ Built-in (`rust-bash --mcp`) |
+| Browser | ✅ | ✅ (WASM) |
+| Node.js native | ❌ | ✅ (napi-rs) |
+| C FFI | ❌ | ✅ (shared library) |
+| Filesystem backends | In-memory only | InMemoryFs, OverlayFs, ReadWriteFs, MountableFs |
+| Execution limits | ✅ | ✅ (10 configurable bounds) |
+| Network policy | ❌ | ✅ (URL allow-list, method restrictions) |
+
+## CLI Binary
 
 ```bash
 # Execute a command
@@ -101,6 +336,9 @@ rust-bash script.sh arg1 arg2
 # Read commands from stdin
 echo 'echo hello' | rust-bash
 
+# MCP server mode
+rust-bash --mcp
+
 # Interactive REPL (starts when no command/script/stdin is given)
 rust-bash
 ```
@@ -124,6 +362,7 @@ interactive REPL with readline support:
 - **Code sandboxes** — run user-submitted scripts safely
 - **Testing** — deterministic bash execution with a controlled filesystem
 - **Embedded scripting** — add bash scripting to Rust applications
+- **MCP server** — provide bash execution to Claude Desktop, Cursor, VS Code
 
 ## Built-in Commands
 
@@ -145,7 +384,7 @@ interactive REPL with readline support:
 
 Additionally, `if`/`then`/`elif`/`else`/`fi`, `for`/`while`/`until`/`do`/`done`, `case`/`esac`, `((...))`, and `[[ ]]` are handled as shell syntax by the interpreter.
 
-## Configuration
+## Configuration (Rust)
 
 ```rust
 use rust_bash::{RustBashBuilder, ExecutionLimits, NetworkPolicy};
@@ -254,34 +493,6 @@ shell.exec("cat /project/README.md").unwrap();   // reads from disk
 shell.exec("echo scratch > /tmp/work").unwrap(); // writes to in-memory /tmp
 ```
 
-### Custom commands
-
-Register domain-specific commands via the `VirtualCommand` trait:
-
-```rust
-use rust_bash::{RustBashBuilder, VirtualCommand, CommandContext, CommandResult};
-
-struct MyCommand;
-
-impl VirtualCommand for MyCommand {
-    fn name(&self) -> &str { "my-cmd" }
-    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
-        CommandResult {
-            stdout: format!("got {} args\n", args.len()),
-            ..Default::default()
-        }
-    }
-}
-
-let mut shell = RustBashBuilder::new()
-    .command(Box::new(MyCommand))
-    .build()
-    .unwrap();
-
-let result = shell.exec("my-cmd foo bar").unwrap();
-assert_eq!(result.stdout, "got 2 args\n");
-```
-
 ## C FFI
 
 rust-bash can be used from any language with C FFI support (Python, Go, Ruby, etc.) via a shared library.
@@ -294,12 +505,6 @@ cargo build --features ffi --release
 # Header: include/rust_bash.h
 ```
 
-To regenerate the C header:
-
-```bash
-cbindgen --config cbindgen.toml --crate rust-bash --output include/rust_bash.h
-```
-
 ### Minimal C example
 
 ```c
@@ -307,46 +512,18 @@ cbindgen --config cbindgen.toml --crate rust-bash --output include/rust_bash.h
 #include <stdio.h>
 
 int main(void) {
-    // Create a sandbox (NULL for defaults, or pass JSON config)
     struct RustBash *sb = rust_bash_create(NULL);
-    if (!sb) {
-        fprintf(stderr, "create failed: %s\n", rust_bash_last_error());
-        return 1;
-    }
-
-    // Execute a command
     struct ExecResult *r = rust_bash_exec(sb, "echo hello world");
-    if (!r) {
-        fprintf(stderr, "exec failed: %s\n", rust_bash_last_error());
-        rust_bash_free(sb);
-        return 1;
-    }
-
-    // Print output (use stdout_ptr/stdout_len since strings are not null-terminated)
     printf("%.*s", r->stdout_len, r->stdout_ptr);
-    printf("exit code: %d\n", r->exit_code);
-
-    // Free results and sandbox
     rust_bash_result_free(r);
     rust_bash_free(sb);
     return 0;
 }
 ```
 
-### API functions
-
-| Function | Description |
-|----------|-------------|
-| `rust_bash_create(config_json)` | Create sandbox. Pass `NULL` for defaults or a JSON config string. Returns `NULL` on error. |
-| `rust_bash_exec(sb, command)` | Execute a command. Returns `NULL` on error. |
-| `rust_bash_result_free(result)` | Free an `ExecResult*`. No-op if `NULL`. |
-| `rust_bash_free(sb)` | Free a `RustBash*` handle. No-op if `NULL`. |
-| `rust_bash_last_error()` | Last error message for current thread, or `NULL`. Do not free. |
-| `rust_bash_version()` | Library version as a static string. Do not free. |
-
 For complete Python and Go examples, see [`examples/ffi/`](examples/ffi/). For the full FFI guide, see the [FFI Usage recipe](docs/recipes/ffi-usage.md).
 
-## Public API
+## Public API (Rust)
 
 | Type | Description |
 |------|-------------|
@@ -374,6 +551,8 @@ For complete Python and Go examples, see [`examples/ffi/`](examples/ffi/). For t
 ## Documentation
 
 - [Guidebook](docs/guidebook/) — architecture, design, and implementation details
+- [Recipes](docs/recipes/) — task-oriented guides for common use cases
+- [npm package README](packages/core/README.md) — TypeScript API reference
 
 ## Roadmap
 
@@ -382,8 +561,12 @@ The following milestones track the project's progress:
 - ✅ **Milestone 1–4**: Core interpreter, text processing, execution safety, filesystem backends
 - ✅ **Milestone 5.1**: Standalone CLI binary — interactive REPL, `-c` commands, script files, stdin piping, `--json` output
 - ✅ **Milestone 5.2**: C FFI — shared library, generated C header, JSON config, 6 exported functions
-- Planned: WASM target for browser execution (M5.3)
-- Planned: AI SDK integration — OpenAI/Anthropic tool definitions (M5.4)
+- ✅ **Milestone 5.3**: WASM target — `wasm32-unknown-unknown`, npm package `@rust-bash/core` with TypeScript types
+- ✅ **Milestone 5.4**: AI SDK integration — framework-agnostic tool definitions, MCP server, documented adapters
+- Planned: Shell language completeness — arrays, shopt, process substitution (M6)
+- Planned: Command coverage — `--help` for all commands, missing utilities (M7)
+- Planned: Embedded runtimes — SQLite, yq, Python, JavaScript (M8)
+- Planned: Platform features — cancellation, lazy files, AST transforms, fuzz testing (M9)
 
 ## License
 

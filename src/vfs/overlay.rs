@@ -10,7 +10,8 @@ use std::collections::HashSet;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
+
+use crate::platform::SystemTime;
 
 use parking_lot::RwLock;
 

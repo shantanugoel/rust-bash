@@ -13,7 +13,8 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
+
+use crate::platform::SystemTime;
 
 use crate::error::VfsError;
 use crate::interpreter::pattern::glob_match;

@@ -1,15 +1,18 @@
 mod memory;
 mod mountable;
+
+#[cfg(feature = "native-fs")]
 mod overlay;
+#[cfg(feature = "native-fs")]
 mod readwrite;
 
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "native-fs"))]
 mod readwrite_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "native-fs"))]
 mod overlay_tests;
 
 #[cfg(test)]
@@ -17,13 +20,16 @@ mod mountable_tests;
 
 pub use memory::InMemoryFs;
 pub use mountable::MountableFs;
+
+#[cfg(feature = "native-fs")]
 pub use overlay::OverlayFs;
+#[cfg(feature = "native-fs")]
 pub use readwrite::ReadWriteFs;
 
 use crate::error::VfsError;
+use crate::platform::SystemTime;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
 
 /// Metadata for a filesystem node.
 #[derive(Debug, Clone, PartialEq, Eq)]

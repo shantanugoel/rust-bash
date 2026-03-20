@@ -322,9 +322,22 @@ impl super::VirtualCommand for SleepCommand {
         let max_secs = ctx.limits.max_execution_time.as_secs_f64();
         let capped = seconds.min(max_secs);
         let duration = std::time::Duration::from_secs_f64(capped);
-        std::thread::sleep(duration);
 
-        CommandResult::default()
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = duration;
+            return CommandResult {
+                stderr: "sleep: not supported in browser environment\n".into(),
+                exit_code: 1,
+                ..Default::default()
+            };
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            std::thread::sleep(duration);
+            CommandResult::default()
+        }
     }
 }
 

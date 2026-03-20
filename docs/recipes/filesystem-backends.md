@@ -204,3 +204,100 @@ let mut shell = RustBashBuilder::new()
 ```
 
 This copies files into the InMemoryFs at build time. For large directories, prefer `OverlayFs` to avoid the upfront memory cost.
+
+---
+
+## TypeScript: Virtual Filesystem
+
+The `@rust-bash/core` npm package provides file seeding at creation time and direct VFS access.
+
+### Seeding Files
+
+```typescript
+import { Bash } from '@rust-bash/core';
+
+const bash = await Bash.create(createBackend, {
+  files: {
+    '/src/main.rs': 'fn main() {}',
+    '/src/lib.rs': 'pub fn hello() {}',
+    '/config.json': '{"debug": true}',
+  },
+});
+
+const result = await bash.exec('find / -name "*.rs"');
+// result.stdout includes /src/main.rs and /src/lib.rs
+```
+
+### Lazy File Loading
+
+File values can be functions — resolved concurrently at `Bash.create()` time via `Promise.all`. This keeps the config declarative while deferring expensive I/O until the instance is actually created:
+
+```typescript
+const bash = await Bash.create(createBackend, {
+  files: {
+    // Eager — written immediately
+    '/data.txt': 'hello world',
+
+    // Lazy sync — resolved at Bash.create() time
+    '/config.json': () => JSON.stringify(getConfig()),
+
+    // Lazy async — resolved at Bash.create() time (awaited)
+    '/remote.txt': async () => {
+      const res = await fetch('https://example.com/data');
+      return await res.text();
+    },
+  },
+});
+
+// /remote.txt is only fetched when a command reads it:
+await bash.exec('cat /remote.txt');
+```
+
+### Direct VFS Access
+
+The `bash.fs` proxy provides synchronous filesystem operations:
+
+```typescript
+// Write files
+bash.fs.writeFileSync('/output.txt', 'content');
+
+// Read files
+const data = bash.fs.readFileSync('/output.txt');
+
+// Check existence
+const exists = bash.fs.existsSync('/output.txt');
+
+// Create directories
+bash.fs.mkdirSync('/dir/subdir', { recursive: true });
+
+// List directory contents
+const entries = bash.fs.readdirSync('/');
+
+// File stats
+const stat = bash.fs.statSync('/output.txt');
+console.log(stat.isFile, stat.size);
+
+// Remove files
+bash.fs.rmSync('/output.txt');
+bash.fs.rmSync('/dir', { recursive: true });
+```
+
+### Browser Example
+
+In the browser, only `InMemoryFs` is available (no host filesystem access):
+
+```typescript
+import { Bash, initWasm, createWasmBackend } from '@rust-bash/core/browser';
+
+await initWasm();
+const bash = await Bash.create(createWasmBackend, {
+  files: {
+    '/index.html': '<h1>Hello</h1>',
+    '/style.css': 'body { color: red; }',
+  },
+});
+
+// All operations are in-memory
+await bash.exec('cat /index.html | grep -o "Hello"');
+bash.fs.writeFileSync('/output.txt', 'generated');
+```

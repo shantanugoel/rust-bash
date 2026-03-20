@@ -10,11 +10,12 @@ mod walker;
 use crate::commands::VirtualCommand;
 use crate::error::RustBashError;
 use crate::network::NetworkPolicy;
+use crate::platform::Instant;
 use crate::vfs::VirtualFs;
 use brush_parser::ast;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub use expansion::expand_word;
 pub use walker::execute_program;

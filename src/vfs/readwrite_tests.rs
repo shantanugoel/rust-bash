@@ -1,7 +1,9 @@
 #[cfg(test)]
 mod readwrite_tests {
     use std::path::{Path, PathBuf};
-    use std::time::{Duration, SystemTime};
+    use std::time::Duration;
+
+    use crate::platform::SystemTime;
 
     use tempfile::TempDir;
 

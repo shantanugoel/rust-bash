@@ -150,19 +150,20 @@ Static binary. `--files`, `--cwd`, `--env` flags. Interactive REPL. `--json` out
 
 Stable C ABI: 6 exported functions (`rust_bash_create`, `rust_bash_exec`, `rust_bash_result_free`, `rust_bash_free`, `rust_bash_last_error`, `rust_bash_version`). JSON config. Generated C header.
 
-### M5.3 — WASM Target
+### M5.3 — WASM Target ✅
 
-`wasm32-unknown-unknown` + `wasm-bindgen`. JavaScript wrapper. npm package with TypeScript types.
+`wasm32-unknown-unknown` + `wasm-bindgen`. JavaScript wrapper. npm package (`@rust-bash/core`) with TypeScript types, dual-entry (Node.js + browser), WASM backend with `initWasm()` / `createWasmBackend()`.
 
-**Design exploration (do before implementing):** Evaluate `napi-rs v3` (supports compiling the same Rust crate to both native Node.js addons and WASM from a single codebase) vs separate `wasm-bindgen` + `napi-rs` builds. Compare bundle size, API ergonomics, and maintenance cost. The dual-target capability of napi-rs v3 may allow M5.3 and M5.4 to share a single binding layer — investigate whether this simplifies or constrains the API surface.
+**Design decision:** Separate `wasm-bindgen` (browser) and planned napi-rs (Node.js native addon) builds, unified under a single `@rust-bash/core` package with conditional exports. The package auto-detects the environment: `tryLoadNative()` for Node.js, `initWasm()` for browsers.
 
-### M5.4 — AI SDK Integration
+### M5.4 — AI SDK Integration ✅
 
-Framework-agnostic tool definitions (JSON Schema + handler functions) exported from the npm package. MCP server mode for the CLI binary (`rust-bash --mcp`). Documented recipe-based adapters for Vercel AI SDK, LangChain.js, OpenAI API, and Anthropic API. The core exports `bashToolDefinition` (JSON Schema) and `createBashToolHandler(options)` — the universal building blocks that work with any AI agent framework. Framework-specific adapters are thin (~10-line) wrappers documented as recipes, not hard dependencies.
+Framework-agnostic tool definitions (JSON Schema + handler functions) exported from the npm package. MCP server mode for the CLI binary (`rust-bash --mcp`). Documented recipe-based adapters for Vercel AI SDK, LangChain.js, OpenAI API, and Anthropic API. The core exports `bashToolDefinition` (JSON Schema), `createBashToolHandler()`, `formatToolForProvider()`, and `handleToolCall()` — the universal building blocks that work with any AI agent framework. Framework-specific adapters are thin (~10-line) wrappers documented as recipes, not hard dependencies.
 
-**Design exploration (do before implementing):** The TypeScript/JS package should offer a **native Node.js addon** (via napi-rs) as the primary backend for server-side AI agents, with WASM as an automatic fallback for browsers and edge runtimes. Investigate a unified `@rust-bash/core` package that auto-detects the environment. Compare this approach against shipping separate `@rust-bash/node` and `@rust-bash/wasm` packages.
-
-**Custom commands via TypeScript (and other language interfaces):** The `VirtualCommand` trait (`fn execute(&self, args, ctx) -> CommandResult`) maps cleanly to a JS/TS callback. Explore three approaches: (1) a `JsBridgeCommand` Rust struct that implements `VirtualCommand` but delegates to a registered TS callback via napi-rs `ThreadsafeFunction` (native) or `wasm-bindgen` imported function (WASM); (2) a catch-all `commandResolver` fallback for dynamic command sets (like bash's `command_not_found_handle`); (3) optionally exposing VFS read/write methods to TS callbacks, or letting them shell out via the existing `exec` callback on `CommandContext`. The same pattern generalizes to the C FFI (M5.2) by accepting function pointers for custom command dispatch. Approach (1) + (2) covers most use cases; (3) can be deferred.
+**Design decisions:**
+- **Unified package:** Single `@rust-bash/core` package with native Node.js addon as primary backend and WASM as automatic fallback for browsers/edge runtimes.
+- **Custom commands:** `defineCommand()` API in TypeScript mirrors the Rust `VirtualCommand` trait. Custom commands are registered at `Bash.create()` time and participate in pipelines and redirections.
+- **Tool primitives:** `bashToolDefinition` + `formatToolForProvider('openai' | 'anthropic' | 'mcp')` for zero-dependency provider formatting. `handleToolCall()` dispatcher supports `bash`, `readFile`, `writeFile`, `listDirectory` tool names.
 
 ---
 

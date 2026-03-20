@@ -15,7 +15,141 @@ Use rust-bash as a bash execution tool for LLM-powered agents. The shell provide
 | Network control | URL allow-list | Network policies | iptables |
 | Reproducible FS | Yes (InMemoryFs) | Mostly | No |
 
-## Basic Agent Setup
+## TypeScript: Framework-Agnostic Tool Primitives
+
+`@rust-bash/core` exports a JSON Schema tool definition and a handler factory that work with **any** AI agent framework — no framework dependencies.
+
+```typescript
+import { bashToolDefinition, createBashToolHandler, createNativeBackend } from '@rust-bash/core';
+
+// bashToolDefinition is a plain JSON Schema object:
+// {
+//   name: 'bash',
+//   description: 'Execute bash commands in a sandboxed environment...',
+//   inputSchema: {
+//     type: 'object',
+//     properties: { command: { type: 'string', description: '...' } },
+//     required: ['command'],
+//   },
+// }
+
+// createBashToolHandler returns a framework-agnostic handler:
+const { handler, definition, bash } = createBashToolHandler(createNativeBackend, {
+  files: { '/data.txt': 'hello world' },
+  maxOutputLength: 10000,
+});
+
+// handler: (args: { command: string }) => Promise<{ stdout, stderr, exitCode }>
+const result = await handler({ command: 'grep hello /data.txt' });
+```
+
+### Convenience Schema Formatters
+
+Format tool definitions for specific providers without any external dependencies:
+
+```typescript
+import { bashToolDefinition, formatToolForProvider } from '@rust-bash/core';
+
+const openaiTool = formatToolForProvider(bashToolDefinition, 'openai');
+// { type: "function", function: { name: "bash", description: "...", parameters: {...} } }
+
+const anthropicTool = formatToolForProvider(bashToolDefinition, 'anthropic');
+// { name: "bash", description: "...", input_schema: {...} }
+
+const mcpTool = formatToolForProvider(bashToolDefinition, 'mcp');
+// { name: "bash", description: "...", inputSchema: {...} }
+```
+
+### handleToolCall Dispatcher
+
+For agent loops that need to dispatch multiple tool types:
+
+```typescript
+import { Bash, handleToolCall } from '@rust-bash/core';
+
+// In your agent loop:
+const result = await handleToolCall(bash, toolCall.name, toolCall.arguments);
+// Supports: 'bash', 'readFile', 'writeFile', 'listDirectory'
+```
+
+## Recipe: OpenAI API
+
+```typescript
+import OpenAI from 'openai';
+import { createBashToolHandler, formatToolForProvider, bashToolDefinition, createNativeBackend } from '@rust-bash/core';
+
+const { handler } = createBashToolHandler(createNativeBackend, { files: myFiles });
+const openai = new OpenAI();
+
+const response = await openai.chat.completions.create({
+  model: 'gpt-4o',
+  tools: [formatToolForProvider(bashToolDefinition, 'openai')],
+  messages: [{ role: 'user', content: 'List files in /data' }],
+});
+
+// In tool call dispatch:
+for (const toolCall of response.choices[0].message.tool_calls ?? []) {
+  const args = JSON.parse(toolCall.function.arguments);
+  const result = await handler(args);
+  // Send result back as tool_call response...
+}
+```
+
+## Recipe: Anthropic API
+
+```typescript
+import Anthropic from '@anthropic-ai/sdk';
+import { createBashToolHandler, formatToolForProvider, bashToolDefinition, createNativeBackend } from '@rust-bash/core';
+
+const { handler } = createBashToolHandler(createNativeBackend, { files: myFiles });
+const anthropic = new Anthropic();
+
+const response = await anthropic.messages.create({
+  model: 'claude-sonnet-4-20250514',
+  max_tokens: 1024,
+  tools: [formatToolForProvider(bashToolDefinition, 'anthropic')],
+  messages: [{ role: 'user', content: 'List files in /data' }],
+});
+
+// In tool call dispatch:
+for (const block of response.content) {
+  if (block.type === 'tool_use') {
+    const result = await handler(block.input);
+    // Send result back as tool_result...
+  }
+}
+```
+
+## Recipe: Vercel AI SDK (~8 lines)
+
+```typescript
+import { tool } from 'ai';
+import { z } from 'zod';
+import { createBashToolHandler, createNativeBackend } from '@rust-bash/core';
+
+const { handler } = createBashToolHandler(createNativeBackend, { files: myFiles });
+const bashTool = tool({
+  description: 'Execute bash commands in a sandbox',
+  parameters: z.object({ command: z.string() }),
+  execute: async ({ command }) => handler({ command }),
+});
+```
+
+## Recipe: LangChain.js (~8 lines)
+
+```typescript
+import { tool } from '@langchain/core/tools';
+import { z } from 'zod';
+import { createBashToolHandler, createNativeBackend } from '@rust-bash/core';
+
+const { handler, definition } = createBashToolHandler(createNativeBackend, { files: myFiles });
+const bashTool = tool(
+  async ({ command }) => JSON.stringify(await handler({ command })),
+  { name: definition.name, description: definition.description, schema: z.object({ command: z.string() }) },
+);
+```
+
+## Rust: Basic Agent Setup
 
 ```rust
 use rust_bash::{RustBashBuilder, RustBashError, ExecutionLimits, NetworkPolicy};
@@ -86,7 +220,6 @@ fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        // Find a valid UTF-8 boundary at or before `max`
         let end = s.char_indices()
             .take_while(|(i, _)| *i < max)
             .last()
@@ -97,37 +230,7 @@ fn truncate(s: &str, max: usize) -> String {
 }
 ```
 
-## Seeding with Task Context
-
-Pre-populate the filesystem with task-specific data before handing control to the agent:
-
-```rust
-use rust_bash::RustBashBuilder;
-use std::collections::HashMap;
-
-fn create_agent_for_task(task_files: HashMap<String, Vec<u8>>, task_description: &str) -> rust_bash::RustBash {
-    let mut files = task_files;
-    // Add the task description as a file the agent can reference
-    files.insert(
-        "/home/agent/TASK.md".into(),
-        task_description.as_bytes().to_vec(),
-    );
-
-    RustBashBuilder::new()
-        .files(files)
-        .env(HashMap::from([
-            ("HOME".into(), "/home/agent".into()),
-            ("TASK_FILE".into(), "/home/agent/TASK.md".into()),
-        ]))
-        .cwd("/home/agent")
-        .build()
-        .unwrap()
-}
-```
-
-## Tool Definition for Function Calling
-
-Here's how you might describe the bash tool for an LLM API:
+## Rust: Tool Definition for Function Calling
 
 ```json
 {
@@ -146,106 +249,15 @@ Here's how you might describe the bash tool for an LLM API:
 }
 ```
 
-## Multi-Turn Conversation Pattern
+## MCP Server
 
-```rust
-use rust_bash::RustBashBuilder;
-use std::collections::HashMap;
+For MCP-compatible clients (Claude Desktop, Cursor, VS Code), use the built-in MCP server mode:
 
-let mut shell = RustBashBuilder::new()
-    .files(HashMap::from([
-        ("/data/users.csv".into(), b"name,email,role\nalice,a@x.com,admin\nbob,b@x.com,user\n".to_vec()),
-    ]))
-    .cwd("/data")
-    .build()
-    .unwrap();
-
-// Turn 1: Agent explores the data
-let r = shell.exec("ls /data && head -5 /data/users.csv").unwrap();
-// LLM sees the file listing and CSV structure
-
-// Turn 2: Agent processes the data
-let r = shell.exec("awk -F, 'NR>1 && $3==\"admin\" { print $1, $2 }' /data/users.csv").unwrap();
-// LLM sees: alice a@x.com
-
-// Turn 3: Agent creates a report
-shell.exec(r#"
-    echo "# Admin Report" > /data/report.md
-    echo "" >> /data/report.md
-    awk -F, 'NR>1 && $3=="admin" { printf "- **%s** (%s)\n", $1, $2 }' /data/users.csv >> /data/report.md
-"#).unwrap();
-
-let r = shell.exec("cat /data/report.md").unwrap();
-assert!(r.stdout.contains("# Admin Report"));
-assert!(r.stdout.contains("**alice**"));
+```bash
+rust-bash --mcp
 ```
 
-## Adding API Access for Agents
-
-Enable controlled HTTP access so the agent can call external APIs:
-
-```rust
-use rust_bash::{RustBashBuilder, NetworkPolicy};
-use std::time::Duration;
-
-let mut shell = RustBashBuilder::new()
-    .network_policy(NetworkPolicy {
-        enabled: true,
-        allowed_url_prefixes: vec![
-            "https://api.myservice.com/".into(),
-        ],
-        timeout: Duration::from_secs(5),
-        ..Default::default()
-    })
-    .build()
-    .unwrap();
-
-// Agent can call your API
-// shell.exec("curl -s https://api.myservice.com/tasks | jq '.[0]'").unwrap();
-```
-
-## Custom Tools as Commands
-
-Expose application-specific capabilities as custom commands:
-
-```rust
-use rust_bash::{RustBashBuilder, VirtualCommand, CommandContext, CommandResult};
-
-/// A command that lets the agent signal task completion
-struct DoneCommand;
-impl VirtualCommand for DoneCommand {
-    fn name(&self) -> &str { "task-done" }
-    fn execute(&self, args: &[String], _ctx: &CommandContext) -> CommandResult {
-        let summary = args.join(" ");
-        CommandResult {
-            stdout: format!("TASK_COMPLETE: {summary}\n"),
-            ..Default::default()
-        }
-    }
-}
-
-/// A command that provides structured context to the agent
-struct ContextCommand;
-impl VirtualCommand for ContextCommand {
-    fn name(&self) -> &str { "get-context" }
-    fn execute(&self, _args: &[String], ctx: &CommandContext) -> CommandResult {
-        let user = ctx.env.get("USER").map(|s| s.as_str()).unwrap_or("unknown");
-        CommandResult {
-            stdout: format!("user={user}\ncwd={}\n", ctx.cwd),
-            ..Default::default()
-        }
-    }
-}
-
-let mut shell = RustBashBuilder::new()
-    .command(Box::new(DoneCommand))
-    .command(Box::new(ContextCommand))
-    .build()
-    .unwrap();
-
-let r = shell.exec("get-context").unwrap();
-assert!(r.stdout.contains("cwd=/"));
-```
+See [MCP Server Setup](mcp-server.md) for configuration details.
 
 ## Protecting Against Malicious Scripts
 

@@ -1,0 +1,64 @@
+{
+  "name": "@rust-bash/core",
+  "version": "0.1.0",
+  "description": "A sandboxed bash interpreter powered by Rust — TypeScript API with native Node.js addon and WASM support",
+  "type": "module",
+  "exports": {
+    ".": {
+      "browser": "./dist/browser.js",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./browser": {
+      "import": "./dist/browser.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist/",
+    "wasm/",
+    "native/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "bash",
+    "shell",
+    "interpreter",
+    "sandbox",
+    "wasm",
+    "napi",
+    "virtual-filesystem",
+    "ai-agent",
+    "mcp",
+    "tool-use",
+    "llm",
+    "sandboxed-execution"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shantanugoel/rust-bash.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://rustbash.dev",
+  "bugs": {
+    "url": "https://github.com/shantanugoel/rust-bash/issues"
+  },
+  "author": "Shantanu Goel",
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0"
+  }
+}

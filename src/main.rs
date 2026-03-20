@@ -38,6 +38,10 @@ struct Cli {
     #[arg(long)]
     json: bool,
 
+    /// Start an MCP (Model Context Protocol) server over stdio
+    #[arg(long)]
+    mcp: bool,
+
     /// Script file to execute, followed by optional positional arguments
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     args: Vec<String>,
@@ -237,6 +241,17 @@ fn parse_env(env_args: &[String], cwd: &str) -> Result<HashMap<String, String>, 
 }
 
 fn run(cli: Cli) -> ExitCode {
+    // MCP server mode — enter JSON-RPC stdio loop
+    if cli.mcp {
+        match rust_bash::mcp::run_mcp_server() {
+            Ok(()) => return ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("rust-bash: MCP server error: {e}");
+                return ExitCode::from(1);
+            }
+        }
+    }
+
     let files = match parse_file_mappings(&cli.file_mappings) {
         Ok(f) => f,
         Err((msg, code)) => {

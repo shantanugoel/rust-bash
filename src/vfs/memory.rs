@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
+
+use crate::platform::SystemTime;
 
 use parking_lot::RwLock;
 

@@ -10,9 +10,12 @@ keywords = ["bash", "shell", "interpreter", "sandbox", "virtual-filesystem"]
 crate-type = ["lib", "cdylib"]
 
 [features]
-default = ["cli"]
+default = ["cli", "network", "native-fs"]
 cli = ["dep:clap", "dep:rustyline"]
 ffi = ["dep:serde"]
+wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:serde", "dep:serde-wasm-bindgen"]
+network = ["dep:ureq", "dep:url"]
+native-fs = []
 
 [[bin]]
 name = "rust-bash"
@@ -34,8 +37,17 @@ serde = { version = "1.0.228", features = ["derive"], optional = true }
 serde_json = "1"
 sha2 = "0.10"
 similar = "2.7.0"
-ureq = "3"
-url = "2.5.8"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ureq = { version = "3", optional = true }
+url = { version = "2.5.8", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { version = "0.2.114", optional = true }
+js-sys = { version = "0.3.91", optional = true }
+web-time = "1.1.0"
+serde-wasm-bindgen = { version = "0.6.5", optional = true }
+chrono = { version = "0.4", features = ["wasmbind"] }
 
 [dev-dependencies]
 assert_cmd = "2.2.0"

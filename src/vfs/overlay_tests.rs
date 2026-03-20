@@ -1,7 +1,8 @@
 //! Tests for OverlayFs.
 
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+
+use crate::platform::SystemTime;
 
 use tempfile::TempDir;
 

@@ -1,1 +1,25 @@
+# Rust
 /target
+
+# Node.js / npm
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Build artifacts
+*.node
+*.wasm
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Cloudflare
+.wrangler/
+.dev.vars

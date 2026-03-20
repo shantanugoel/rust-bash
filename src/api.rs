@@ -74,6 +74,129 @@ impl RustBash {
         self.state.positional_params = params;
     }
 
+    // ── VFS convenience methods ──────────────────────────────────────
+
+    /// Returns a reference to the virtual filesystem.
+    pub fn fs(&self) -> &Arc<dyn crate::vfs::VirtualFs> {
+        &self.state.fs
+    }
+
+    /// Write a file to the virtual filesystem, creating parent directories.
+    pub fn write_file(&self, path: &str, content: &[u8]) -> Result<(), crate::VfsError> {
+        let p = Path::new(path);
+        if let Some(parent) = p.parent()
+            && parent != Path::new("/")
+        {
+            self.state.fs.mkdir_p(parent)?;
+        }
+        self.state.fs.write_file(p, content)
+    }
+
+    /// Read a file from the virtual filesystem.
+    pub fn read_file(&self, path: &str) -> Result<Vec<u8>, crate::VfsError> {
+        self.state.fs.read_file(Path::new(path))
+    }
+
+    /// Create a directory in the virtual filesystem.
+    pub fn mkdir(&self, path: &str, recursive: bool) -> Result<(), crate::VfsError> {
+        let p = Path::new(path);
+        if recursive {
+            self.state.fs.mkdir_p(p)
+        } else {
+            self.state.fs.mkdir(p)
+        }
+    }
+
+    /// Check if a path exists in the virtual filesystem.
+    pub fn exists(&self, path: &str) -> bool {
+        self.state.fs.exists(Path::new(path))
+    }
+
+    /// List entries in a directory.
+    pub fn readdir(&self, path: &str) -> Result<Vec<crate::vfs::DirEntry>, crate::VfsError> {
+        self.state.fs.readdir(Path::new(path))
+    }
+
+    /// Get metadata for a path.
+    pub fn stat(&self, path: &str) -> Result<crate::vfs::Metadata, crate::VfsError> {
+        self.state.fs.stat(Path::new(path))
+    }
+
+    /// Remove a file from the virtual filesystem.
+    pub fn remove_file(&self, path: &str) -> Result<(), crate::VfsError> {
+        self.state.fs.remove_file(Path::new(path))
+    }
+
+    /// Remove a directory (and contents if recursive) from the virtual filesystem.
+    pub fn remove_dir_all(&self, path: &str) -> Result<(), crate::VfsError> {
+        self.state.fs.remove_dir_all(Path::new(path))
+    }
+
+    /// Register a custom command.
+    pub fn register_command(&mut self, cmd: Box<dyn VirtualCommand>) {
+        self.state.commands.insert(cmd.name().to_string(), cmd);
+    }
+
+    /// Execute a command with per-exec environment and cwd overrides.
+    ///
+    /// Overrides are applied before execution and restored afterward.
+    pub fn exec_with_overrides(
+        &mut self,
+        input: &str,
+        env: Option<&HashMap<String, String>>,
+        cwd: Option<&str>,
+        stdin: Option<&str>,
+    ) -> Result<ExecResult, RustBashError> {
+        let saved_cwd = self.state.cwd.clone();
+        let mut overwritten_env: Vec<(String, Option<Variable>)> = Vec::new();
+
+        if let Some(env) = env {
+            for (key, value) in env {
+                let old = self.state.env.get(key).cloned();
+                overwritten_env.push((key.clone(), old));
+                self.state.env.insert(
+                    key.clone(),
+                    Variable {
+                        value: value.clone(),
+                        exported: true,
+                        readonly: false,
+                    },
+                );
+            }
+        }
+
+        if let Some(cwd) = cwd {
+            self.state.cwd = cwd.to_string();
+        }
+
+        let result = if let Some(stdin) = stdin {
+            let delimiter = if stdin.contains("__EXEC_STDIN__") {
+                "__EXEC_STDIN_BOUNDARY__"
+            } else {
+                "__EXEC_STDIN__"
+            };
+            let full_command = format!("{input} <<'{delimiter}'\n{stdin}\n{delimiter}");
+            self.exec(&full_command)
+        } else {
+            self.exec(input)
+        };
+
+        // Restore state
+        self.state.cwd = saved_cwd;
+        for (key, old_val) in overwritten_env {
+            match old_val {
+                Some(var) => {
+                    self.state.env.insert(key, var);
+                }
+                None => {
+                    self.state.env.remove(&key);
+                }
+            }
+        }
+
+        result
+    }
+
     /// Check whether `input` looks like a complete shell statement.
     ///
     /// Returns `true` when the input can be tokenized and parsed without
