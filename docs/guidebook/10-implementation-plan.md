@@ -12,7 +12,7 @@
 | M6 | Shell Language Completeness | Arrays, shopt, process substitution, special vars, advanced redirections, missing builtins |
 | M7 | Command Coverage & Discoverability | Missing commands, `--help` for all commands |
 | M8 | Embedded Runtimes & Data Formats | Python, JavaScript, SQLite, yq, xan |
-| M9 | Platform & API Features | Cancellation, lazy files, AST transforms, sandbox API |
+| M9 | Platform & API Features | Cancellation, lazy files, AST transforms, sandbox API, fuzz testing |
 
 ---
 
@@ -116,11 +116,11 @@ Via `similar` crate. Unified (`-u`), context (`-c`), and normal diff formats. `-
 
 ### M3.1 — Execution Limits Enforcement ✅
 
-Add `ExecutionLimits` + `ExecutionCounters` to state. Check limits at command dispatch, function calls, loop iterations, output appends, and wall-clock time. Return structured `LimitExceeded` errors.
+Add `ExecutionLimits` + `ExecutionCounters` to state. Check limits at command dispatch, function calls, loop iterations, output appends, and wall-clock time. Return structured `LimitExceeded` errors. Additional limits to add: `maxSourceDepth` (default 100 — prevents `source` nesting stack overflow), `maxFileDescriptors` (default 1024 — prevents FD exhaustion from `exec 3<file` loops).
 
 ### M3.2 — Network Access Control ✅
 
-Implement `NetworkPolicy`. Sandboxed `curl` validates URL against allow-list before HTTP request. Method restrictions, redirect following, response size limits.
+Implement `NetworkPolicy`. Sandboxed `curl` validates URL against allow-list before HTTP request. Method restrictions, redirect following, response size limits. Additional security features to add: **DNS rebinding / SSRF protection** — `denyPrivateRanges: bool` option that DNS-resolves the URL hostname *before* the HTTP request and rejects private IP ranges (10.x, 172.16.x, 192.168.x, 127.x, ::1, link-local); pin resolved IP to the connection to prevent TOCTOU attacks. **Request transforms / credential brokering** — per-allowed-URL `transform` callback that can inject headers (auth tokens) at the fetch boundary so secrets never enter the sandbox environment. This enables secure API access without exposing credentials to scripts.
 
 ---
 
@@ -172,7 +172,7 @@ Tool definitions for OpenAI/Anthropic function calling. TypeScript wrapper for V
 
 ### M6.1 — Indexed and Associative Arrays
 
-Extend `Variable` to hold array data (`Option<Box<ArrayData>>` with `Indexed(BTreeMap<usize, String>)` and `Associative(HashMap<String, String>)` variants). Handle `AssignmentValue::Array` and `ArrayElementName` from brush-parser (currently dropped). Implement `${arr[@]}`, `${arr[*]}`, `${#arr[@]}`, `${!arr[@]}`, `${arr[@]:offset:length}`, array `+=()` append, and `unset arr[n]` (sparse — no reindexing).
+Extend `Variable` to hold array data (`Option<Box<ArrayData>>` with `Indexed(BTreeMap<usize, String>)` and `Associative(HashMap<String, String>)` variants). Handle `AssignmentValue::Array` and `ArrayElementName` from brush-parser (currently dropped). Implement `${arr[@]}`, `${arr[*]}`, `${#arr[@]}`, `${!arr[@]}`, `${arr[@]:offset:length}`, array `+=()` append, and `unset arr[n]` (sparse — no reindexing). Add `maxArrayElements` execution limit (default 100,000) to prevent OOM from unbounded array growth — enforce on every array insert/append.
 
 **Why first in M6**: Arrays are the critical path — `$PIPESTATUS`, `BASH_REMATCH`, `mapfile`, `read -a`, and `declare -A` all depend on this.
 
@@ -182,7 +182,7 @@ Expose the `exit_codes` vector already collected in `execute_pipeline` as the `$
 
 ### M6.3 — Shopt Options
 
-Add `ShoptOpts` struct to interpreter state and `shopt` builtin. Implement behavioral wiring for: `nullglob` (non-matching globs expand to nothing), `globstar` (`**` matches recursively), `dotglob` (globs include dot-files), `extglob` (extended patterns `+(...)` etc. — parser already enables this), `failglob` (error on no match), `nocaseglob` (case-insensitive glob), `nocasematch` (case-insensitive `[[ =~ ]]` and `case`), `lastpipe` (last pipeline command runs in current shell), `expand_aliases` (enable alias expansion).
+Add `ShoptOpts` struct to interpreter state and `shopt` builtin. Implement behavioral wiring for: `nullglob` (non-matching globs expand to nothing), `globstar` (`**` matches recursively), `dotglob` (globs include dot-files), `extglob` (extended patterns `+(...)` etc. — parser already enables this), `failglob` (error on no match), `nocaseglob` (case-insensitive glob), `nocasematch` (case-insensitive `[[ =~ ]]` and `case`), `lastpipe` (last pipeline command runs in current shell — requires changing pipeline execution to avoid subshell for the final command when enabled), `expand_aliases` (enable alias expansion), `xpg_echo` (make `echo` interpret backslash escapes by default, like `echo -e`), `globskipdots` (don't match `.` and `..` with glob patterns — bash 5.2+ default).
 
 ### M6.4 — Additional Builtins
 
@@ -191,9 +191,13 @@ Implement missing builtins that AI-generated scripts commonly use:
 - `getopts optstring name [args]` — argument parsing with `OPTIND`/`OPTARG`/`OPTERR` state.
 - `mapfile`/`readarray` — populate indexed array from stdin. Support `-t` (strip newline), `-d` (delimiter), `-n` (max lines), `-s` (skip lines), `-C` (callback).
 - `type [-t|-a|-p] name` — identify whether name is builtin, function, command, or alias. Common pattern: `if type jq &>/dev/null; then ...`.
+- `command [-pVv] name` — run command bypassing functions, or describe a command. `command -v git` is the most common tool-detection pattern in bash. `-p` uses default PATH.
+- `builtin name [args]` — force execution of a builtin, bypassing same-named functions.
+- `pushd [-n] [dir | +N | -N]` / `popd [-n] [+N | -N]` / `dirs [-clpv] [+N | -N]` — full directory stack. ~260 lines in just-bash. Very common in build scripts and CI.
 - `alias name=value` / `unalias name` — define and remove aliases. Requires pre-expansion token rewriting before command execution. Lower priority than other builtins due to architectural complexity with brush-parser.
 - `select var in list; do ... done` — menu selection loop. Low priority (interactive feature, rarely used by AI agents), but completes the control-flow set.
 - `hash [-r] [name]` — command path caching (can be a no-op that tracks a hash table for compatibility).
+- `wait [pid|jobspec]` — no-op stub that returns 0 immediately. Prevents scripts from failing when they include `wait`.
 
 ### M6.5 — Full `read` Flags
 
@@ -217,6 +221,11 @@ Several special variables are missing or broken:
 - **`FUNCNAME`** array — stack of function names during call chain. Push on function entry, pop on return. (Requires M6.1 arrays.)
 - **`BASH_SOURCE`** array — stack of source files. Track which file/string each function was defined in.
 - **`BASH_LINENO`** array — stack of line numbers where each function call originated.
+- **`$PPID`** — virtual parent PID. Return configurable value (default 1). Referenced in process-aware scripts.
+- **`$UID` / `$EUID`** — virtual user ID and effective user ID. `if [ "$EUID" -ne 0 ]; then` is an extremely common pattern. Return configurable value (default 1000).
+- **`$BASHPID`** — current PID. Unlike `$$`, changes in subshells. Track separately via subshell nesting counter.
+- **`SHELLOPTS` / `BASHOPTS`** — readonly colon-separated lists of currently enabled `set` and `shopt` options respectively. Dynamically maintained — scripts check `[[ $SHELLOPTS =~ errexit ]]`. Must update on every `set -o`/`shopt -s` change.
+- **`$MACHTYPE` / `$HOSTTYPE`** — machine description strings. Can be set to static values (e.g., `x86_64-pc-linux-gnu`, `x86_64`).
 
 ### M6.9 — Shell Option Enforcement
 
@@ -226,6 +235,10 @@ Several `set`/`shopt` options are parsed but produce no effect:
 - **`set -v` (verbose)** — print each source line to stderr before parsing/expansion.
 - **`set -n` (noexec)** — parse but do not execute commands. Useful for syntax checking.
 - **`set -o noclobber`** — prevent `>` from overwriting existing files. Require `>|` to force overwrite.
+- **`set -a` (allexport)** — auto-export every variable on assignment. Must be checked at every assignment site: plain assignment, `declare`, `local`, `for` loop variable, `read`. AI scripts commonly use `set -a; source .env; set +a`.
+- **`set -f` (noglob)** — disable filename expansion (globbing). Without this, scripts that manipulate literal glob characters break silently.
+- **`set -o posix`** — POSIX mode. Changes special builtin error semantics (fatal on error), prevents function overrides of special builtins, and affects prefix assignment persistence. Implement as a stub initially; wire in `PosixFatalError` behavior for special builtins (`break`, `continue`, `return`, `export`, `unset`, `eval`, `set`, `shift`, `source`, `.`).
+- **`set -o vi` / `set -o emacs`** — accept as no-ops (tracked in options) to avoid errors. Not meaningful in a sandbox.
 
 ### M6.10 — Advanced Redirections
 
@@ -244,8 +257,12 @@ Implement `${var@operator}` syntax for variable transformations:
 
 - **`${var@Q}`** — quote value for shell reuse (wraps in `$'...'` for control characters).
 - **`${var@E}`** — expand backslash escape sequences in value.
+- **`${var@P}`** — expand prompt escape sequences (`\u`, `\h`, `\w`, `\d`, `\t`, `\[`, `\]`, ANSI colors). Used by PS1/PS4 expansion.
 - **`${var@A}`** — produce an assignment statement that recreates the variable (e.g., `declare -- var="value"`).
 - **`${var@a}`** — return the variable's attribute flags (e.g., `x` for exported, `r` for readonly).
+- **`${!ref}` (indirect expansion)** — dereference variable whose name is stored in `ref`. Handle `${!ref}` pointing to arrays, slicing via indirection. Different from namerefs (M6.6) — this is a read-time expansion. Widely used for dynamic variable access.
+- **`${!prefix*}` / `${!prefix@}` (variable name expansion)** — expand to all variable names matching the given prefix. Used for iterating config variables (e.g., `${!DOCKER_*}`).
+- **`printf -v varname`** — assign formatted output to a variable instead of stdout. Very common pattern to avoid subshell overhead: `printf -v hex '%02x' 255`.
 
 Also add `printf` format specifiers `%b` (interpret backslash escapes) and `%q` (shell-quote output).
 
@@ -264,11 +281,14 @@ Add a `--help` handler to the command dispatch layer (or per-command). When any 
 Implement commonly-used utility commands that AI agents encounter:
 
 - `timeout [-k kill_delay] [-s signal] duration command` — run command with time limit, exit 124 on timeout.
-- `time [-p] command` — execute command, report wall-clock time to stderr. `-p` for POSIX format.
+- `time [-p] pipeline` — shell keyword (not just a command) that wraps an entire pipeline with timing; report wall-clock, user, and system time to stderr. `-p` for POSIX format. Must handle `time cmd1 | cmd2` as a single timed unit.
 - `readlink [-f|-e|-m] path` — resolve symlinks. `-f` canonicalize (all components must exist).
 - `rmdir [-p] dir` — remove empty directories. `-p` removes parent directories too.
 - `du [-s|-h|-a|-d depth] [path]` — estimate file space usage by walking VFS tree.
 - `sha1sum [files]` — SHA-1 hash (add `sha1` crate alongside existing `sha2`).
+- `fgrep` / `egrep` — register as aliases for `grep -F` / `grep -E`. Deprecated but widely used in existing scripts.
+- `sh [-c command]` — alias for `bash`. Run a subshell. `sh -c "..."` is very common.
+- `bc [-l]` — arbitrary precision calculator. Basic arithmetic, comparison, and `scale` support. Covers `echo "1.5 * 3" | bc` pattern.
 
 ### M7.3 — Compression and Archiving
 
@@ -278,6 +298,8 @@ Implement archive and compression commands for AI agents working with bundled da
 - `gunzip [files]` — decompress (alias for `gzip -d`).
 - `zcat [files]` — decompress to stdout (alias for `gzip -dc`).
 - `tar [-c|-x|-t|-f archive] [files]` — create, extract, list archives. Support gzip compression (`-z`). Via `tar` crate + `flate2`.
+
+**Prerequisite audit**: Before implementing, verify that binary data flows as `Vec<u8>` through the entire pipeline path (command stdout → pipe → next command stdin). If any intermediate step converts to `String`, binary data (gzip output, tar archives) will be corrupted. just-bash uses latin1 strings internally for byte transparency — Rust's `Vec<u8>` is naturally correct, but audit the pipe/redirect/capture paths.
 
 ### M7.4 — Binary and File Inspection
 
@@ -294,7 +316,7 @@ Commands for inspecting file contents and types:
 
 ### M7.6 — Shell Utility Commands
 
-- `help [command]` — display help for builtins and commands. Can share metadata from M7.1's `--help` infrastructure.
+- `help [command]` — display help for builtins and commands. Comprehensive built-in help database (just-bash has 650+ lines of help text). Can share metadata from M7.1's `--help` infrastructure.
 - `clear` — output ANSI clear-screen escape sequence.
 - `history` — display command history. Integrates with existing REPL history tracking.
 
@@ -304,7 +326,7 @@ Currently `RustBashBuilder::build()` creates an empty VFS with only the cwd. `wh
 
 - **Default filesystem layout**: On build, create `/bin`, `/usr/bin`, `/tmp`, `/home/user` (or `$HOME`), and `/dev` (with `/dev/null`, `/dev/zero`). Match the Unix-like layout AI agents expect.
 - **Command stubs**: When commands are registered, write stub files to `/bin/<cmd>` (e.g., `#!/bin/bash\n# built-in: ls`) so they appear in `ls /bin` and VFS existence checks.
-- **Default environment variables**: Set sensible defaults for `PATH` (`/usr/bin:/bin`), `HOME`, `USER`, `HOSTNAME`, `OSTYPE`, `SHELL`, `IFS`, `PWD`, `OLDPWD` unless the caller overrides them.
+- **Default environment variables**: Set sensible defaults for `PATH` (`/usr/bin:/bin`), `HOME`, `USER`, `HOSTNAME`, `OSTYPE` (`linux-gnu`), `MACHTYPE` (`x86_64-pc-linux-gnu`), `HOSTTYPE` (`x86_64`), `SHELL` (`/bin/bash`), `BASH` (`/bin/bash`), `BASH_VERSION`, `IFS`, `PWD`, `OLDPWD`, `TERM` (`xterm-256color`) unless the caller overrides them.
 - **Fix `which` command**: Replace hardcoded `REGISTERED_COMMANDS`/`SHELL_BUILTINS` list lookups with actual PATH-based resolution — iterate PATH directories, check VFS file existence, return the real resolved path. Fall back to checking builtins and functions.
 
 ### M7.8 — Command Fidelity Infrastructure
@@ -367,13 +389,31 @@ Expose brush-parser AST via a public `parse()` API. Build a `TransformPipeline` 
 
 Add a high-level `Sandbox` API compatible with the Vercel Sandbox interface: `Sandbox::create(opts)`, `sandbox.run_command(cmd)`, `sandbox.write_files(files)`, `sandbox.read_file(path)`, `sandbox.mkdir(path)`. Wraps `RustBash` with convenience methods and default OverlayFs configuration. Enables drop-in replacement for `@vercel/sandbox` in Rust-based AI agent hosts.
 
+Additional API features from just-bash:
+- **Command filtering** — `commands: Vec<CommandName>` option restricts which commands are available per-session. Critical for least-privilege sandboxing (e.g., prevent `curl`, `rm -rf /`).
+- **Per-exec env/cwd isolation** — `exec()` accepts `env`, `cwd`, `replace_env` overrides that are restored after execution. Useful for multi-tenant scenarios.
+- **Logger interface** — `BashLogger` trait with `info`/`debug` methods for execution tracing (xtrace, command dispatch, etc.). Essential for debugging in production.
+- **Virtual process info** — configurable `ProcessInfo { pid, ppid, uid, gid }` in options. Powers `$$`, `$PPID`, `$UID`, `$EUID`. Supports multi-sandbox scenarios with unique PIDs.
+- **Safe argument passing** — `ExecOptions.args: Vec<String>` for additional argv entries that bypass shell parsing entirely (no escaping/splitting/globbing). Like `child_process.spawn(cmd, args)`. Safe way to pass filenames with special characters.
+- **Script normalization** — strip leading whitespace from template literals while preserving heredoc content. `raw_script: bool` option to disable.
+
 ### M9.5 — Virtual /proc Filesystem
 
-Add virtual `/proc/self/status`, `/proc/version`, and `/proc/self/fd/` entries to the VFS. Simulated values only — virtual PID/PPID/UID/GID, synthetic kernel version string. Prevents scripts that probe `/proc` from failing. Mount via `MountableFs` at `/proc`.
+Add virtual `/proc/self/status`, `/proc/version`, `/proc/self/fd/`, and `/proc/self/environ` entries to the VFS. Simulated values only — virtual PID/PPID/UID/GID (from M9.4 ProcessInfo), synthetic kernel version string. Prevents scripts that probe `/proc` from failing. Mount via `MountableFs` at `/proc`.
 
 ### M9.6 — Defense-in-Depth Security Hardening
 
-Formalize security guarantees beyond VFS + NetworkPolicy + ExecutionLimits. Add: fuzz testing suite for parser and interpreter (property-based tests via `proptest` or `arbitrary` crates), resource accounting per-exec (peak memory, total I/O bytes), and documentation of the threat model. Audit all command implementations for potential panics or unbounded allocations.
+Formalize security guarantees beyond VFS + NetworkPolicy + ExecutionLimits. Add: resource accounting per-exec (peak memory, total I/O bytes), documentation of the threat model, and audit all command implementations for potential panics or unbounded allocations. **ReDoS audit**: verify that all user-provided regex paths (`=~`, `grep`, `sed`) use Rust's `regex` crate (which is RE2-based, linear-time by default) and that no `fancy-regex` or PCRE paths are exposed to untrusted input. **Exported env isolation**: audit that non-exported shell variables do not leak to child commands — only exported variables should be visible.
+
+### M9.7 — Fuzz Testing Suite
+
+Dedicated fuzz testing infrastructure for the interpreter and all command implementations. This is critical for a sandbox that runs untrusted code — fuzzing finds crashes, panics, infinite loops, and resource exhaustion that unit tests miss.
+
+- **Parser/interpreter fuzzing** — use `cargo-fuzz` (libfuzzer) to generate random bash scripts and feed them to the interpreter. Targets: parse-only (find parser panics), parse-and-execute (find interpreter panics), expansion (find expansion edge cases). Seed corpus from existing test scripts and real-world bash snippets.
+- **Command fuzzing** — fuzz individual commands with random argument combinations and random stdin. Prioritize commands that do text processing (`sed`, `awk`, `grep`, `jq`) and file manipulation (`tar`, `gzip`).
+- **Property-based testing** — use `proptest` or `arbitrary` crates for structured fuzzing with invariant checks: (a) no command should panic regardless of input, (b) execution limits should never be exceeded without returning `LimitExceeded`, (c) VFS operations should never corrupt internal state, (d) every command should produce valid UTF-8 or controlled binary output.
+- **Differential fuzzing** — generate random scripts, run in both rust-bash and real bash, compare stdout/stderr/exit code. Flag divergences for investigation. Builds on M7.8 comparison infrastructure.
+- **Continuous integration** — configure fuzz targets to run in CI with a time budget (e.g., 5 minutes per target per run). Store crash artifacts in `fuzz/artifacts/` for regression testing.
 
 ---
 
@@ -417,11 +457,12 @@ M7.7 (default fs layout) ─ (should happen early — affects M7.2+ command test
 M8.1–M8.3 ─────────────── (depend on M1 command infrastructure)
 M8.4–M8.5 ─────────────── (require design exploration — feature-gated)
 M9.1–M9.6 ─────────────── (depend on M1–M5 for full platform)
+M9.7 (fuzz testing) ───── (depends on M7.8 comparison infra; can start early with interpreter-only targets)
 ```
 
 **Recommended order (M1–M5)**: M1.1 → M1.2 → M1.3 → M1.4 → M1.5 → M1.6 → M1.7 → M1.8/M1.9/M1.10/M1.11 (parallel) → M1.12 → M1.13 → M1.14 → M1.15 → M3.1 → M2.1 → M2.2 → M2.3 → M2.4 → M4.1 → M5.1 → M5.2 → M5.3
 
-**Recommended order (M6–M9)**: M6.1 (arrays — critical path) → M6.8 ($LINENO/$SECONDS — quick wins) → M6.2/M6.3 (parallel) → M6.4/M6.5/M6.6 (parallel, unlocked by arrays) → M6.9/M6.10/M6.11 (parallel) → M6.7 → M7.7 (default fs layout — do before other M7 work) → M7.1 → M7.2/M7.3/M7.4/M7.5/M7.6/M7.8 (parallel) → M8.1 → M8.2 → M8.3 → M8.4/M8.5 (design exploration first) → M9.1 → M9.2 → M9.3 → M9.4 → M9.5 → M9.6
+**Recommended order (M6–M9)**: M6.1 (arrays — critical path) → M6.8 ($LINENO/$SECONDS — quick wins) → M6.2/M6.3 (parallel) → M6.4/M6.5/M6.6 (parallel, unlocked by arrays) → M6.9/M6.10/M6.11 (parallel) → M6.7 → M7.7 (default fs layout — do before other M7 work) → M7.1 → M7.2/M7.3/M7.4/M7.5/M7.6/M7.8 (parallel) → M8.1 → M8.2 → M8.3 → M8.4/M8.5 (design exploration first) → M9.1 → M9.2 → M9.3 → M9.4 → M9.5 → M9.6 → M9.7
 
 ---
 
@@ -450,3 +491,7 @@ M9.1–M9.6 ─────────────── (depend on M1–M5 for
 | Nameref infinite loops | Low | Medium | `declare -n ref=ref` or circular chains. Cap resolution depth at 10. | Open |
 | Embedded runtime binary size | Medium | High | Python/JS runtimes (M8.4/M8.5) could bloat binary significantly. Feature-gate behind cargo features. | Open |
 | Process substitution temp file leaks | Low | Low | Temp VFS files from `<(cmd)` could leak on panic. Use cleanup-on-drop guard. | Open |
+| Binary data corruption in pipes | Medium | High | If any pipe/redirect/capture path converts `Vec<u8>` to `String`, binary data (gzip, tar) will be silently corrupted. Audit pipeline data flow before M7.3. | Open |
+| `set -a` assignment site coverage | Medium | Medium | Allexport must be wired into every assignment site (plain, declare, local, for, read). Missing one causes silent env leaks. Track with exhaustive tests. | Open |
+| Indirect expansion complexity | Medium | Medium | `${!ref}` when `ref` points to array elements, namerefs, or chained indirection — interactions are subtle. Budget extra testing time. | Open |
+| SSRF TOCTOU in DNS resolution | Low | High | DNS rebinding: hostname must be resolved and IP pinned before the HTTP connection to prevent time-of-check/time-of-use attacks. Use custom resolver + connect-time IP pinning. | Open |
