@@ -138,7 +138,7 @@ Composite backend with path-based delegation. Longest-prefix mount matching.
 
 ## Milestone 5: Integration
 
-### M5.1 — CLI Binary
+### M5.1 — CLI Binary ✅
 
 Static binary. `--files`, `--cwd`, `--env` flags. Interactive REPL. `--json` output mode.
 

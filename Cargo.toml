@@ -2,17 +2,30 @@
 name = "rust-bash"
 version = "0.1.0"
 edition = "2024"
+description = "A sandboxed bash interpreter with a virtual filesystem"
+license = "MIT"
+keywords = ["bash", "shell", "interpreter", "sandbox", "virtual-filesystem"]
+
+[features]
+default = ["cli"]
+cli = ["dep:clap", "dep:rustyline"]
+
+[[bin]]
+name = "rust-bash"
+required-features = ["cli"]
 
 [dependencies]
 base64 = "0.22"
 brush-parser = "0.3.0"
 chrono = "0.4"
+clap = { version = "4.6.0", features = ["derive"], optional = true }
 jaq-core = "3.0.0-gamma"
 jaq-json = "2.0.0-gamma"
 jaq-std = "3.0.0-gamma"
 md-5 = "0.10"
 parking_lot = "0.12.5"
 regex = "1.12.3"
+rustyline = { version = "17.0.2", optional = true }
 serde_json = "1"
 sha2 = "0.10"
 similar = "2.7.0"
@@ -20,6 +33,10 @@ ureq = "3"
 url = "2.5.8"
 
 [dev-dependencies]
+assert_cmd = "2.2.0"
 insta = "1.46.3"
+predicates = "3.1.4"
+# rustyline is also in [dependencies] as optional; kept here so examples/shell.rs
+# compiles even with --no-default-features during development.
 rustyline = "17.0.2"
 tempfile = "3.27.0"

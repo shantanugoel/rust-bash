@@ -2,9 +2,9 @@
 
 A sandboxed bash interpreter built in Rust. Execute bash scripts safely with a virtual filesystem — no containers, no VMs, no host access.
 
-> ⚠️ **Status: Pre-alpha / Milestones 1–4 Complete** — Core interpreter, text processing,
-> execution safety, and filesystem backends are implemented. Integration targets (C FFI, WASM,
-> standalone CLI binary) are planned but not yet started.
+> ⚠️ **Status: Pre-alpha / Milestones 1–4 + M5.1 Complete** — Core interpreter, text processing,
+> execution safety, filesystem backends, and CLI binary are implemented.
+> Other integration targets (C FFI, WASM) are planned but not yet started.
 
 ## Highlights
 
@@ -15,6 +15,24 @@ A sandboxed bash interpreter built in Rust. Execute bash scripts safely with a v
 - **Network policy** — sandboxed `curl` with URL allow-lists, method restrictions, redirect and response-size limits.
 - **Multiple filesystem backends** — InMemoryFs (default), OverlayFs (copy-on-write), ReadWriteFs (passthrough), MountableFs (composite).
 - **Embeddable** — use as a Rust crate with a builder API. Custom commands via the `VirtualCommand` trait.
+- **CLI binary** — standalone `rust-bash` command with `-c`, `--files`, `--env`, `--cwd`, `--json` flags and an interactive REPL.
+
+## Installation
+
+### Build from source
+
+```bash
+git clone https://github.com/shantanugoel/rust-bash.git
+cd rust-bash
+cargo build --release
+# Binary is at target/release/rust-bash
+```
+
+### Install via Cargo
+
+```bash
+cargo install --path .
+```
 
 ## Quick Start
 
@@ -48,7 +66,7 @@ assert_eq!(result.exit_code, 0);
 
 ### Interactive REPL (example)
 
-An interactive shell is provided as a runnable example:
+An interactive shell is also available as a minimal library embedding example:
 
 ```bash
 cargo run --example shell
@@ -56,6 +74,49 @@ cargo run --example shell
 # Seed environment variables and files from a host directory
 cargo run --example shell -- --env KEY=VAL --files ./seed-dir
 ```
+
+### CLI Binary
+
+```bash
+# Execute a command
+rust-bash -c 'echo hello | wc -c'
+
+# Seed files from host disk into the virtual filesystem
+rust-bash --files /path/to/data.txt:/data.txt -c 'cat /data.txt'
+rust-bash --files /path/to/dir -c 'ls /'
+
+# Set environment variables
+rust-bash --env USER=agent --env HOME=/home/agent -c 'echo $USER'
+
+# Set working directory
+rust-bash --cwd /app -c 'pwd'
+
+# JSON output for machine consumption
+rust-bash --json -c 'echo hello'
+# {"stdout":"hello\n","stderr":"","exit_code":0}
+
+# Execute a script file with positional arguments
+rust-bash script.sh arg1 arg2
+
+# Read commands from stdin
+echo 'echo hello' | rust-bash
+
+# Interactive REPL (starts when no command/script/stdin is given)
+rust-bash
+```
+
+### Interactive REPL
+
+When launched without `-c`, a script file, or piped stdin, `rust-bash` starts an
+interactive REPL with readline support:
+
+- **Colored prompt** — `rust-bash:{cwd}$ ` reflecting the current directory, green (exit 0) or red (non-zero last exit)
+- **Tab completion** — completes built-in command names
+- **Multi-line input** — incomplete constructs (e.g., `if true; then`) wait for more input
+- **History** — persists across sessions in `~/.rust_bash_history`
+- **Ctrl-C** — cancels the current input line
+- **Ctrl-D** — exits the REPL with the last command's exit code
+- **`exit [N]`** — exits with code N (default 0)
 
 ## Use Cases
 
@@ -252,12 +313,13 @@ assert_eq!(result.stdout, "got 2 args\n");
 
 ## Roadmap
 
-The following are planned but not yet implemented (Milestone 5):
+The following milestones track the project's progress:
 
-- Standalone CLI binary with `--files`, `--cwd`, `--env`, `--json` flags
-- C FFI for embedding from Python/Go/Ruby
-- WASM target for browser execution
-- AI SDK integration (OpenAI/Anthropic tool definitions)
+- ✅ **Milestone 1–4**: Core interpreter, text processing, execution safety, filesystem backends
+- ✅ **Milestone 5.1**: Standalone CLI binary — interactive REPL, `-c` commands, script files, stdin piping, `--json` output
+- Planned: C FFI for embedding from Python/Go/Ruby (M5.2)
+- Planned: WASM target for browser execution (M5.3)
+- Planned: AI SDK integration — OpenAI/Anthropic tool definitions (M5.4)
 
 ## License
 

@@ -54,18 +54,19 @@ pub struct ExecResult {
 }
 ```
 
-## CLI Binary **(planned)**
+## CLI Binary
 
 A standalone binary for command-line usage (Milestone M5.1).
-
-> **Note**: An interactive REPL is already available as a runnable example:
-> `cargo run --example shell` — useful for manual exploration during development.
-> It supports `--env KEY=VAL` and `--files ./dir` to seed the sandbox from the host.
-> This is a development tool, not the production CLI binary described below.
 
 ```bash
 # Execute a command
 rust-bash -c 'echo hello | wc -c'
+
+# Execute a script file with positional arguments
+rust-bash script.sh arg1 arg2
+
+# Read commands from stdin
+echo 'echo hello' | rust-bash
 
 # Seed files from disk
 rust-bash --files /data:/app/data.txt --files /config:/app/config.json -c 'cat /app/data.txt'
@@ -73,18 +74,32 @@ rust-bash --files /data:/app/data.txt --files /config:/app/config.json -c 'cat /
 # Set environment
 rust-bash --env USER=agent --env HOME=/home/agent -c 'echo $USER'
 
-# Interactive REPL
-rust-bash
-
 # JSON output for machine consumption
 rust-bash --json -c 'echo hello'
 # {"stdout":"hello\n","stderr":"","exit_code":0}
 
-# Read commands from stdin
-echo 'echo hello' | rust-bash
+# Interactive REPL (starts when no command/script/stdin is given)
+rust-bash
 ```
 
-The CLI binary compiles as a single static binary with zero runtime dependencies.
+### Interactive REPL
+
+When launched without `-c`, a script file, or piped stdin, `rust-bash` starts an
+interactive REPL with readline support:
+
+- **Colored prompt**: `rust-bash:{cwd}$ ` — green after exit 0, red after non-zero
+- **Tab completion**: completes built-in command names (first token only)
+- **Multi-line input**: incomplete constructs wait for continuation input
+- **History**: loaded from / saved to `~/.rust_bash_history`
+- **Ctrl-C**: cancels the current input line
+- **Ctrl-D**: exits the REPL with the last command's exit code
+- **`exit [N]`**: exits with code N (default 0)
+- **`--json`**: rejected in REPL mode (exits with code 2)
+
+> An interactive REPL is also available as a runnable example showing library-level embedding:
+> `cargo run --example shell`
+
+The CLI binary compiles as a single binary with no additional runtime dependencies beyond libc.
 
 ## C FFI **(planned)**
 

@@ -1,8 +1,7 @@
-//! Interactive REPL that dogfoods the rust-bash library.
+//! Minimal interactive REPL demonstrating library-level embedding of rust-bash.
 //!
-//! Usage:
-//!   cargo run --example shell
-//!   cargo run --example shell -- --env KEY=VAL --files ./seed-dir
+//! For the production CLI binary, run: `cargo run` or `rust-bash` (after install).
+//! This example shows how to build a custom REPL using the RustBash API directly.
 
 use rust_bash::{RustBash, RustBashBuilder};
 use rustyline::completion::Completer;

@@ -22,7 +22,13 @@ impl RustBash {
         self.state.counters.reset();
         self.state.should_exit = false;
 
-        let program = interpreter::parse(input)?;
+        let program = match interpreter::parse(input) {
+            Ok(p) => p,
+            Err(e) => {
+                self.state.last_exit_code = 2;
+                return Err(e);
+            }
+        };
         let mut result = interpreter::execute_program(&program, &mut self.state)?;
 
         // Fire EXIT trap at end of exec()
@@ -56,6 +62,16 @@ impl RustBash {
     /// Returns the names of all registered commands (builtins + custom).
     pub fn command_names(&self) -> Vec<&str> {
         self.state.commands.keys().map(|k| k.as_str()).collect()
+    }
+
+    /// Sets the shell name (`$0`).
+    pub fn set_shell_name(&mut self, name: String) {
+        self.state.shell_name = name;
+    }
+
+    /// Sets the positional parameters (`$1`, `$2`, ...).
+    pub fn set_positional_params(&mut self, params: Vec<String>) {
+        self.state.positional_params = params;
     }
 
     /// Check whether `input` looks like a complete shell statement.

@@ -6,6 +6,7 @@ Task-oriented guides for common use cases. Each recipe is a self-contained docum
 
 | Recipe | Description |
 |--------|-------------|
+| [CLI Usage](cli-usage.md) | Run commands, seed files, and use the interactive REPL from the command line |
 | [Getting Started](getting-started.md) | Embed rust-bash in a Rust application, execute scripts, inspect results |
 | [Custom Commands](custom-commands.md) | Implement and register domain-specific commands via the `VirtualCommand` trait |
 | [Filesystem Backends](filesystem-backends.md) | Choose between InMemoryFs, OverlayFs, ReadWriteFs, and MountableFs |
