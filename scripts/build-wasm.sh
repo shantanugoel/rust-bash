@@ -35,7 +35,7 @@ echo "Running wasm-bindgen..."
 wasm-bindgen \
     "${PROJECT_DIR}/target/wasm32-unknown-unknown/release/rust_bash.wasm" \
     --out-dir "$OUT_DIR" \
-    --target bundler
+    --target web
 
 # Optional: wasm-opt for size optimization
 if command -v wasm-opt &>/dev/null; then
@@ -43,9 +43,16 @@ if command -v wasm-opt &>/dev/null; then
     wasm-opt "$OUT_DIR/rust_bash_bg.wasm" -Oz -o "$OUT_DIR/rust_bash_bg.wasm"
 fi
 
+# Copy WASM binary to website public/ for dev mode serving
+WEBSITE_PUBLIC="${PROJECT_DIR}/examples/website/public"
+if [ -d "$WEBSITE_PUBLIC" ]; then
+    cp "$OUT_DIR/rust_bash_bg.wasm" "$WEBSITE_PUBLIC/rust_bash_bg.wasm"
+    echo "Copied WASM binary to website public/"
+fi
+
 # Report size
 WASM_SIZE=$(wc -c < "$OUT_DIR/rust_bash_bg.wasm")
 WASM_SIZE_KB=$((WASM_SIZE / 1024))
 echo "=== WASM build complete ==="
 echo "Output: $OUT_DIR/"
-echo "Binary size: ${WASM_SIZE_KB} KB ($(gzip -c "$OUT_DIR/rust_bash_bg.wasm" | wc -c | xargs -I{} echo "scale=0; {} / 1024" | bc) KB gzipped)"
+echo "Binary size: ${WASM_SIZE_KB} KB"

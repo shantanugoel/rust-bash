@@ -12,7 +12,7 @@
  */
 
 import OpenAI from 'openai';
-import type { MockBash, ExecResult } from './wasm-mock.js';
+import type { BashInstance, ExecResult } from './bash-loader.js';
 
 export type AgentEvent =
   | { type: 'text'; content: string }
@@ -65,7 +65,7 @@ const MAX_STDERR = 2000;
 
 export async function* runAgentLoop(
   userMessage: string,
-  bash: MockBash,
+  bash: BashInstance,
 ): AsyncGenerator<AgentEvent> {
   const messages: OpenAI.ChatCompletionMessageParam[] = [
     { role: 'system', content: SYSTEM_INSTRUCTIONS },

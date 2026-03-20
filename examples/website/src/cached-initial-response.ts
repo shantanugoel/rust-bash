@@ -7,7 +7,7 @@
  */
 
 import type { AgentEvent } from './agent.js';
-import type { MockBash } from './wasm-mock.js';
+import type { BashInstance } from './bash-loader.js';
 
 export const CACHED_INITIAL_RESPONSE: AgentEvent[] = [
   { type: 'text', content: 'Close, but no. You\'re inside ' },
@@ -65,7 +65,7 @@ function sleep(ms: number): Promise<void> {
  */
 export async function* replayCache(
   events: AgentEvent[],
-  bash?: MockBash,
+  bash?: BashInstance,
 ): AsyncGenerator<AgentEvent & { interrupt?: () => void }> {
   let interrupted = false;
   const onInterrupt = () => {

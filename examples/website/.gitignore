@@ -3,3 +3,5 @@ dist/
 *.tsbuildinfo
 .wrangler/
 .dev.vars
+test-results/
+public/rust_bash_bg.wasm

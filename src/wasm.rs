@@ -12,6 +12,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::api::{RustBash, RustBashBuilder};
 use crate::commands::{CommandContext, CommandResult, VirtualCommand};
+use crate::error::RustBashError;
 use crate::interpreter::ExecutionLimits;
 use crate::vfs::{NodeType, VirtualFs};
 
@@ -104,13 +105,29 @@ impl WasmBash {
 
         let result = (|| -> Result<JsValue, JsError> {
             if !options.is_undefined() && !options.is_null() {
+                // Check if we should replace the entire environment
+                let replace_env = Reflect::get(&options, &"replaceEnv".into())
+                    .ok()
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
                 // Apply per-exec env overrides
                 if let Ok(env_val) = Reflect::get(&options, &"env".into()) {
                     if !env_val.is_undefined() && !env_val.is_null() {
                         let env = parse_string_record(&env_val)?;
+
+                        if replace_env {
+                            // Save all existing env vars and clear them
+                            for (key, var) in self.inner.state.env.drain() {
+                                overwritten_env.push((key, Some(var)));
+                            }
+                        }
+
                         for (key, value) in env {
-                            let old = self.inner.state.env.get(&key).cloned();
-                            overwritten_env.push((key.clone(), old));
+                            if !replace_env {
+                                let old = self.inner.state.env.get(&key).cloned();
+                                overwritten_env.push((key.clone(), old));
+                            }
                             self.inner.state.env.insert(
                                 key,
                                 crate::interpreter::Variable {
@@ -239,6 +256,15 @@ impl WasmBash {
     ///
     /// The callback receives `(args: string[], ctx: object)` and must return
     /// `{ stdout: string, stderr: string, exitCode: number }` synchronously.
+    ///
+    /// The `ctx` object provides:
+    /// - `cwd: string` — current working directory
+    /// - `stdin: string` — piped input from the previous pipeline stage
+    /// - `env: Record<string, string>` — environment variables
+    /// - `fs` — virtual filesystem proxy (readFileSync, writeFileSync, …)
+    /// - `exec(command: string) → { stdout, stderr, exitCode }` — execute a
+    ///   sub-command through the shell interpreter.  **Must only be called
+    ///   synchronously** within the callback; do **not** store or defer it.
     pub fn register_command(&mut self, name: &str, callback: Function) -> Result<(), JsError> {
         let fs_proxy = build_fs_proxy(&self.inner.state.fs);
         let cmd = JsBridgeCommand {
@@ -349,8 +375,10 @@ impl VirtualCommand for JsBridgeCommand {
             js_args.push(&JsValue::from_str(arg));
         }
 
-        // Build context object (reuses the pre-built fs proxy)
-        let js_ctx = build_js_command_context(ctx, &self.fs_proxy);
+        // Build context object (reuses the pre-built fs proxy).
+        // `_exec_closure` must stay alive until after `call2` returns so the
+        // JS `exec` function pointer remains valid.
+        let (js_ctx, _exec_closure) = build_js_command_context(ctx, &self.fs_proxy);
 
         // Call the JS callback: callback(args, ctx)
         let js_args_val: JsValue = js_args.into();
@@ -463,7 +491,33 @@ fn exec_result_to_js(result: &crate::interpreter::ExecResult) -> Result<JsValue,
     Ok(obj.into())
 }
 
-fn build_js_command_context(ctx: &CommandContext, fs_proxy: &JsValue) -> JsValue {
+/// Convert a `CommandResult` into a JS object `{ stdout, stderr, exitCode }`.
+fn command_result_to_js(result: &CommandResult) -> JsValue {
+    let obj = Object::new();
+    let _ = Reflect::set(&obj, &"stdout".into(), &JsValue::from_str(&result.stdout));
+    let _ = Reflect::set(&obj, &"stderr".into(), &JsValue::from_str(&result.stderr));
+    let _ = Reflect::set(
+        &obj,
+        &"exitCode".into(),
+        &JsValue::from_f64(f64::from(result.exit_code)),
+    );
+    obj.into()
+}
+
+/// Read two pointer-sized values from a stack address.
+/// Used to decompose a fat reference (&dyn Fn) into data + vtable pointers
+/// while erasing the source lifetime.
+///
+/// # Safety
+/// `src` must point to a valid fat reference (2 × usize bytes).
+unsafe fn read_fat_ref_as_raw(src: *const u8) -> [usize; 2] {
+    unsafe { std::ptr::read(src as *const [usize; 2]) }
+}
+
+fn build_js_command_context(
+    ctx: &CommandContext,
+    fs_proxy: &JsValue,
+) -> (JsValue, Option<Closure<dyn FnMut(String) -> JsValue>>) {
     let obj = Object::new();
 
     // cwd
@@ -482,7 +536,48 @@ fn build_js_command_context(ctx: &CommandContext, fs_proxy: &JsValue) -> JsValue
     // Pre-built fs proxy
     let _ = Reflect::set(&obj, &"fs".into(), fs_proxy);
 
-    obj.into()
+    // exec(command: string) -> { stdout, stderr, exitCode }
+    let exec_closure = ctx.exec.map(|exec_cb| {
+        // SAFETY: wasm32-unknown-unknown is single-threaded and the JS callback
+        // that receives this closure is invoked synchronously within
+        // `JsBridgeCommand::execute`. The `exec_cb` reference points to the
+        // `exec_callback` local created by `dispatch_command` in walker.rs,
+        // which outlives the entire `execute` call. The returned `Closure` is
+        // kept alive by the caller (`_exec_closure`) until after `call2`
+        // returns, so the raw pointer is never dangling when dereferenced.
+        //
+        // INVARIANT: If JS stores `ctx.exec` and calls it after the
+        // synchronous callback returns, this would be UB. The
+        // `register_command` doc specifies that `ctx.exec` must only be
+        // called synchronously within the callback.
+        //
+        // We decompose the fat reference into two usize values (data + vtable)
+        // so the closure captures only 'static data. This is required because
+        // wasm_bindgen::Closure demands 'static.
+        type ExecFn = dyn Fn(&str) -> Result<CommandResult, RustBashError>;
+        // Read the fat reference's raw bytes (data ptr + vtable ptr) through a
+        // helper that takes *const u8, breaking the borrow chain so the
+        // resulting [usize; 2] is 'static. Required because Closure demands 'static.
+        // addr_of! creates a raw pointer without going through the borrow checker.
+        let raw_parts: [usize; 2] =
+            unsafe { read_fat_ref_as_raw(std::ptr::addr_of!(exec_cb) as *const u8) };
+
+        let closure = Closure::wrap(Box::new(move |cmd: String| -> JsValue {
+            let exec_fn: &ExecFn = unsafe { std::mem::transmute::<[usize; 2], &ExecFn>(raw_parts) };
+            match exec_fn(&cmd) {
+                Ok(result) => command_result_to_js(&result),
+                Err(e) => command_result_to_js(&CommandResult {
+                    stderr: e.to_string(),
+                    exit_code: 1,
+                    ..Default::default()
+                }),
+            }
+        }) as Box<dyn FnMut(String) -> JsValue>);
+        let _ = Reflect::set(&obj, &"exec".into(), closure.as_ref());
+        closure
+    });
+
+    (obj.into(), exec_closure)
 }
 
 fn build_fs_proxy(fs: &Arc<dyn VirtualFs>) -> JsValue {

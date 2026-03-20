@@ -995,7 +995,7 @@ fn normalize(path: &Path) -> Result<PathBuf, VfsError> {
     if s.is_empty() {
         return Err(VfsError::InvalidPath("empty path".into()));
     }
-    if !path.is_absolute() {
+    if !super::vfs_path_is_absolute(path) {
         return Err(VfsError::InvalidPath(format!(
             "path must be absolute: {}",
             path.display()

@@ -33,4 +33,5 @@ export type {
   BashToolOptions,
   BashToolHandler,
   ToolProvider,
+  TransformPlugin,
 } from './types.js';

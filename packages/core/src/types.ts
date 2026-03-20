@@ -72,12 +72,16 @@ export interface ExecResult {
 export interface ExecOptions {
   /** Per-exec environment variable overrides (merged with instance env). */
   env?: Record<string, string>;
+  /** If true, replace the entire environment instead of merging. */
+  replaceEnv?: boolean;
   /** Per-exec working directory override. */
   cwd?: string;
   /** Standard input content. */
   stdin?: string;
   /** If true, skip script normalization (leading whitespace stripping). */
   rawScript?: boolean;
+  /** Extra arguments appended to the command (shell-escaped for safety). */
+  args?: string[];
 }
 
 /** Options for constructing a `Bash` instance. */
@@ -94,6 +98,8 @@ export interface BashOptions {
   customCommands?: CustomCommand[];
   /** Network configuration. */
   network?: NetworkConfig;
+  /** Allow-list of commands. If set, only these commands can be executed. */
+  commands?: string[];
 }
 
 // ── Custom Command Types ─────────────────────────────────────────────
@@ -141,6 +147,7 @@ export interface BashBackend {
 /** Backend-level exec options (after TS-layer normalization). */
 export interface BackendExecOptions {
   env?: Record<string, string>;
+  replaceEnv?: boolean;
   cwd?: string;
   stdin?: string;
 }
@@ -151,6 +158,16 @@ export interface BackendCommandContext {
   cwd: string;
   env: Record<string, string>;
   stdin: string;
+}
+
+// ── Transform Plugin Types ───────────────────────────────────────────
+
+/** A transform plugin that processes scripts before execution. */
+export interface TransformPlugin {
+  /** Plugin name (for debugging/logging). */
+  name: string;
+  /** Transform the script before execution. Return the modified script. */
+  transform(script: string): string;
 }
 
 // ── Tool Types ───────────────────────────────────────────────────────

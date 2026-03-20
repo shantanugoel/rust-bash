@@ -104,10 +104,8 @@ async function boot() {
   const params = new URLSearchParams(window.location.search);
   const agentQuery = params.get('agent');
   if (agentQuery) {
-    // The boot already ran the initial demo; for a custom query,
-    // we'd need to queue it. For now, the URL param is noted for
-    // future implementation when the live agent is connected.
-    console.info(`Deep-link agent query: ${agentQuery}`);
+    const safe = agentQuery.replace(/"/g, '\\"');
+    await terminalUI.executeCommand(`agent "${safe}"`);
   }
 }
 

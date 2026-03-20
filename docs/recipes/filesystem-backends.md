@@ -205,6 +205,104 @@ let mut shell = RustBashBuilder::new()
 
 This copies files into the InMemoryFs at build time. For large directories, prefer `OverlayFs` to avoid the upfront memory cost.
 
+## Lazy File Loading (TypeScript)
+
+The `@rust-bash/core` package supports three file entry types, letting you defer expensive I/O until the file is actually needed.
+
+### The Three Patterns
+
+```typescript
+import { Bash } from '@rust-bash/core';
+
+const bash = await Bash.create(createBackend, {
+  files: {
+    // 1. Eager (string) — written immediately at creation time
+    '/data.txt': 'hello world',
+
+    // 2. Lazy sync (() => string) — resolved on first exec() or readFile()
+    '/config.json': () => JSON.stringify(getConfig()),
+
+    // 3. Lazy async (() => Promise<string>) — resolved on first exec()
+    '/remote.txt': async () => {
+      const res = await fetch('https://api.example.com/data');
+      return await res.text();
+    },
+  },
+});
+```
+
+| Type | Signature | When Resolved | Use Case |
+|------|-----------|---------------|----------|
+| Eager | `string` | Immediately at `Bash.create()` | Small, known-at-definition-time content |
+| Lazy sync | `() => string` | On first `exec()` or `readFile()` | Computed content, environment-dependent config |
+| Lazy async | `() => Promise<string>` | On first `exec()` (all lazy files materialized) | Remote content, database queries, file reads |
+
+### Deferred Resolution
+
+Lazy files are **not** resolved during `Bash.create()` — construction is instant. They are materialized on first `exec()` call via `Promise.all()` (all lazy files resolved concurrently). Sync lazy files can also be resolved individually via `readFile()`.
+
+If `writeFile()` is called on a lazy path before it's ever read, the lazy callback is skipped entirely (write-before-read optimization).
+
+```typescript
+const bash = await Bash.create(createBackend, {
+  files: {
+    '/api/users.json': async () => {
+      const res = await fetch('https://api.example.com/users');
+      return await res.text();
+    },
+    '/api/config.json': async () => {
+      const res = await fetch('https://api.example.com/config');
+      return await res.text();
+    },
+    '/generated.txt': () => generateReport(),  // sync, also resolved in parallel batch
+    '/static.txt': 'always available',          // eager, written immediately
+  },
+});
+// Bash.create() returns immediately — no I/O happens yet
+// Both fetches and generateReport() run in parallel on the first exec() call
+```
+
+### Use Cases
+
+**Large files loaded on demand:**
+
+```typescript
+const bash = await Bash.create(createBackend, {
+  files: {
+    // Only reads the 50 MB log file when a Bash instance is actually created
+    '/var/log/app.log': () => fs.readFileSync('/real/path/to/app.log', 'utf-8'),
+  },
+});
+```
+
+**Remote content fetched lazily:**
+
+```typescript
+const bash = await Bash.create(createBackend, {
+  files: {
+    '/schema.sql': async () => {
+      const res = await fetch('https://raw.githubusercontent.com/org/repo/main/schema.sql');
+      return await res.text();
+    },
+  },
+});
+
+await bash.exec('grep CREATE /schema.sql | wc -l');
+```
+
+**Environment-dependent configuration:**
+
+```typescript
+const bash = await Bash.create(createBackend, {
+  files: {
+    '/etc/app.conf': () => {
+      const env = process.env.NODE_ENV ?? 'development';
+      return `environment=${env}\nlog_level=${env === 'production' ? 'warn' : 'debug'}\n`;
+    },
+  },
+});
+```
+
 ---
 
 ## TypeScript: Virtual Filesystem

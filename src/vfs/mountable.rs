@@ -66,7 +66,10 @@ impl MountableFs {
     /// Later mounts at the same path replace earlier ones.
     pub fn mount(self, path: impl Into<PathBuf>, fs: Arc<dyn VirtualFs>) -> Self {
         let path = path.into();
-        assert!(path.is_absolute(), "mount path must be absolute: {path:?}");
+        assert!(
+            super::vfs_path_is_absolute(&path),
+            "mount path must be absolute: {path:?}"
+        );
         self.mounts.write().insert(path, fs);
         self
     }

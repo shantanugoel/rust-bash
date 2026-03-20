@@ -31,6 +31,13 @@ use crate::platform::SystemTime;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// VFS paths always use Unix-style `/` separators. `std::path::Path::is_absolute()`
+/// is platform-dependent and returns `false` on `wasm32-unknown-unknown` even for
+/// `/home/user`, so we roll our own check.
+pub(crate) fn vfs_path_is_absolute(path: &Path) -> bool {
+    path.to_str().is_some_and(|s| s.starts_with('/'))
+}
+
 /// Metadata for a filesystem node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Metadata {

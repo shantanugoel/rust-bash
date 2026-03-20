@@ -50,9 +50,6 @@ jobs:
           retention-days: 1
 
   build-native:
-    # NOTE: This currently builds the C FFI shared library (--features ffi), not
-    # a napi-rs native Node addon (.node). When napi-rs integration is added,
-    # this job should be updated to produce platform-specific .node files.
     name: Build Native - ${{ matrix.settings.target }}
     needs: test
     runs-on: ${{ matrix.settings.os }}
@@ -71,7 +68,7 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
           - os: windows-latest
-            target: aarch64-pc-windows-msvc  # best-effort: cross-compilation may require additional setup
+            target: aarch64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -80,24 +77,25 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.settings.target }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
       - name: Install cross-compilation tools
         if: matrix.settings.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
-      - name: Build native addon
+      - name: Build napi-rs native addon
+        working-directory: packages/core/native
         run: |
-          cargo build --release --target ${{ matrix.settings.target }} --features ffi
+          npx @napi-rs/cli build --platform --release --target ${{ matrix.settings.target }}
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
       - name: Upload native artifact
         uses: actions/upload-artifact@v4
         with:
           name: native-${{ matrix.settings.target }}
-          path: |
-            target/${{ matrix.settings.target }}/release/librust_bash.so
-            target/${{ matrix.settings.target }}/release/librust_bash.dylib
-            target/${{ matrix.settings.target }}/release/rust_bash.dll
+          path: packages/core/native/*.node
           if-no-files-found: ignore
           retention-days: 1
 
@@ -125,7 +123,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: native-*
-          path: packages/core/native/
+          path: packages/core/native/artifacts/
           merge-multiple: true
 
       - name: Install dependencies and build

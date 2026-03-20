@@ -10,7 +10,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 
-import { MockBash } from './wasm-mock.js';
+import { createBash, type BashInstance } from './bash-loader.js';
 import { VFS_FILES } from './content.js';
 import { runAgentLoop, type AgentEvent } from './agent.js';
 import {
@@ -18,7 +18,7 @@ import {
   replayCache,
 } from './cached-initial-response.js';
 
-const PROMPT = '\x1b[32m🦀 rust-bash\x1b[0m:\x1b[36m~\x1b[0m$ ';
+const PROMPT = '\x1b[32m🦀  rust-bash\x1b[0m:\x1b[36m~\x1b[0m$ ';
 
 const WELCOME = `\x1b[38;2;247;76;0m
                     __  __               __
@@ -27,7 +27,7 @@ const WELCOME = `\x1b[38;2;247;76;0m
  / /  / /_/ (__  ) /_/ /_/ / /_/ (__  ) / / /
 /_/   \\__,_/____/\\__/_.___/\\__,_/____/_/ /_/
 \x1b[0m
- 🦀 A sandboxed bash interpreter, built in Rust. Running in your browser via WASM.
+ 🦀  A sandboxed bash interpreter for AI Agents. Built in Rust, to run anywhere.
 
  \x1b[33m80+ commands\x1b[0m · \x1b[33mVirtual filesystem\x1b[0m · \x1b[33mExecution limits\x1b[0m · \x1b[33mNetwork sandboxing\x1b[0m
 
@@ -40,7 +40,7 @@ const WELCOME = `\x1b[38;2;247;76;0m
 export class TerminalUI {
   private term: Terminal;
   private fitAddon: FitAddon;
-  private bash: MockBash;
+  private bash!: BashInstance;
   private lineBuffer = '';
   private history: string[] = [];
   private historyIndex = -1;
@@ -92,17 +92,27 @@ export class TerminalUI {
     this.term.open(container);
     this.fitAddon.fit();
 
-    this.bash = new MockBash({
-      files: VFS_FILES,
-      cwd: '/home/user',
-    });
-
     this.setupInput();
     this.setupResize();
   }
 
-  /** Boot sequence: welcome screen → auto-type → cached response. */
+  /** Boot sequence: init bash → welcome screen → auto-type → cached response. */
   async boot(): Promise<void> {
+    try {
+      this.bash = await createBash({
+        files: VFS_FILES,
+        cwd: '/home/user',
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.term.writeln(
+        `\x1b[31m⚠ Failed to load WASM: ${msg}\x1b[0m\r\n` +
+        'Make sure you have run: ./scripts/build-wasm.sh\r\n',
+      );
+      this.showPrompt();
+      return;
+    }
+
     // Write welcome screen
     this.term.write(WELCOME);
     this.showPrompt();
@@ -127,6 +137,19 @@ export class TerminalUI {
   /** Refit terminal to container. */
   fit(): void {
     this.fitAddon.fit();
+  }
+
+  /** Simulate typing and executing a command programmatically. */
+  async executeCommand(cmd: string): Promise<void> {
+    this.lineBuffer = '';
+    await this.typeText(cmd, 50);
+    await sleep(200);
+    this.term.write('\r\n');
+    const line = this.lineBuffer.trim();
+    if (line) {
+      this.history.push(line);
+    }
+    await this.handleInput(line);
   }
 
   private showPrompt(): void {
@@ -202,6 +225,23 @@ export class TerminalUI {
         return;
       }
 
+      // Ctrl+C — cancel current input
+      if (domEvent.ctrlKey && (code === 67 /* C */ || domEvent.key === 'c')) {
+        this.term.write('^C\r\n');
+        this.lineBuffer = '';
+        this.isProcessing = false;
+        this.showPrompt();
+        return;
+      }
+
+      // Ctrl+L — clear screen
+      if (domEvent.ctrlKey && (code === 76 /* L */ || domEvent.key === 'l')) {
+        this.term.clear();
+        this.showPrompt();
+        this.term.write(this.lineBuffer);
+        return;
+      }
+
       // Ignore other control keys
       if (domEvent.ctrlKey || domEvent.altKey || domEvent.metaKey) return;
 
@@ -222,27 +262,65 @@ export class TerminalUI {
   }
 
   private handleTabCompletion(): void {
-    const partial = this.lineBuffer.trim();
-    if (!partial) return;
+    const input = this.lineBuffer;
+    if (!input) return;
 
-    const commands = [...this.bash.getCommandNames(), 'agent'];
-    const matches = commands.filter((c) => c.startsWith(partial));
+    // If no space yet, complete command names
+    const spaceIdx = input.indexOf(' ');
+    if (spaceIdx === -1) {
+      const partial = input;
+      const commands = [...this.bash.getCommandNames(), 'agent', 'clear'];
+      const matches = commands.filter((c) => c.startsWith(partial));
 
-    if (matches.length === 1) {
-      const completion = matches[0]!.slice(partial.length);
-      this.lineBuffer += completion;
-      this.term.write(completion);
-    } else if (matches.length > 1) {
-      this.term.write('\r\n');
-      this.term.writeln(matches.join('  '));
-      this.showPrompt();
-      this.lineBuffer = partial;
-      this.term.write(partial);
+      if (matches.length === 1) {
+        const completion = matches[0]!.slice(partial.length) + ' ';
+        this.lineBuffer += completion;
+        this.term.write(completion);
+      } else if (matches.length > 1) {
+        this.term.write('\r\n');
+        this.term.writeln(matches.join('  '));
+        this.showPrompt();
+        this.lineBuffer = partial;
+        this.term.write(partial);
+      }
+    } else {
+      // Complete filenames for arguments
+      const lastSpace = input.lastIndexOf(' ');
+      const partial = input.slice(lastSpace + 1);
+      const dir = partial.includes('/')
+        ? partial.slice(0, partial.lastIndexOf('/') + 1) || '/'
+        : '.';
+      const prefix = partial.includes('/')
+        ? partial.slice(partial.lastIndexOf('/') + 1)
+        : partial;
+
+      const allFiles = this.bash.listDir(dir);
+      const matches = allFiles.filter((f) => f.replace(/\/$/, '').startsWith(prefix));
+
+      if (matches.length === 1) {
+        const completion = matches[0]!.replace(/\/$/, '').slice(prefix.length);
+        this.lineBuffer += completion;
+        this.term.write(completion);
+      } else if (matches.length > 1) {
+        this.term.write('\r\n');
+        this.term.writeln(matches.map(f => f.replace(/\/$/, '')).join('  '));
+        this.showPrompt();
+        this.lineBuffer = input;
+        this.term.write(input);
+      }
     }
   }
 
   private async handleInput(line: string): Promise<void> {
     if (!line) {
+      this.showPrompt();
+      return;
+    }
+
+    if (!this.bash) {
+      this.term.writeln(
+        '\x1b[31m⚠ Shell not loaded. Run ./scripts/build-wasm.sh and reload.\x1b[0m',
+      );
       this.showPrompt();
       return;
     }

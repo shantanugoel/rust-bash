@@ -201,56 +201,159 @@ describe('Bash.create', () => {
     expect(createdFiles[0]).toEqual({ '/data.txt': 'hello' });
   });
 
-  it('should resolve lazy sync files', async () => {
-    const createdFiles: Record<string, string>[] = [];
+  it('should defer lazy sync files until exec', async () => {
+    const backend = createMockBackend();
 
-    const createBackend = (files: Record<string, string>) => {
-      createdFiles.push(files);
-      return createMockBackend();
-    };
-
-    await Bash.create(createBackend, {
+    const bash = await Bash.create(() => backend, {
       files: { '/data.txt': () => 'lazy content' },
     });
 
-    expect(createdFiles[0]).toEqual({ '/data.txt': 'lazy content' });
+    // Lazy files are not passed to createBackend — they are deferred
+    expect(backend.writeFile).not.toHaveBeenCalledWith('/data.txt', 'lazy content');
+
+    // Materialized on first exec
+    await bash.exec('echo hi');
+    expect(backend.writeFile).toHaveBeenCalledWith('/data.txt', 'lazy content');
   });
 
-  it('should resolve lazy async files', async () => {
-    const createdFiles: Record<string, string>[] = [];
+  it('should defer lazy async files until exec', async () => {
+    const backend = createMockBackend();
 
-    const createBackend = (files: Record<string, string>) => {
-      createdFiles.push(files);
-      return createMockBackend();
-    };
-
-    await Bash.create(createBackend, {
+    const bash = await Bash.create(() => backend, {
       files: { '/data.txt': async () => 'async content' },
     });
 
-    expect(createdFiles[0]).toEqual({ '/data.txt': 'async content' });
+    expect(backend.writeFile).not.toHaveBeenCalledWith('/data.txt', 'async content');
+
+    await bash.exec('echo hi');
+    expect(backend.writeFile).toHaveBeenCalledWith('/data.txt', 'async content');
   });
 
   it('should handle mixed file types', async () => {
     const createdFiles: Record<string, string>[] = [];
+    const backend = createMockBackend();
 
-    const createBackend = (files: Record<string, string>) => {
-      createdFiles.push(files);
-      return createMockBackend();
-    };
-
-    await Bash.create(createBackend, {
-      files: {
-        '/eager.txt': 'eager content',
-        '/lazy.txt': () => 'lazy content',
-        '/async.txt': async () => 'async content',
+    const bash = await Bash.create(
+      (files) => {
+        createdFiles.push(files);
+        return backend;
       },
+      {
+        files: {
+          '/eager.txt': 'eager content',
+          '/lazy.txt': () => 'lazy content',
+          '/async.txt': async () => 'async content',
+        },
+      },
+    );
+
+    // Only eager files passed to createBackend
+    expect(createdFiles[0]).toEqual({ '/eager.txt': 'eager content' });
+
+    // Lazy files materialized on first exec
+    await bash.exec('echo hi');
+    expect(backend.writeFile).toHaveBeenCalledWith('/lazy.txt', 'lazy content');
+    expect(backend.writeFile).toHaveBeenCalledWith('/async.txt', 'async content');
+  });
+
+  it('should skip lazy callback on write-before-read', async () => {
+    const backend = createMockBackend();
+    const lazyFn = vi.fn(() => 'should not be called');
+
+    const bash = await Bash.create(() => backend, {
+      files: { '/data.txt': lazyFn },
     });
 
-    expect(createdFiles[0]).toEqual({
-      '/eager.txt': 'eager content',
-      '/lazy.txt': 'lazy content',
-      '/async.txt': 'async content',
+    // Write to the lazy file path before any exec
+    bash.writeFile('/data.txt', 'overwritten');
+    expect(backend.writeFile).toHaveBeenCalledWith('/data.txt', 'overwritten');
+
+    // Now exec — the lazy callback should NOT be invoked
+    await bash.exec('echo hi');
+    expect(lazyFn).not.toHaveBeenCalled();
+  });
+
+  it('should resolve sync lazy file on readFile', async () => {
+    const backend = createMockBackend();
+    const lazyFn = vi.fn(() => 'lazy content');
+
+    const bash = await Bash.create(() => backend, {
+      files: { '/data.txt': lazyFn },
+    });
+
+    // readFile should resolve the sync lazy file
+    bash.readFile('/data.txt');
+    expect(lazyFn).toHaveBeenCalled();
+    expect(backend.writeFile).toHaveBeenCalledWith('/data.txt', 'lazy content');
+  });
+
+  it('should throw on readFile of async lazy file', async () => {
+    const backend = createMockBackend();
+
+    const bash = await Bash.create(() => backend, {
+      files: { '/data.txt': async () => 'async content' },
+    });
+
+    expect(() => bash.readFile('/data.txt')).toThrow('async lazy loader');
+  });
+
+  it('should report lazy files as existing via fs.existsSync', async () => {
+    const backend = createMockBackend();
+
+    const bash = await Bash.create(() => backend, {
+      files: { '/data.txt': () => 'lazy content' },
+    });
+
+    expect(bash.fs.existsSync('/data.txt')).toBe(true);
+  });
+});
+
+describe('Bash features', () => {
+  it('should filter commands via allow-list', async () => {
+    const backend = createMockBackend();
+    const bash = new Bash(backend, { commands: ['echo', 'cat'] });
+
+    const allowed = await bash.exec('echo ok');
+    expect(allowed.exitCode).toBe(0);
+
+    const blocked = await bash.exec('rm /important');
+    expect(blocked.exitCode).toBe(127);
+    expect(blocked.stderr).toContain('command not allowed');
+  });
+
+  it('should append shell-escaped args', async () => {
+    const backend = createMockBackend();
+    const bash = new Bash(backend);
+
+    await bash.exec('echo', { args: ['hello world', "it's"] });
+    expect(backend.exec).toHaveBeenCalledWith("echo 'hello world' 'it'\\''s'");
+  });
+
+  it('should apply transform plugins in order', async () => {
+    const backend = createMockBackend();
+    const bash = new Bash(backend);
+
+    bash.registerTransformPlugin({
+      name: 'uppercase',
+      transform: (s) => s.toUpperCase(),
+    });
+    bash.registerTransformPlugin({
+      name: 'prefix',
+      transform: (s) => `# ${s}`,
+    });
+
+    await bash.exec('echo hello');
+    expect(backend.exec).toHaveBeenCalledWith('# ECHO HELLO');
+  });
+
+  it('should pass replaceEnv to backend', async () => {
+    const backend = createMockBackend();
+    const bash = new Bash(backend);
+
+    await bash.exec('echo hi', { env: { FOO: 'bar' }, replaceEnv: true });
+    expect(backend.execWithOptions).toHaveBeenCalledWith('echo hi', {
+      env: { FOO: 'bar' },
+      replaceEnv: true,
     });
   });
 });

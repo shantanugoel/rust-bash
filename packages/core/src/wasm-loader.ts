@@ -137,6 +137,7 @@ class WasmBackend implements BashBackend {
   execWithOptions(command: string, options: BackendExecOptions): ExecResult {
     const opts: Record<string, unknown> = {};
     if (options.env) opts.env = options.env;
+    if (options.replaceEnv) opts.replaceEnv = true;
     if (options.cwd) opts.cwd = options.cwd;
     if (options.stdin) opts.stdin = options.stdin;
 
