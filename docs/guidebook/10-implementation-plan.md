@@ -158,7 +158,7 @@ Stable C ABI: 6 exported functions (`rust_bash_create`, `rust_bash_exec`, `rust_
 
 ### M5.4 — AI SDK Integration
 
-Tool definitions for OpenAI/Anthropic function calling. TypeScript wrapper for Vercel AI SDK.
+Framework-agnostic tool definitions (JSON Schema + handler functions) exported from the npm package. MCP server mode for the CLI binary (`rust-bash --mcp`). Documented recipe-based adapters for Vercel AI SDK, LangChain.js, OpenAI API, and Anthropic API. The core exports `bashToolDefinition` (JSON Schema) and `createBashToolHandler(options)` — the universal building blocks that work with any AI agent framework. Framework-specific adapters are thin (~10-line) wrappers documented as recipes, not hard dependencies.
 
 **Design exploration (do before implementing):** The TypeScript/JS package should offer a **native Node.js addon** (via napi-rs) as the primary backend for server-side AI agents, with WASM as an automatic fallback for browsers and edge runtimes. Investigate a unified `@rust-bash/core` package that auto-detects the environment. Compare this approach against shipping separate `@rust-bash/node` and `@rust-bash/wasm` packages.
 
@@ -385,11 +385,11 @@ Add lazy file materialization to `InMemoryFs`. Files can be registered with a ca
 
 Expose brush-parser AST via a public `parse()` API. Build a `TransformPipeline` that chains visitor plugins over the AST and serializes back to bash script text. Built-in plugins: `CommandCollectorPlugin` (extract unique command names from a script — useful for pre-flight permission checks), `TeePlugin` (inject `tee` to capture per-command stdout). Custom plugin trait for host-defined transforms. Enables script instrumentation without execution.
 
-### M9.4 — Sandbox API Wrapper
+### M9.4 — High-Level Convenience API
 
-Add a high-level `Sandbox` API compatible with the Vercel Sandbox interface: `Sandbox::create(opts)`, `sandbox.run_command(cmd)`, `sandbox.write_files(files)`, `sandbox.read_file(path)`, `sandbox.mkdir(path)`. Wraps `RustBash` with convenience methods and default OverlayFs configuration. Enables drop-in replacement for `@vercel/sandbox` in Rust-based AI agent hosts.
+Add high-level convenience features to the `Bash` class (TypeScript) and `RustBashBuilder` (Rust): command filtering, per-exec env/cwd isolation, logger interface, virtual process info, safe argument passing, script normalization. These enrich the existing API rather than introducing a separate `Sandbox` class.
 
-Additional API features from just-bash:
+Additional API features:
 - **Command filtering** — `commands: Vec<CommandName>` option restricts which commands are available per-session. Critical for least-privilege sandboxing (e.g., prevent `curl`, `rm -rf /`).
 - **Per-exec env/cwd isolation** — `exec()` accepts `env`, `cwd`, `replace_env` overrides that are restored after execution. Useful for multi-tenant scenarios.
 - **Logger interface** — `BashLogger` trait with `info`/`debug` methods for execution tracing (xtrace, command dispatch, etc.). Essential for debugging in production.
