@@ -456,6 +456,7 @@ mod tests {
     use super::*;
     use crate::commands::CommandContext;
     use crate::interpreter::ExecutionLimits;
+    use crate::network::NetworkPolicy;
     use crate::vfs::{InMemoryFs, VirtualFs};
     use std::collections::HashMap;
 
@@ -474,6 +475,7 @@ mod tests {
             env: &env,
             stdin,
             limits: &limits,
+            network_policy: &NetworkPolicy::default(),
             exec: None,
         };
         JqCommand.execute(&args, &ctx)

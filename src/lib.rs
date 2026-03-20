@@ -2,6 +2,7 @@ pub mod api;
 pub mod commands;
 pub mod error;
 pub mod interpreter;
+pub mod network;
 pub mod vfs;
 
 pub use api::{RustBash, RustBashBuilder};
@@ -10,6 +11,7 @@ pub use error::{RustBashError, VfsError};
 pub use interpreter::{
     ExecResult, ExecutionCounters, ExecutionLimits, InterpreterState, ShellOpts, Variable,
 };
+pub use network::NetworkPolicy;
 pub use vfs::{InMemoryFs, VirtualFs};
 
 #[cfg(test)]

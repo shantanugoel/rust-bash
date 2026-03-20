@@ -629,6 +629,16 @@ fn builtin_read(
 
     // Read one line from stdin
     let line = stdin.lines().next().unwrap_or("");
+
+    // Check input line length before processing
+    if line.len() > state.limits.max_string_length {
+        return Err(RustBashError::LimitExceeded {
+            limit_name: "max_string_length",
+            limit_value: state.limits.max_string_length,
+            actual_value: line.len(),
+        });
+    }
+
     let line = if raw_mode {
         line.to_string()
     } else {
@@ -715,11 +725,28 @@ fn builtin_eval(
         return Ok(ExecResult::default());
     }
 
-    let program = parse(&input)?;
-    execute_program(&program, state)
-}
+    state.counters.call_depth += 1;
+    if state.counters.call_depth > state.limits.max_call_depth {
+        let actual = state.counters.call_depth;
+        state.counters.call_depth -= 1;
+        return Err(RustBashError::LimitExceeded {
+            limit_name: "max_call_depth",
+            limit_value: state.limits.max_call_depth,
+            actual_value: actual,
+        });
+    }
 
-// ── trap ─────────────────────────────────────────────────────────────
+    let program = match parse(&input) {
+        Ok(p) => p,
+        Err(e) => {
+            state.counters.call_depth -= 1;
+            return Err(e);
+        }
+    };
+    let result = execute_program(&program, state);
+    state.counters.call_depth -= 1;
+    result
+}
 
 /// Common signal names for `trap -l`.
 const SIGNAL_NAMES: &[&str] = &[
@@ -837,8 +864,27 @@ fn builtin_source(
         }
     };
 
-    let program = parse(&content)?;
-    execute_program(&program, state)
+    state.counters.call_depth += 1;
+    if state.counters.call_depth > state.limits.max_call_depth {
+        let actual = state.counters.call_depth;
+        state.counters.call_depth -= 1;
+        return Err(RustBashError::LimitExceeded {
+            limit_name: "max_call_depth",
+            limit_value: state.limits.max_call_depth,
+            actual_value: actual,
+        });
+    }
+
+    let program = match parse(&content) {
+        Ok(p) => p,
+        Err(e) => {
+            state.counters.call_depth -= 1;
+            return Err(e);
+        }
+    };
+    let result = execute_program(&program, state);
+    state.counters.call_depth -= 1;
+    result
 }
 
 // ── local ────────────────────────────────────────────────────────────
@@ -943,6 +989,7 @@ fn builtin_let(args: &[String], state: &mut InterpreterState) -> Result<ExecResu
 mod tests {
     use super::*;
     use crate::interpreter::{ExecutionCounters, ExecutionLimits, ShellOpts};
+    use crate::network::NetworkPolicy;
     use crate::vfs::{InMemoryFs, VirtualFs};
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -961,6 +1008,7 @@ mod tests {
             shell_opts: ShellOpts::default(),
             limits: ExecutionLimits::default(),
             counters: ExecutionCounters::default(),
+            network_policy: NetworkPolicy::default(),
             should_exit: false,
             loop_depth: 0,
             control_flow: None,

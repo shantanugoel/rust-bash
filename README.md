@@ -2,11 +2,11 @@
 
 A sandboxed bash environment built in Rust. Execute bash scripts safely with a virtual filesystem — no containers, no VMs, no runtime dependencies.
 
-> ⚠️ **Status: Pre-alpha / Milestone 2 Complete** — Core shell interpreter with full text processing.
-> Supports variable expansion, redirections, control flow, command substitution, arithmetic,
-> functions, globs, brace expansion, here-documents, and 70+ built-in commands including
-> text processing tools: grep (full), sed, awk, jq, diff, tac, comm, join, fmt, column,
-> expand, unexpand.
+> ⚠️ **Status: Pre-alpha / Milestone 3 Complete** — Core shell interpreter with full text processing
+> and execution safety. Supports variable expansion, redirections, control flow, command substitution,
+> arithmetic, functions, globs, brace expansion, here-documents, and 70+ built-in commands including
+> text processing tools (grep, sed, awk, jq, diff) and network access (curl with policy controls).
+> All 10 execution limits are enforced with structured errors.
 
 ## Design Goals
 

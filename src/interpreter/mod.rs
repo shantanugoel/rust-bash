@@ -9,6 +9,7 @@ mod walker;
 
 use crate::commands::VirtualCommand;
 use crate::error::RustBashError;
+use crate::network::NetworkPolicy;
 use crate::vfs::VirtualFs;
 use brush_parser::ast;
 use std::collections::HashMap;
@@ -83,6 +84,7 @@ pub struct ExecutionCounters {
     pub call_depth: usize,
     pub output_size: usize,
     pub start_time: Instant,
+    pub substitution_depth: usize,
 }
 
 impl Default for ExecutionCounters {
@@ -92,6 +94,7 @@ impl Default for ExecutionCounters {
             call_depth: 0,
             output_size: 0,
             start_time: Instant::now(),
+            substitution_depth: 0,
         }
     }
 }
@@ -128,6 +131,7 @@ pub struct InterpreterState {
     pub shell_opts: ShellOpts,
     pub limits: ExecutionLimits,
     pub counters: ExecutionCounters,
+    pub network_policy: NetworkPolicy,
     pub(crate) should_exit: bool,
     pub(crate) loop_depth: usize,
     pub(crate) control_flow: Option<ControlFlow>,
@@ -185,6 +189,13 @@ pub(crate) fn set_variable(
     name: &str,
     value: String,
 ) -> Result<(), RustBashError> {
+    if value.len() > state.limits.max_string_length {
+        return Err(RustBashError::LimitExceeded {
+            limit_name: "max_string_length",
+            limit_value: state.limits.max_string_length,
+            actual_value: value.len(),
+        });
+    }
     if let Some(var) = state.env.get(name)
         && var.readonly
     {
@@ -326,6 +337,7 @@ mod tests {
             shell_opts: ShellOpts::default(),
             limits: ExecutionLimits::default(),
             counters: ExecutionCounters::default(),
+            network_policy: NetworkPolicy::default(),
             should_exit: false,
             loop_depth: 0,
             control_flow: None,

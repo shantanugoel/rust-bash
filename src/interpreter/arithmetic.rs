@@ -1065,6 +1065,7 @@ fn apply_compound_op(op: TokenKind, lhs: i64, rhs: i64) -> Result<i64, RustBashE
 mod tests {
     use super::*;
     use crate::interpreter::{ExecutionCounters, ExecutionLimits, InterpreterState, ShellOpts};
+    use crate::network::NetworkPolicy;
     use crate::vfs::InMemoryFs;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -1080,6 +1081,7 @@ mod tests {
             shell_opts: ShellOpts::default(),
             limits: ExecutionLimits::default(),
             counters: ExecutionCounters::default(),
+            network_policy: NetworkPolicy::default(),
             should_exit: false,
             loop_depth: 0,
             control_flow: None,

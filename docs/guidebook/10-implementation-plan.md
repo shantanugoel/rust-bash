@@ -110,11 +110,11 @@ Via `similar` crate. Unified (`-u`), context (`-c`), and normal diff formats. `-
 
 ## Milestone 3: Execution Safety
 
-### M3.1 — Execution Limits Enforcement
+### M3.1 — Execution Limits Enforcement ✅
 
 Add `ExecutionLimits` + `ExecutionCounters` to state. Check limits at command dispatch, function calls, loop iterations, output appends, and wall-clock time. Return structured `LimitExceeded` errors.
 
-### M3.2 — Network Access Control
+### M3.2 — Network Access Control ✅
 
 Implement `NetworkPolicy`. Sandboxed `curl` validates URL against allow-list before HTTP request. Method restrictions, redirect following, response size limits.
 

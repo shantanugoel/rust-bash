@@ -1316,6 +1316,7 @@ mod tests {
     use super::*;
     use crate::commands::{CommandContext, CommandResult, VirtualCommand};
     use crate::interpreter::ExecutionLimits;
+    use crate::network::NetworkPolicy;
     use crate::vfs::{InMemoryFs, VirtualFs};
     use std::collections::HashMap;
     use std::path::Path;
@@ -1331,6 +1332,7 @@ mod tests {
             env: &env,
             stdin,
             limits: &limits,
+            network_policy: &NetworkPolicy::default(),
             exec: None,
         };
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
@@ -1346,6 +1348,7 @@ mod tests {
             env: &env,
             stdin,
             limits: &limits,
+            network_policy: &NetworkPolicy::default(),
             exec: None,
         };
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();

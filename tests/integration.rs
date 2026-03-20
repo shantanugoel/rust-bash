@@ -2922,10 +2922,11 @@ fn execution_limit_command_count() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     match err {
-        rust_bash::RustBashError::LimitExceeded(msg) => {
-            assert!(msg.contains("command count"), "msg was: {msg}");
-        }
-        other => panic!("expected LimitExceeded, got: {other:?}"),
+        rust_bash::RustBashError::LimitExceeded {
+            limit_name: "max_command_count",
+            ..
+        } => {}
+        other => panic!("expected LimitExceeded(max_command_count), got: {other:?}"),
     }
 }
 
@@ -2945,10 +2946,11 @@ fn execution_limit_output_size() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     match err {
-        rust_bash::RustBashError::LimitExceeded(msg) => {
-            assert!(msg.contains("output size"), "msg was: {msg}");
-        }
-        other => panic!("expected LimitExceeded, got: {other:?}"),
+        rust_bash::RustBashError::LimitExceeded {
+            limit_name: "max_output_size",
+            ..
+        } => {}
+        other => panic!("expected LimitExceeded(max_output_size), got: {other:?}"),
     }
 }
 
@@ -3313,4 +3315,529 @@ fn pipeline_diff_identical_files() {
     let r = sh.exec("diff /f1 /f2").unwrap();
     assert_eq!(r.stdout, "");
     assert_eq!(r.exit_code, 0);
+}
+
+// ── Limit enforcement integration tests ──────────────────────────
+
+#[test]
+fn limit_max_command_count_exceeded_in_loop() {
+    use rust_bash::{ExecutionLimits, RustBashBuilder};
+
+    let mut sh = RustBashBuilder::new()
+        .execution_limits(ExecutionLimits {
+            max_command_count: 10,
+            ..ExecutionLimits::default()
+        })
+        .build()
+        .unwrap();
+
+    let result = sh.exec("for i in $(seq 1 20); do echo $i; done");
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        rust_bash::RustBashError::LimitExceeded {
+            limit_name: "max_command_count",
+            ..
+        } => {}
+        other => panic!("expected LimitExceeded(max_command_count), got: {other:?}"),
+    }
+
+    // Shell remains usable after limit error
+    let r = sh.exec("echo ok").unwrap();
+    assert_eq!(r.stdout, "ok\n");
+}
+
+#[test]
+fn limit_max_loop_iterations_exceeded() {
+    use rust_bash::{ExecutionLimits, RustBashBuilder};
+
+    let mut sh = RustBashBuilder::new()
+        .execution_limits(ExecutionLimits {
+            max_loop_iterations: 100,
+            ..ExecutionLimits::default()
+        })
+        .build()
+        .unwrap();
+
+    let result = sh.exec("while true; do :; done");
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        rust_bash::RustBashError::LimitExceeded {
+            limit_name: "max_loop_iterations",
+            ..
+        } => {}
+        other => panic!("expected LimitExceeded(max_loop_iterations), got: {other:?}"),
+    }
+
+    let r = sh.exec("echo ok").unwrap();
+    assert_eq!(r.stdout, "ok\n");
+}
+
+#[test]
+fn limit_max_call_depth_exceeded_recursive_function() {
+    use rust_bash::{ExecutionLimits, RustBashBuilder};
+
+    let mut sh = RustBashBuilder::new()
+        .execution_limits(ExecutionLimits {
+            max_call_depth: 5,
+            ..ExecutionLimits::default()
+        })
+        .build()
+        .unwrap();
+
+    let result = sh.exec("f() { f; }; f");
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        rust_bash::RustBashError::LimitExceeded {
+            limit_name: "max_call_depth",
+            ..
+        } => {}
+        other => panic!("expected LimitExceeded(max_call_depth), got: {other:?}"),
+    }
+
+    let r = sh.exec("echo ok").unwrap();
+    assert_eq!(r.stdout, "ok\n");
+}
+
+#[test]
+fn limit_max_execution_time_exceeded() {
+    use rust_bash::{ExecutionLimits, RustBashBuilder};
+    use std::time::Duration;
+
+    let mut sh = RustBashBuilder::new()
+        .execution_limits(ExecutionLimits {
+            max_execution_time: Duration::from_millis(100),
+            ..ExecutionLimits::default()
+        })
+        .build()
+        .unwrap();
+
+    let result = sh.exec("sleep 999");
+    assert!(result.is_err());
+    // sleep caps to max_execution_time, then the next check_limits catches timeout
+    match result.unwrap_err() {
+        rust_bash::RustBashError::Timeout => {}
+        other => panic!("expected Timeout, got: {other:?}"),
+    }
+
+    let r = sh.exec("echo ok").unwrap();
+    assert_eq!(r.stdout, "ok\n");
+}
+
+#[test]
+fn limit_max_output_size_exceeded_in_pipeline() {
+    use rust_bash::{ExecutionLimits, RustBashBuilder};
+
+    let mut sh = RustBashBuilder::new()
+        .execution_limits(ExecutionLimits {
+            max_output_size: 1024,
+            ..ExecutionLimits::default()
+        })
+        .build()
+        .unwrap();
+
+    let result = sh.exec("yes | head -n 100000");
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        rust_bash::RustBashError::LimitExceeded {
+            limit_name: "max_output_size",
+            ..
+        } => {}
+        other => panic!("expected LimitExceeded(max_output_size), got: {other:?}"),
+    }
+
+    let r = sh.exec("echo ok").unwrap();
+    assert_eq!(r.stdout, "ok\n");
+}
+
+#[test]
+fn limit_max_string_length_exceeded_in_variable() {
+    use rust_bash::{ExecutionLimits, RustBashBuilder};
+
+    let mut sh = RustBashBuilder::new()
+        .execution_limits(ExecutionLimits {
+            max_string_length: 1024,
+            ..ExecutionLimits::default()
+        })
+        .build()
+        .unwrap();
+
+    let result = sh.exec(r#"x=""; for i in $(seq 1 1000); do x="${x}aaaa"; done"#);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        rust_bash::RustBashError::LimitExceeded {
+            limit_name: "max_string_length",
+            ..
+        } => {}
+        other => panic!("expected LimitExceeded(max_string_length), got: {other:?}"),
+    }
+
+    let r = sh.exec("echo ok").unwrap();
+    assert_eq!(r.stdout, "ok\n");
+}
+
+#[test]
+fn limit_max_substitution_depth_exceeded() {
+    use rust_bash::{ExecutionLimits, RustBashBuilder};
+
+    let mut sh = RustBashBuilder::new()
+        .execution_limits(ExecutionLimits {
+            max_substitution_depth: 2,
+            ..ExecutionLimits::default()
+        })
+        .build()
+        .unwrap();
+
+    let result = sh.exec("echo $(echo $(echo $(echo x)))");
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        rust_bash::RustBashError::LimitExceeded {
+            limit_name: "max_substitution_depth",
+            ..
+        } => {}
+        other => panic!("expected LimitExceeded(max_substitution_depth), got: {other:?}"),
+    }
+
+    let r = sh.exec("echo ok").unwrap();
+    assert_eq!(r.stdout, "ok\n");
+}
+
+#[test]
+fn limit_max_heredoc_size_exceeded() {
+    use rust_bash::{ExecutionLimits, RustBashBuilder};
+
+    let mut sh = RustBashBuilder::new()
+        .execution_limits(ExecutionLimits {
+            max_heredoc_size: 100,
+            ..ExecutionLimits::default()
+        })
+        .build()
+        .unwrap();
+
+    // Generate a heredoc body larger than 100 bytes
+    let big_body = "A".repeat(200);
+    let script = format!("cat <<EOF\n{big_body}\nEOF");
+    let result = sh.exec(&script);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        rust_bash::RustBashError::LimitExceeded {
+            limit_name: "max_heredoc_size",
+            ..
+        } => {}
+        other => panic!("expected LimitExceeded(max_heredoc_size), got: {other:?}"),
+    }
+
+    let r = sh.exec("echo ok").unwrap();
+    assert_eq!(r.stdout, "ok\n");
+}
+
+#[test]
+fn limit_max_glob_results_exceeded() {
+    use rust_bash::{ExecutionLimits, RustBashBuilder};
+
+    let mut sh = RustBashBuilder::new()
+        .execution_limits(ExecutionLimits {
+            max_glob_results: 5,
+            ..ExecutionLimits::default()
+        })
+        .build()
+        .unwrap();
+
+    // Create more files than the glob limit allows
+    sh.exec("mkdir /globdir && cd /globdir").unwrap();
+    sh.exec("for i in $(seq 1 10); do echo x > /globdir/file$i; done")
+        .unwrap();
+
+    let result = sh.exec("echo /globdir/*");
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        rust_bash::RustBashError::LimitExceeded {
+            limit_name: "max_glob_results",
+            ..
+        } => {}
+        other => panic!("expected LimitExceeded(max_glob_results), got: {other:?}"),
+    }
+
+    let r = sh.exec("echo ok").unwrap();
+    assert_eq!(r.stdout, "ok\n");
+}
+
+#[test]
+fn limit_max_brace_expansion_exceeded() {
+    use rust_bash::{ExecutionLimits, RustBashBuilder};
+
+    let mut sh = RustBashBuilder::new()
+        .execution_limits(ExecutionLimits {
+            max_brace_expansion: 100,
+            ..ExecutionLimits::default()
+        })
+        .build()
+        .unwrap();
+
+    let result = sh.exec("echo {1..10000}");
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        rust_bash::RustBashError::LimitExceeded {
+            limit_name: "max_brace_expansion",
+            ..
+        } => {}
+        other => panic!("expected LimitExceeded(max_brace_expansion), got: {other:?}"),
+    }
+
+    let r = sh.exec("echo ok").unwrap();
+    assert_eq!(r.stdout, "ok\n");
+}
+
+#[test]
+fn limit_subshell_command_counts_accumulate() {
+    use rust_bash::{ExecutionLimits, RustBashBuilder};
+
+    let mut sh = RustBashBuilder::new()
+        .execution_limits(ExecutionLimits {
+            max_command_count: 50,
+            ..ExecutionLimits::default()
+        })
+        .build()
+        .unwrap();
+
+    // Each subshell runs 20 echo commands; 3 iterations × 20 = 60 subshell commands
+    // plus loop overhead, exceeding the limit of 50 because counts accumulate
+    let result = sh.exec(
+        "for i in 1 2 3; do \
+            echo $(echo 1; echo 2; echo 3; echo 4; echo 5; \
+                   echo 6; echo 7; echo 8; echo 9; echo 10; \
+                   echo 11; echo 12; echo 13; echo 14; echo 15; \
+                   echo 16; echo 17; echo 18; echo 19; echo 20); \
+         done",
+    );
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        rust_bash::RustBashError::LimitExceeded {
+            limit_name: "max_command_count",
+            ..
+        } => {}
+        other => panic!("expected LimitExceeded(max_command_count), got: {other:?}"),
+    }
+}
+
+#[test]
+fn limit_source_increments_call_depth() {
+    use rust_bash::{ExecutionLimits, RustBashBuilder};
+
+    let mut sh = RustBashBuilder::new()
+        .execution_limits(ExecutionLimits {
+            max_call_depth: 3,
+            ..ExecutionLimits::default()
+        })
+        .build()
+        .unwrap();
+
+    // Create a chain of source files that exceed call depth
+    sh.exec("echo 'source /b.sh' > /a.sh").unwrap();
+    sh.exec("echo 'source /c.sh' > /b.sh").unwrap();
+    sh.exec("echo 'source /d.sh' > /c.sh").unwrap();
+    sh.exec("echo 'echo deep' > /d.sh").unwrap();
+
+    let result = sh.exec("source /a.sh");
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        rust_bash::RustBashError::LimitExceeded {
+            limit_name: "max_call_depth",
+            ..
+        } => {}
+        other => panic!("expected LimitExceeded(max_call_depth), got: {other:?}"),
+    }
+
+    let r = sh.exec("echo ok").unwrap();
+    assert_eq!(r.stdout, "ok\n");
+}
+
+#[test]
+fn limit_eval_increments_call_depth() {
+    use rust_bash::{ExecutionLimits, RustBashBuilder};
+
+    let mut sh = RustBashBuilder::new()
+        .execution_limits(ExecutionLimits {
+            max_call_depth: 2,
+            ..ExecutionLimits::default()
+        })
+        .build()
+        .unwrap();
+
+    let result = sh.exec(r#"eval 'eval "eval \"echo done\""'"#);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        rust_bash::RustBashError::LimitExceeded {
+            limit_name: "max_call_depth",
+            ..
+        } => {}
+        other => panic!("expected LimitExceeded(max_call_depth), got: {other:?}"),
+    }
+
+    let r = sh.exec("echo ok").unwrap();
+    assert_eq!(r.stdout, "ok\n");
+}
+
+#[test]
+fn limit_counters_reset_between_exec_calls() {
+    use rust_bash::{ExecutionLimits, RustBashBuilder};
+
+    let mut sh = RustBashBuilder::new()
+        .execution_limits(ExecutionLimits {
+            max_command_count: 50,
+            ..ExecutionLimits::default()
+        })
+        .build()
+        .unwrap();
+
+    // First exec uses many commands but stays under the limit
+    sh.exec("for i in $(seq 1 10); do echo $i; done").unwrap();
+
+    // Second exec should succeed because counters reset
+    let r = sh.exec("echo ok").unwrap();
+    assert_eq!(r.stdout, "ok\n");
+}
+
+#[test]
+fn limit_max_string_length_in_read_builtin() {
+    use rust_bash::{ExecutionLimits, RustBashBuilder};
+
+    let mut sh = RustBashBuilder::new()
+        .execution_limits(ExecutionLimits {
+            max_string_length: 100,
+            ..ExecutionLimits::default()
+        })
+        .build()
+        .unwrap();
+
+    // Create a string larger than the limit, then pipe it to read
+    let big = "x".repeat(200);
+    let script = format!("echo '{big}' | read var");
+    let result = sh.exec(&script);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        rust_bash::RustBashError::LimitExceeded {
+            limit_name: "max_string_length",
+            ..
+        } => {}
+        other => panic!("expected LimitExceeded(max_string_length), got: {other:?}"),
+    }
+
+    let r = sh.exec("echo ok").unwrap();
+    assert_eq!(r.stdout, "ok\n");
+}
+
+#[test]
+fn limit_here_string_size_checked() {
+    use rust_bash::{ExecutionLimits, RustBashBuilder};
+
+    let mut sh = RustBashBuilder::new()
+        .execution_limits(ExecutionLimits {
+            max_heredoc_size: 50,
+            ..ExecutionLimits::default()
+        })
+        .build()
+        .unwrap();
+
+    // Build a variable larger than the heredoc limit, then use here-string
+    let big = "B".repeat(100);
+    sh.exec(&format!("HUGE='{big}'")).unwrap();
+
+    let result = sh.exec("cat <<<$HUGE");
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        rust_bash::RustBashError::LimitExceeded {
+            limit_name: "max_heredoc_size",
+            ..
+        } => {}
+        other => panic!("expected LimitExceeded(max_heredoc_size), got: {other:?}"),
+    }
+
+    let r = sh.exec("echo ok").unwrap();
+    assert_eq!(r.stdout, "ok\n");
+}
+
+// ── Network policy integration tests ─────────────────────────────
+
+#[test]
+fn network_disabled_by_default_curl_errors() {
+    let mut sh = shell();
+    let r = sh.exec("curl https://example.com").unwrap();
+    assert_ne!(r.exit_code, 0);
+    assert!(
+        r.stderr.contains("network access is disabled"),
+        "expected network disabled error, got stderr: {}",
+        r.stderr,
+    );
+}
+
+#[test]
+fn network_enabled_but_url_not_in_allowlist() {
+    use rust_bash::{NetworkPolicy, RustBashBuilder};
+
+    let mut sh = RustBashBuilder::new()
+        .network_policy(NetworkPolicy {
+            enabled: true,
+            allowed_url_prefixes: vec!["https://allowed.example.com/".to_string()],
+            ..Default::default()
+        })
+        .build()
+        .unwrap();
+
+    let r = sh.exec("curl https://evil.example.com/data").unwrap();
+    assert_ne!(r.exit_code, 0);
+    assert!(
+        r.stderr.contains("not allowed by network policy"),
+        "expected URL rejection, got stderr: {}",
+        r.stderr,
+    );
+}
+
+#[test]
+fn network_url_normalization_attack_rejected() {
+    use rust_bash::{NetworkPolicy, RustBashBuilder};
+
+    let mut sh = RustBashBuilder::new()
+        .network_policy(NetworkPolicy {
+            enabled: true,
+            allowed_url_prefixes: vec!["https://api.example.com/".to_string()],
+            ..Default::default()
+        })
+        .build()
+        .unwrap();
+
+    // Userinfo attack: the @evil.com domain should be caught
+    let r = sh.exec("curl https://api.example.com@evil.com/").unwrap();
+    assert_ne!(r.exit_code, 0);
+    assert!(
+        r.stderr.contains("not allowed by network policy"),
+        "expected URL rejection for normalization attack, got stderr: {}",
+        r.stderr,
+    );
+}
+
+#[test]
+fn network_method_restriction_rejects_disallowed() {
+    use rust_bash::{NetworkPolicy, RustBashBuilder};
+    use std::collections::HashSet;
+
+    let mut sh = RustBashBuilder::new()
+        .network_policy(NetworkPolicy {
+            enabled: true,
+            allowed_url_prefixes: vec!["https://api.example.com/".to_string()],
+            allowed_methods: HashSet::from(["GET".to_string()]),
+            ..Default::default()
+        })
+        .build()
+        .unwrap();
+
+    // POST should be rejected when only GET is allowed
+    let r = sh
+        .exec("curl -X POST https://api.example.com/data")
+        .unwrap();
+    assert_ne!(r.exit_code, 0);
+    assert!(
+        r.stderr.contains("method not allowed"),
+        "expected method rejection, got stderr: {}",
+        r.stderr,
+    );
 }

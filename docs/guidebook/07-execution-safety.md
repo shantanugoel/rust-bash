@@ -44,6 +44,7 @@ pub struct ExecutionCounters {
     pub call_depth: usize,
     pub output_size: usize,
     pub start_time: Instant,
+    pub substitution_depth: usize,
 }
 ```
 
@@ -104,16 +105,16 @@ This prevents an allowed URL from redirecting to a malicious endpoint.
 |---------------|------------|--------|
 | Real filesystem access | All operations go through `VirtualFs` trait; `InMemoryFs` has zero `std::fs` calls | Core design |
 | Process spawning | No `std::process::Command` anywhere; all commands are in-process Rust | Core design |
-| Network exfiltration | `NetworkPolicy` disabled by default; URL prefix allow-listing when enabled | **(planned)** |
-| Infinite loops | `max_loop_iterations` limit | **(planned)** |
-| Fork bombs / recursion | `max_call_depth` limit | **(planned)** |
-| Resource exhaustion | `max_command_count`, `max_execution_time`, `max_output_size` limits | **(planned)** |
-| Memory exhaustion | `max_string_length`, `max_heredoc_size`, `max_brace_expansion` limits | **(planned)** |
+| Network exfiltration | `NetworkPolicy` disabled by default; URL prefix allow-listing when enabled | ✅ |
+| Infinite loops | `max_loop_iterations` limit | ✅ |
+| Fork bombs / recursion | `max_call_depth` limit | ✅ |
+| Resource exhaustion | `max_command_count`, `max_execution_time`, `max_output_size` limits | ✅ |
+| Memory exhaustion | `max_string_length`, `max_heredoc_size`, `max_brace_expansion` limits | ✅ |
 | Path traversal | VFS path normalization handles `..`; OverlayFs restricts reads to specified base | Core design |
 | Host time leakage | `SystemTime::now()` exposes real clock; future: inject clock abstraction | Known limitation |
 | Lock poisoning | `parking_lot::RwLock` (non-poisoning) prevents command panics from killing VFS | Design decision |
 | Glob DoS | `max_glob_results` prevents unbounded glob expansion | ✅ |
-| Nested substitution | `max_substitution_depth` prevents `$($($(...)))` stack overflow | **(planned)** |
+| Nested substitution | `max_substitution_depth` prevents `$($($(...)))` stack overflow | ✅ |
 
 ### What We Guarantee
 

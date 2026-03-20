@@ -5,6 +5,7 @@ use crate::error::RustBashError;
 use crate::interpreter::{
     self, ExecResult, ExecutionCounters, ExecutionLimits, InterpreterState, ShellOpts, Variable,
 };
+use crate::network::NetworkPolicy;
 use crate::vfs::{InMemoryFs, VirtualFs};
 use std::collections::HashMap;
 use std::path::Path;
@@ -93,6 +94,7 @@ pub struct RustBashBuilder {
     cwd: Option<String>,
     custom_commands: Vec<Box<dyn VirtualCommand>>,
     limits: Option<ExecutionLimits>,
+    network_policy: Option<NetworkPolicy>,
 }
 
 impl Default for RustBashBuilder {
@@ -110,6 +112,7 @@ impl RustBashBuilder {
             cwd: None,
             custom_commands: Vec::new(),
             limits: None,
+            network_policy: None,
         }
     }
 
@@ -140,6 +143,12 @@ impl RustBashBuilder {
     /// Override the default execution limits.
     pub fn execution_limits(mut self, limits: ExecutionLimits) -> Self {
         self.limits = Some(limits);
+        self
+    }
+
+    /// Override the default network policy.
+    pub fn network_policy(mut self, policy: NetworkPolicy) -> Self {
+        self.network_policy = Some(policy);
         self
     }
 
@@ -189,6 +198,7 @@ impl RustBashBuilder {
             shell_opts: ShellOpts::default(),
             limits: self.limits.unwrap_or_default(),
             counters: ExecutionCounters::default(),
+            network_policy: self.network_policy.unwrap_or_default(),
             should_exit: false,
             loop_depth: 0,
             control_flow: None,

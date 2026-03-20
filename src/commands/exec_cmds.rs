@@ -820,24 +820,36 @@ mod tests {
     use super::*;
     use crate::commands::{CommandContext, CommandResult, VirtualCommand};
     use crate::interpreter::ExecutionLimits;
+    use crate::network::NetworkPolicy;
     use crate::vfs::{InMemoryFs, VirtualFs};
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    fn setup() -> (Arc<InMemoryFs>, HashMap<String, String>, ExecutionLimits) {
+    fn setup() -> (
+        Arc<InMemoryFs>,
+        HashMap<String, String>,
+        ExecutionLimits,
+        NetworkPolicy,
+    ) {
         let fs = Arc::new(InMemoryFs::new());
         fs.write_file(Path::new("/a.txt"), b"hello\n").unwrap();
         fs.write_file(Path::new("/b.md"), b"world\n").unwrap();
         fs.mkdir_p(Path::new("/dir1")).unwrap();
         fs.write_file(Path::new("/dir1/c.txt"), b"foo\n").unwrap();
         fs.mkdir_p(Path::new("/emptydir")).unwrap();
-        (fs, HashMap::new(), ExecutionLimits::default())
+        (
+            fs,
+            HashMap::new(),
+            ExecutionLimits::default(),
+            NetworkPolicy::default(),
+        )
     }
 
     fn ctx_with_exec<'a>(
         fs: &'a dyn VirtualFs,
         env: &'a HashMap<String, String>,
         limits: &'a ExecutionLimits,
+        network_policy: &'a NetworkPolicy,
         stdin: &'a str,
         exec: Option<&'a dyn Fn(&str) -> Result<CommandResult, crate::error::RustBashError>>,
     ) -> CommandContext<'a> {
@@ -847,6 +859,7 @@ mod tests {
             env,
             stdin,
             limits,
+            network_policy,
             exec,
         }
     }
@@ -914,9 +927,9 @@ mod tests {
 
     #[test]
     fn xargs_default_echo() {
-        let (fs, env, limits) = setup();
+        let (fs, env, limits, np) = setup();
         let exec_fn = simple_exec;
-        let c = ctx_with_exec(&*fs, &env, &limits, "a\nb\nc\n", Some(&exec_fn));
+        let c = ctx_with_exec(&*fs, &env, &limits, &np, "a\nb\nc\n", Some(&exec_fn));
         let r = XargsCommand.execute(&[], &c);
         assert_eq!(r.exit_code, 0);
         assert_eq!(r.stdout, "a b c\n");
@@ -924,9 +937,9 @@ mod tests {
 
     #[test]
     fn xargs_with_replace() {
-        let (fs, env, limits) = setup();
+        let (fs, env, limits, np) = setup();
         let exec_fn = simple_exec;
-        let c = ctx_with_exec(&*fs, &env, &limits, "a\nb\nc\n", Some(&exec_fn));
+        let c = ctx_with_exec(&*fs, &env, &limits, &np, "a\nb\nc\n", Some(&exec_fn));
         let r = XargsCommand.execute(
             &["-I".into(), "{}".into(), "echo".into(), "item: {}".into()],
             &c,
@@ -937,9 +950,9 @@ mod tests {
 
     #[test]
     fn xargs_with_max_args() {
-        let (fs, env, limits) = setup();
+        let (fs, env, limits, np) = setup();
         let exec_fn = simple_exec;
-        let c = ctx_with_exec(&*fs, &env, &limits, "1\n2\n3\n", Some(&exec_fn));
+        let c = ctx_with_exec(&*fs, &env, &limits, &np, "1\n2\n3\n", Some(&exec_fn));
         let r = XargsCommand.execute(&["-n".into(), "1".into(), "echo".into(), "num:".into()], &c);
         assert_eq!(r.exit_code, 0);
         assert_eq!(r.stdout, "num: 1\nnum: 2\nnum: 3\n");
@@ -947,9 +960,9 @@ mod tests {
 
     #[test]
     fn xargs_null_delimited() {
-        let (fs, env, limits) = setup();
+        let (fs, env, limits, np) = setup();
         let exec_fn = simple_exec;
-        let c = ctx_with_exec(&*fs, &env, &limits, "a\0b\0c", Some(&exec_fn));
+        let c = ctx_with_exec(&*fs, &env, &limits, &np, "a\0b\0c", Some(&exec_fn));
         let r = XargsCommand.execute(&["-0".into(), "echo".into()], &c);
         assert_eq!(r.exit_code, 0);
         assert_eq!(r.stdout, "a b c\n");
@@ -957,9 +970,9 @@ mod tests {
 
     #[test]
     fn xargs_custom_delimiter() {
-        let (fs, env, limits) = setup();
+        let (fs, env, limits, np) = setup();
         let exec_fn = simple_exec;
-        let c = ctx_with_exec(&*fs, &env, &limits, "a,b,c", Some(&exec_fn));
+        let c = ctx_with_exec(&*fs, &env, &limits, &np, "a,b,c", Some(&exec_fn));
         let r = XargsCommand.execute(&["-d".into(), ",".into(), "echo".into()], &c);
         assert_eq!(r.exit_code, 0);
         assert_eq!(r.stdout, "a b c\n");
@@ -969,8 +982,8 @@ mod tests {
 
     #[test]
     fn find_all_from_root() {
-        let (fs, env, limits) = setup();
-        let c = ctx_with_exec(&*fs, &env, &limits, "", None);
+        let (fs, env, limits, np) = setup();
+        let c = ctx_with_exec(&*fs, &env, &limits, &np, "", None);
         let r = FindCommand.execute(&["/".into()], &c);
         assert_eq!(r.exit_code, 0);
         assert!(r.stdout.contains("/a.txt"));
@@ -981,8 +994,8 @@ mod tests {
 
     #[test]
     fn find_by_name_pattern() {
-        let (fs, env, limits) = setup();
-        let c = ctx_with_exec(&*fs, &env, &limits, "", None);
+        let (fs, env, limits, np) = setup();
+        let c = ctx_with_exec(&*fs, &env, &limits, &np, "", None);
         let r = FindCommand.execute(&["/".into(), "-name".into(), "*.txt".into()], &c);
         assert_eq!(r.exit_code, 0);
         assert!(r.stdout.contains("/a.txt"));
@@ -992,8 +1005,8 @@ mod tests {
 
     #[test]
     fn find_type_directory() {
-        let (fs, env, limits) = setup();
-        let c = ctx_with_exec(&*fs, &env, &limits, "", None);
+        let (fs, env, limits, np) = setup();
+        let c = ctx_with_exec(&*fs, &env, &limits, &np, "", None);
         let r = FindCommand.execute(&["/".into(), "-type".into(), "d".into()], &c);
         assert_eq!(r.exit_code, 0);
         assert!(r.stdout.contains("/\n") || r.stdout.starts_with("/\n"));
@@ -1004,8 +1017,8 @@ mod tests {
 
     #[test]
     fn find_type_file() {
-        let (fs, env, limits) = setup();
-        let c = ctx_with_exec(&*fs, &env, &limits, "", None);
+        let (fs, env, limits, np) = setup();
+        let c = ctx_with_exec(&*fs, &env, &limits, &np, "", None);
         let r = FindCommand.execute(&["/".into(), "-type".into(), "f".into()], &c);
         assert_eq!(r.exit_code, 0);
         assert!(r.stdout.contains("/a.txt"));
@@ -1016,8 +1029,8 @@ mod tests {
 
     #[test]
     fn find_maxdepth() {
-        let (fs, env, limits) = setup();
-        let c = ctx_with_exec(&*fs, &env, &limits, "", None);
+        let (fs, env, limits, np) = setup();
+        let c = ctx_with_exec(&*fs, &env, &limits, &np, "", None);
         let r = FindCommand.execute(&["/".into(), "-maxdepth".into(), "1".into()], &c);
         assert_eq!(r.exit_code, 0);
         assert!(r.stdout.contains("/a.txt"));
@@ -1027,8 +1040,8 @@ mod tests {
 
     #[test]
     fn find_mindepth() {
-        let (fs, env, limits) = setup();
-        let c = ctx_with_exec(&*fs, &env, &limits, "", None);
+        let (fs, env, limits, np) = setup();
+        let c = ctx_with_exec(&*fs, &env, &limits, &np, "", None);
         let r = FindCommand.execute(&["/".into(), "-mindepth".into(), "1".into()], &c);
         assert_eq!(r.exit_code, 0);
         // Should not include root itself
@@ -1039,9 +1052,9 @@ mod tests {
 
     #[test]
     fn find_empty() {
-        let (fs, env, limits) = setup();
+        let (fs, env, limits, np) = setup();
         fs.write_file(Path::new("/empty.txt"), b"").unwrap();
-        let c = ctx_with_exec(&*fs, &env, &limits, "", None);
+        let c = ctx_with_exec(&*fs, &env, &limits, &np, "", None);
         let r = FindCommand.execute(&["/".into(), "-empty".into()], &c);
         assert_eq!(r.exit_code, 0);
         assert!(r.stdout.contains("/empty.txt"));
@@ -1050,8 +1063,8 @@ mod tests {
 
     #[test]
     fn find_not_name() {
-        let (fs, env, limits) = setup();
-        let c = ctx_with_exec(&*fs, &env, &limits, "", None);
+        let (fs, env, limits, np) = setup();
+        let c = ctx_with_exec(&*fs, &env, &limits, &np, "", None);
         let r = FindCommand.execute(
             &[
                 "/".into(),
@@ -1071,9 +1084,9 @@ mod tests {
 
     #[test]
     fn find_exec_each() {
-        let (fs, env, limits) = setup();
+        let (fs, env, limits, np) = setup();
         let exec_fn = simple_exec;
-        let c = ctx_with_exec(&*fs, &env, &limits, "", Some(&exec_fn));
+        let c = ctx_with_exec(&*fs, &env, &limits, &np, "", Some(&exec_fn));
         let r = FindCommand.execute(
             &[
                 "/".into(),
@@ -1093,8 +1106,8 @@ mod tests {
 
     #[test]
     fn find_or_expression() {
-        let (fs, env, limits) = setup();
-        let c = ctx_with_exec(&*fs, &env, &limits, "", None);
+        let (fs, env, limits, np) = setup();
+        let c = ctx_with_exec(&*fs, &env, &limits, &np, "", None);
         let r = FindCommand.execute(
             &[
                 "/".into(),
@@ -1114,8 +1127,8 @@ mod tests {
 
     #[test]
     fn find_nonexistent_path() {
-        let (fs, env, limits) = setup();
-        let c = ctx_with_exec(&*fs, &env, &limits, "", None);
+        let (fs, env, limits, np) = setup();
+        let c = ctx_with_exec(&*fs, &env, &limits, &np, "", None);
         let r = FindCommand.execute(&["/nonexistent".into()], &c);
         assert_eq!(r.exit_code, 1);
         assert!(r.stderr.contains("No such file or directory"));
@@ -1123,8 +1136,8 @@ mod tests {
 
     #[test]
     fn find_default_path_is_dot() {
-        let (fs, env, limits) = setup();
-        let c = ctx_with_exec(&*fs, &env, &limits, "", None);
+        let (fs, env, limits, np) = setup();
+        let c = ctx_with_exec(&*fs, &env, &limits, &np, "", None);
         let r = FindCommand.execute(&["-type".into(), "f".into()], &c);
         assert_eq!(r.exit_code, 0);
         assert!(r.stdout.contains("a.txt"));

@@ -58,7 +58,7 @@ pub fn expand_word(
         };
         let words = expand_word_segments(&sub_word, state)?;
         let split = finalize_with_ifs_split(words, state);
-        let expanded = glob_expand_words(split, state);
+        let expanded = glob_expand_words(split, state)?;
         if expanded.is_empty() && did_brace_expand {
             // Brace expansion produced this alternative; preserve it as an empty word.
             all_results.push(String::new());
@@ -86,7 +86,7 @@ pub(crate) fn expand_word_mut(
         };
         let words = expand_word_segments_mut(&sub_word, state)?;
         let split = finalize_with_ifs_split(words, state);
-        let expanded = glob_expand_words(split, state);
+        let expanded = glob_expand_words(split, state)?;
         if expanded.is_empty() && did_brace_expand {
             all_results.push(String::new());
         } else {
@@ -107,7 +107,15 @@ pub(crate) fn expand_word_to_string(
 ) -> Result<String, RustBashError> {
     let words = expand_word_segments(word, state)?;
     let result = finalize_no_split(words);
-    Ok(result.join(" "))
+    let joined = result.join(" ");
+    if joined.len() > state.limits.max_string_length {
+        return Err(RustBashError::LimitExceeded {
+            limit_name: "max_string_length",
+            limit_value: state.limits.max_string_length,
+            actual_value: joined.len(),
+        });
+    }
+    Ok(joined)
 }
 
 /// Mutable version of expand_word_to_string.
@@ -117,7 +125,15 @@ pub(crate) fn expand_word_to_string_mut(
 ) -> Result<String, RustBashError> {
     let words = expand_word_segments_mut(word, state)?;
     let result = finalize_no_split(words);
-    Ok(result.join(" "))
+    let joined = result.join(" ");
+    if joined.len() > state.limits.max_string_length {
+        return Err(RustBashError::LimitExceeded {
+            limit_name: "max_string_length",
+            limit_value: state.limits.max_string_length,
+            actual_value: joined.len(),
+        });
+    }
+    Ok(joined)
 }
 
 // ── Internal segment-based expansion ────────────────────────────────
@@ -191,7 +207,24 @@ fn execute_command_substitution(
     cmd_str: &str,
     state: &mut InterpreterState,
 ) -> Result<String, RustBashError> {
-    let program = parse(cmd_str)?;
+    state.counters.substitution_depth += 1;
+    if state.counters.substitution_depth > state.limits.max_substitution_depth {
+        let actual = state.counters.substitution_depth;
+        state.counters.substitution_depth -= 1;
+        return Err(RustBashError::LimitExceeded {
+            limit_name: "max_substitution_depth",
+            limit_value: state.limits.max_substitution_depth,
+            actual_value: actual,
+        });
+    }
+
+    let program = match parse(cmd_str) {
+        Ok(p) => p,
+        Err(e) => {
+            state.counters.substitution_depth -= 1;
+            return Err(e);
+        }
+    };
 
     // Create an isolated subshell state
     let cloned_fs: Arc<dyn crate::vfs::VirtualFs> =
@@ -210,7 +243,14 @@ fn execute_command_substitution(
         commands: clone_commands(&state.commands),
         shell_opts: state.shell_opts.clone(),
         limits: state.limits.clone(),
-        counters: ExecutionCounters::default(),
+        counters: ExecutionCounters {
+            command_count: state.counters.command_count,
+            output_size: state.counters.output_size,
+            start_time: state.counters.start_time,
+            substitution_depth: state.counters.substitution_depth,
+            call_depth: 0,
+        },
+        network_policy: state.network_policy.clone(),
         should_exit: false,
         loop_depth: 0,
         control_flow: None,
@@ -224,7 +264,14 @@ fn execute_command_substitution(
         errexit_suppressed: 0,
     };
 
-    let result = execute_program(&program, &mut sub_state)?;
+    let result = execute_program(&program, &mut sub_state);
+
+    // Fold shared counters back into parent
+    state.counters.command_count = sub_state.counters.command_count;
+    state.counters.output_size = sub_state.counters.output_size;
+    state.counters.substitution_depth -= 1;
+
+    let result = result?;
 
     // $? reflects the exit code of the substituted command
     state.last_exit_code = result.exit_code;
@@ -947,7 +994,10 @@ use std::path::PathBuf;
 /// For each word marked `may_glob`, attempt filesystem glob expansion.
 /// If matches are found, replace the word with the sorted matches.
 /// If no matches are found, keep the original pattern as a literal (bash default).
-fn glob_expand_words(words: Vec<SplitWord>, state: &InterpreterState) -> Vec<String> {
+fn glob_expand_words(
+    words: Vec<SplitWord>,
+    state: &InterpreterState,
+) -> Result<Vec<String>, RustBashError> {
     let cwd = PathBuf::from(&state.cwd);
     let max = state.limits.max_glob_results;
     let mut result = Vec::new();
@@ -960,8 +1010,14 @@ fn glob_expand_words(words: Vec<SplitWord>, state: &InterpreterState) -> Vec<Str
 
         match state.fs.glob(&w.text, &cwd) {
             Ok(matches) if !matches.is_empty() => {
-                let take = matches.len().min(max);
-                for p in &matches[..take] {
+                if matches.len() > max {
+                    return Err(RustBashError::LimitExceeded {
+                        limit_name: "max_glob_results",
+                        limit_value: max,
+                        actual_value: matches.len(),
+                    });
+                }
+                for p in &matches {
                     result.push(p.to_string_lossy().into_owned());
                 }
             }
@@ -972,7 +1028,7 @@ fn glob_expand_words(words: Vec<SplitWord>, state: &InterpreterState) -> Vec<Str
         }
     }
 
-    result
+    Ok(result)
 }
 
 // ── Transform / case helpers ────────────────────────────────────────

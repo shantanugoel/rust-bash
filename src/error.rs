@@ -42,7 +42,12 @@ impl std::error::Error for VfsError {}
 pub enum RustBashError {
     Parse(String),
     Execution(String),
-    LimitExceeded(String),
+    LimitExceeded {
+        limit_name: &'static str,
+        limit_value: usize,
+        actual_value: usize,
+    },
+    Network(String),
     Vfs(VfsError),
     Timeout,
 }
@@ -52,7 +57,15 @@ impl fmt::Display for RustBashError {
         match self {
             RustBashError::Parse(msg) => write!(f, "parse error: {msg}"),
             RustBashError::Execution(msg) => write!(f, "execution error: {msg}"),
-            RustBashError::LimitExceeded(msg) => write!(f, "limit exceeded: {msg}"),
+            RustBashError::LimitExceeded {
+                limit_name,
+                limit_value,
+                actual_value,
+            } => write!(
+                f,
+                "limit exceeded: {limit_name} ({actual_value}) exceeded limit ({limit_value})"
+            ),
+            RustBashError::Network(msg) => write!(f, "network error: {msg}"),
             RustBashError::Vfs(e) => write!(f, "vfs error: {e}"),
             RustBashError::Timeout => write!(f, "execution timed out"),
         }

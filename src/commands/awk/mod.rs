@@ -215,6 +215,7 @@ fn collect_inputs(files: &[String], ctx: &CommandContext) -> Result<Vec<(String,
 mod tests {
     use super::*;
     use crate::interpreter::ExecutionLimits;
+    use crate::network::NetworkPolicy;
     use crate::vfs::{InMemoryFs, VirtualFs};
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -229,6 +230,7 @@ mod tests {
             env: &env,
             stdin,
             limits: &limits,
+            network_policy: &NetworkPolicy::default(),
             exec: None,
         };
         let args = vec![program.to_string()];
@@ -245,6 +247,7 @@ mod tests {
             env: &env,
             stdin,
             limits: &limits,
+            network_policy: &NetworkPolicy::default(),
             exec: None,
         };
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
@@ -265,6 +268,7 @@ mod tests {
             env: &env,
             stdin: "",
             limits: &limits,
+            network_policy: &NetworkPolicy::default(),
             exec: None,
         };
         let mut args: Vec<String> = vec![program.to_string()];
@@ -410,6 +414,7 @@ mod tests {
             env: &env,
             stdin: "hello world\n",
             limits: &limits,
+            network_policy: &NetworkPolicy::default(),
             exec: None,
         };
         let args = vec!["-f".to_string(), "prog.awk".to_string()];

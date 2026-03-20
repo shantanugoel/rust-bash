@@ -31,16 +31,18 @@ fn check_errexit(state: &mut InterpreterState) {
 /// Check execution limits and return an error if any are exceeded.
 fn check_limits(state: &InterpreterState) -> Result<(), RustBashError> {
     if state.counters.command_count > state.limits.max_command_count {
-        return Err(RustBashError::LimitExceeded(format!(
-            "command count ({}) exceeded limit ({})",
-            state.counters.command_count, state.limits.max_command_count
-        )));
+        return Err(RustBashError::LimitExceeded {
+            limit_name: "max_command_count",
+            limit_value: state.limits.max_command_count,
+            actual_value: state.counters.command_count,
+        });
     }
     if state.counters.output_size > state.limits.max_output_size {
-        return Err(RustBashError::LimitExceeded(format!(
-            "output size ({}) exceeded limit ({})",
-            state.counters.output_size, state.limits.max_output_size
-        )));
+        return Err(RustBashError::LimitExceeded {
+            limit_name: "max_output_size",
+            limit_value: state.limits.max_output_size,
+            actual_value: state.counters.output_size,
+        });
     }
     if state.counters.start_time.elapsed() > state.limits.max_execution_time {
         return Err(RustBashError::Timeout);
@@ -474,10 +476,11 @@ fn execute_for(
         iterations += 1;
         if iterations > state.limits.max_loop_iterations {
             state.loop_depth -= 1;
-            return Err(RustBashError::Execution(format!(
-                "for loop exceeded maximum iterations ({})",
-                state.limits.max_loop_iterations
-            )));
+            return Err(RustBashError::LimitExceeded {
+                limit_name: "max_loop_iterations",
+                limit_value: state.limits.max_loop_iterations,
+                actual_value: iterations,
+            });
         }
 
         set_variable(state, &for_clause.variable_name, val.clone())?;
@@ -546,10 +549,11 @@ fn execute_arithmetic_for(
         iterations += 1;
         if iterations > state.limits.max_loop_iterations {
             state.loop_depth -= 1;
-            return Err(RustBashError::Execution(format!(
-                "arithmetic for loop exceeded maximum iterations ({})",
-                state.limits.max_loop_iterations
-            )));
+            return Err(RustBashError::LimitExceeded {
+                limit_name: "max_loop_iterations",
+                limit_value: state.limits.max_loop_iterations,
+                actual_value: iterations,
+            });
         }
 
         // Evaluate condition (empty condition = always true)
@@ -615,10 +619,11 @@ fn execute_while_until(
         iterations += 1;
         if iterations > state.limits.max_loop_iterations {
             state.loop_depth -= 1;
-            return Err(RustBashError::Execution(format!(
-                "loop exceeded maximum iterations ({})",
-                state.limits.max_loop_iterations
-            )));
+            return Err(RustBashError::LimitExceeded {
+                limit_name: "max_loop_iterations",
+                limit_value: state.limits.max_loop_iterations,
+                actual_value: iterations,
+            });
         }
 
         // Suppress errexit for the loop condition
@@ -692,7 +697,14 @@ fn execute_subshell(
         commands: clone_commands(&state.commands),
         shell_opts: state.shell_opts.clone(),
         limits: state.limits.clone(),
-        counters: ExecutionCounters::default(),
+        counters: ExecutionCounters {
+            command_count: state.counters.command_count,
+            output_size: state.counters.output_size,
+            start_time: state.counters.start_time,
+            substitution_depth: state.counters.substitution_depth,
+            call_depth: 0,
+        },
+        network_policy: state.network_policy.clone(),
         should_exit: false,
         loop_depth: 0,
         control_flow: None,
@@ -706,7 +718,13 @@ fn execute_subshell(
         errexit_suppressed: 0,
     };
 
-    let result = execute_compound_list(list, &mut sub_state, stdin)?;
+    let result = execute_compound_list(list, &mut sub_state, stdin);
+
+    // Fold shared counters back into parent
+    state.counters.command_count = sub_state.counters.command_count;
+    state.counters.output_size = sub_state.counters.output_size;
+
+    let result = result?;
 
     // Only the exit code propagates back; all other state changes are discarded
     Ok(result)
@@ -784,6 +802,11 @@ pub(crate) fn clone_commands(
 
 /// Create an exec callback that commands can use to invoke sub-commands.
 /// The callback parses and executes a command string in an isolated subshell state.
+///
+/// Note: The callback captures `start_time` so wall-clock limits apply globally.
+/// Per-invocation `command_count` resets because the `Fn` closure signature cannot
+/// fold counters back to the parent. The parent's `dispatch_command` still counts
+/// the top-level command (e.g., `xargs`/`find`) itself.
 fn make_exec_callback(
     state: &InterpreterState,
 ) -> impl Fn(&str) -> Result<CommandResult, RustBashError> {
@@ -800,9 +823,11 @@ fn make_exec_callback(
     let commands = clone_commands(&state.commands);
     let shell_opts = state.shell_opts.clone();
     let limits = state.limits.clone();
+    let network_policy = state.network_policy.clone();
     let positional_params = state.positional_params.clone();
     let shell_name = state.shell_name.clone();
     let random_seed = state.random_seed;
+    let start_time = state.counters.start_time;
 
     move |cmd_str: &str| {
         let program = parse(cmd_str)?;
@@ -823,7 +848,14 @@ fn make_exec_callback(
             commands: clone_commands(&commands),
             shell_opts: shell_opts.clone(),
             limits: limits.clone(),
-            counters: ExecutionCounters::default(),
+            counters: ExecutionCounters {
+                command_count: 0,
+                output_size: 0,
+                start_time,
+                substitution_depth: 0,
+                call_depth: 0,
+            },
+            network_policy: network_policy.clone(),
             should_exit: false,
             loop_depth: 0,
             control_flow: None,
@@ -858,11 +890,13 @@ fn execute_function_call(
     // Check call depth limit
     state.counters.call_depth += 1;
     if state.counters.call_depth > state.limits.max_call_depth {
+        let actual = state.counters.call_depth;
         state.counters.call_depth -= 1;
-        return Err(RustBashError::Execution(format!(
-            "{name}: maximum function call depth exceeded ({})",
-            state.limits.max_call_depth
-        )));
+        return Err(RustBashError::LimitExceeded {
+            limit_name: "max_call_depth",
+            limit_value: state.limits.max_call_depth,
+            actual_value: actual,
+        });
     }
 
     // Clone the function body so we don't hold a borrow on state.functions
@@ -943,6 +977,7 @@ fn dispatch_command(
         let fs = Arc::clone(&state.fs);
         let cwd = state.cwd.clone();
         let limits = state.limits.clone();
+        let network_policy = state.network_policy.clone();
 
         let exec_callback = make_exec_callback(state);
 
@@ -952,6 +987,7 @@ fn dispatch_command(
             env: &env,
             stdin,
             limits: &limits,
+            network_policy: &network_policy,
             exec: Some(&exec_callback),
         };
 
@@ -998,6 +1034,13 @@ fn get_stdin_from_redirects(
                 let fd_num = fd.unwrap_or(0);
                 if fd_num == 0 {
                     let val = expand_word_to_string_mut(word, state)?;
+                    if val.len() > state.limits.max_heredoc_size {
+                        return Err(RustBashError::LimitExceeded {
+                            limit_name: "max_heredoc_size",
+                            limit_value: state.limits.max_heredoc_size,
+                            actual_value: val.len(),
+                        });
+                    }
                     return Ok(format!("{val}\n"));
                 }
             }
@@ -1009,6 +1052,13 @@ fn get_stdin_from_redirects(
                     } else {
                         heredoc.doc.value.clone()
                     };
+                    if body.len() > state.limits.max_heredoc_size {
+                        return Err(RustBashError::LimitExceeded {
+                            limit_name: "max_heredoc_size",
+                            limit_value: state.limits.max_heredoc_size,
+                            actual_value: body.len(),
+                        });
+                    }
                     if heredoc.remove_tabs {
                         return Ok(body
                             .lines()

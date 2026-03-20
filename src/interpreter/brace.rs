@@ -62,9 +62,11 @@ fn expand_recursive(input: &str, max_results: usize) -> Result<Vec<String>, Rust
 
 fn check_limit(count: usize, max: usize) -> Result<(), RustBashError> {
     if count >= max {
-        return Err(RustBashError::LimitExceeded(format!(
-            "brace expansion exceeded limit of {max} results"
-        )));
+        return Err(RustBashError::LimitExceeded {
+            limit_name: "max_brace_expansion",
+            limit_value: max,
+            actual_value: count,
+        });
     }
     Ok(())
 }
