@@ -4538,6 +4538,27 @@ fn printf_format_string() {
 }
 
 #[test]
+fn printf_zero_padded_width() {
+    let mut sh = shell();
+    let r = sh.exec("printf '%05d\\n' 42").unwrap();
+    assert_eq!(r.stdout, "00042\n");
+}
+
+#[test]
+fn printf_left_aligned() {
+    let mut sh = shell();
+    let r = sh.exec("printf '%-10s|\\n' hi").unwrap();
+    assert_eq!(r.stdout, "hi        |\n");
+}
+
+#[test]
+fn printf_float_precision() {
+    let mut sh = shell();
+    let r = sh.exec("printf '%.2f\\n' 3.14159").unwrap();
+    assert_eq!(r.stdout, "3.14\n");
+}
+
+#[test]
 fn seq_generates_sequence() {
     let mut sh = shell();
     let r = sh.exec("seq 3").unwrap();

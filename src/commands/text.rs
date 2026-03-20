@@ -1831,7 +1831,6 @@ fn format_printf(fmt: &str, args: &[String], arg_idx: &mut usize) -> String {
                     'f' => result.push('\x0C'),
                     'v' => result.push('\x0B'),
                     '0' => {
-                        // Octal escape
                         let mut val = 0u32;
                         let mut count = 0;
                         while i + 1 < chars.len()
@@ -1862,67 +1861,235 @@ fn format_printf(fmt: &str, args: &[String], arg_idx: &mut usize) -> String {
                 result.push('%');
                 continue;
             }
-            match chars[i] {
-                '%' => result.push('%'),
+            if chars[i] == '%' {
+                result.push('%');
+                i += 1;
+                continue;
+            }
+
+            // Parse format specifier: %[flags][width][.precision]conversion
+            let mut flags = String::new();
+            while i < chars.len() && matches!(chars[i], '-' | '+' | ' ' | '#' | '0') {
+                flags.push(chars[i]);
+                i += 1;
+            }
+
+            // Parse optional width (digits or *)
+            let mut width: Option<usize> = None;
+            if i < chars.len() && chars[i] == '*' {
+                if *arg_idx < args.len() {
+                    width = Some(args[*arg_idx].parse::<usize>().unwrap_or(0));
+                    *arg_idx += 1;
+                }
+                i += 1;
+            } else {
+                let start = i;
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+                if i > start {
+                    let w: String = chars[start..i].iter().collect();
+                    width = w.parse().ok();
+                }
+            }
+
+            // Parse optional precision
+            let mut precision: Option<usize> = None;
+            if i < chars.len() && chars[i] == '.' {
+                i += 1;
+                if i < chars.len() && chars[i] == '*' {
+                    if *arg_idx < args.len() {
+                        precision = Some(args[*arg_idx].parse::<usize>().unwrap_or(0));
+                        *arg_idx += 1;
+                    }
+                    i += 1;
+                } else {
+                    let start = i;
+                    while i < chars.len() && chars[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                    let p: String = if i > start {
+                        chars[start..i].iter().collect()
+                    } else {
+                        "0".to_string()
+                    };
+                    precision = p.parse().ok();
+                }
+            }
+
+            if i >= chars.len() {
+                result.push('%');
+                result.push_str(&flags);
+                if let Some(w) = width {
+                    result.push_str(&w.to_string());
+                }
+                if let Some(p) = precision {
+                    result.push('.');
+                    result.push_str(&p.to_string());
+                }
+                continue;
+            }
+
+            let conv = chars[i];
+            let left_align = flags.contains('-');
+            let zero_pad = flags.contains('0') && !left_align;
+            let plus_sign = flags.contains('+');
+            let space_sign = flags.contains(' ') && !plus_sign;
+            let alt_form = flags.contains('#');
+
+            match conv {
                 's' => {
                     let arg = if *arg_idx < args.len() {
                         let a = &args[*arg_idx];
                         *arg_idx += 1;
-                        a.as_str()
+                        a.clone()
                     } else {
-                        ""
+                        String::new()
                     };
-                    result.push_str(arg);
+                    let truncated = if let Some(p) = precision {
+                        arg.chars().take(p).collect::<String>()
+                    } else {
+                        arg
+                    };
+                    let w = width.unwrap_or(0);
+                    if left_align {
+                        result.push_str(&format!("{:<width$}", truncated, width = w));
+                    } else {
+                        result.push_str(&format!("{:>width$}", truncated, width = w));
+                    }
                 }
                 'd' | 'i' => {
-                    let arg = if *arg_idx < args.len() {
+                    let val = if *arg_idx < args.len() {
                         let a = &args[*arg_idx];
                         *arg_idx += 1;
                         a.parse::<i64>().unwrap_or(0)
                     } else {
                         0
                     };
-                    result.push_str(&arg.to_string());
+                    let digits = val.unsigned_abs().to_string();
+                    let formatted = format_int_padded(&IntFmtOpts {
+                        prefix: "",
+                        digits: &digits,
+                        negative: val < 0,
+                        zero_pad,
+                        left_align,
+                        plus_sign,
+                        space_sign,
+                        width,
+                    });
+                    result.push_str(&formatted);
                 }
-                'f' => {
-                    let arg = if *arg_idx < args.len() {
+                'o' => {
+                    let val = if *arg_idx < args.len() {
+                        let a = &args[*arg_idx];
+                        *arg_idx += 1;
+                        a.parse::<i64>().unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    let prefix = if alt_form && val != 0 { "0" } else { "" };
+                    let digits = format!("{:o}", val.unsigned_abs());
+                    let formatted = format_int_padded(&IntFmtOpts {
+                        prefix,
+                        digits: &digits,
+                        negative: val < 0,
+                        zero_pad,
+                        left_align,
+                        plus_sign,
+                        space_sign,
+                        width,
+                    });
+                    result.push_str(&formatted);
+                }
+                'x' | 'X' => {
+                    let val = if *arg_idx < args.len() {
+                        let a = &args[*arg_idx];
+                        *arg_idx += 1;
+                        a.parse::<i64>().unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    let prefix = if alt_form && val != 0 {
+                        if conv == 'x' { "0x" } else { "0X" }
+                    } else {
+                        ""
+                    };
+                    let digits = if conv == 'x' {
+                        format!("{:x}", val.unsigned_abs())
+                    } else {
+                        format!("{:X}", val.unsigned_abs())
+                    };
+                    let formatted = format_int_padded(&IntFmtOpts {
+                        prefix,
+                        digits: &digits,
+                        negative: val < 0,
+                        zero_pad,
+                        left_align,
+                        plus_sign,
+                        space_sign,
+                        width,
+                    });
+                    result.push_str(&formatted);
+                }
+                'f' | 'e' | 'E' | 'g' | 'G' => {
+                    let val = if *arg_idx < args.len() {
                         let a = &args[*arg_idx];
                         *arg_idx += 1;
                         a.parse::<f64>().unwrap_or(0.0)
                     } else {
                         0.0
                     };
-                    result.push_str(&format!("{:.6}", arg));
-                }
-                'x' => {
-                    let arg = if *arg_idx < args.len() {
-                        let a = &args[*arg_idx];
-                        *arg_idx += 1;
-                        a.parse::<i64>().unwrap_or(0)
-                    } else {
-                        0
+                    let prec = precision.unwrap_or(6);
+                    let num_str = match conv {
+                        'e' => format!("{:.prec$e}", val),
+                        'E' => format!("{:.prec$E}", val),
+                        'g' | 'G' => {
+                            // %g uses shorter of %e or %f
+                            let f_str = format!("{:.prec$}", val);
+                            let e_str = if conv == 'g' {
+                                format!("{:.prec$e}", val)
+                            } else {
+                                format!("{:.prec$E}", val)
+                            };
+                            if e_str.len() < f_str.len() {
+                                e_str
+                            } else {
+                                f_str
+                            }
+                        }
+                        _ => format!("{:.prec$}", val),
                     };
-                    result.push_str(&format!("{:x}", arg));
-                }
-                'X' => {
-                    let arg = if *arg_idx < args.len() {
-                        let a = &args[*arg_idx];
-                        *arg_idx += 1;
-                        a.parse::<i64>().unwrap_or(0)
+                    let sign = if val.is_sign_negative() && !num_str.starts_with('-') {
+                        "-"
+                    } else if plus_sign && !num_str.starts_with('-') {
+                        "+"
+                    } else if space_sign && !num_str.starts_with('-') {
+                        " "
                     } else {
-                        0
+                        ""
                     };
-                    result.push_str(&format!("{:X}", arg));
-                }
-                'o' => {
-                    let arg = if *arg_idx < args.len() {
-                        let a = &args[*arg_idx];
-                        *arg_idx += 1;
-                        a.parse::<i64>().unwrap_or(0)
+                    let full = format!("{sign}{num_str}");
+                    let w = width.unwrap_or(0);
+                    if left_align {
+                        result.push_str(&format!("{:<width$}", full, width = w));
+                    } else if zero_pad {
+                        // For zero-padded floats, pad between sign and digits
+                        if full.starts_with('-') || full.starts_with('+') || full.starts_with(' ') {
+                            let (s, rest) = full.split_at(1);
+                            if w > full.len() {
+                                let pad = "0".repeat(w - full.len());
+                                result.push_str(s);
+                                result.push_str(&pad);
+                                result.push_str(rest);
+                            } else {
+                                result.push_str(&full);
+                            }
+                        } else {
+                            result.push_str(&format!("{:0>width$}", full, width = w));
+                        }
                     } else {
-                        0
-                    };
-                    result.push_str(&format!("{:o}", arg));
+                        result.push_str(&format!("{:>width$}", full, width = w));
+                    }
                 }
                 'c' => {
                     let arg = if *arg_idx < args.len() {
@@ -1938,7 +2105,15 @@ fn format_printf(fmt: &str, args: &[String], arg_idx: &mut usize) -> String {
                 }
                 _ => {
                     result.push('%');
-                    result.push(chars[i]);
+                    result.push_str(&flags);
+                    if let Some(w) = width {
+                        result.push_str(&w.to_string());
+                    }
+                    if let Some(p) = precision {
+                        result.push('.');
+                        result.push_str(&p.to_string());
+                    }
+                    result.push(conv);
                 }
             }
         } else {
@@ -1947,6 +2122,50 @@ fn format_printf(fmt: &str, args: &[String], arg_idx: &mut usize) -> String {
         i += 1;
     }
     result
+}
+
+struct IntFmtOpts<'a> {
+    prefix: &'a str,
+    digits: &'a str,
+    negative: bool,
+    zero_pad: bool,
+    left_align: bool,
+    plus_sign: bool,
+    space_sign: bool,
+    width: Option<usize>,
+}
+
+fn format_int_padded(opts: &IntFmtOpts) -> String {
+    let sign = if opts.negative {
+        "-"
+    } else if opts.plus_sign {
+        "+"
+    } else if opts.space_sign {
+        " "
+    } else {
+        ""
+    };
+
+    let core_len = sign.len() + opts.prefix.len() + opts.digits.len();
+    let w = opts.width.unwrap_or(0);
+
+    if opts.left_align {
+        let mut s = format!("{}{}{}", sign, opts.prefix, opts.digits);
+        while s.len() < w {
+            s.push(' ');
+        }
+        s
+    } else if opts.zero_pad {
+        let pad = w.saturating_sub(core_len);
+        format!("{}{}{}{}", sign, opts.prefix, "0".repeat(pad), opts.digits)
+    } else {
+        let full = format!("{}{}{}", sign, opts.prefix, opts.digits);
+        if w > full.len() {
+            format!("{}{full}", " ".repeat(w - full.len()))
+        } else {
+            full
+        }
+    }
 }
 
 // ── paste ────────────────────────────────────────────────────────────
@@ -4081,6 +4300,94 @@ mod tests {
         let c = ctx(&*fs, &env, &limits, &np);
         let r = PrintfCommand.execute(&["%s\n".into(), "a".into(), "b".into(), "c".into()], &c);
         assert_eq!(r.stdout, "a\nb\nc\n");
+    }
+
+    #[test]
+    fn printf_zero_padded_int() {
+        let (fs, env, limits, np) = setup();
+        let c = ctx(&*fs, &env, &limits, &np);
+        let r = PrintfCommand.execute(&["%05d".into(), "42".into()], &c);
+        assert_eq!(r.stdout, "00042");
+    }
+
+    #[test]
+    fn printf_left_aligned_string() {
+        let (fs, env, limits, np) = setup();
+        let c = ctx(&*fs, &env, &limits, &np);
+        let r = PrintfCommand.execute(&["%-10s|".into(), "hi".into()], &c);
+        assert_eq!(r.stdout, "hi        |");
+    }
+
+    #[test]
+    fn printf_right_aligned_string() {
+        let (fs, env, limits, np) = setup();
+        let c = ctx(&*fs, &env, &limits, &np);
+        let r = PrintfCommand.execute(&["%10s|".into(), "hi".into()], &c);
+        assert_eq!(r.stdout, "        hi|");
+    }
+
+    #[test]
+    fn printf_precision_float() {
+        let (fs, env, limits, np) = setup();
+        let c = ctx(&*fs, &env, &limits, &np);
+        let r = PrintfCommand.execute(&["%.2f".into(), "3.14159".into()], &c);
+        assert_eq!(r.stdout, "3.14");
+    }
+
+    #[test]
+    fn printf_width_and_precision_float() {
+        let (fs, env, limits, np) = setup();
+        let c = ctx(&*fs, &env, &limits, &np);
+        let r = PrintfCommand.execute(&["%10.2f".into(), "3.14".into()], &c);
+        assert_eq!(r.stdout, "      3.14");
+    }
+
+    #[test]
+    fn printf_plus_sign_int() {
+        let (fs, env, limits, np) = setup();
+        let c = ctx(&*fs, &env, &limits, &np);
+        let r = PrintfCommand.execute(&["%+d".into(), "42".into()], &c);
+        assert_eq!(r.stdout, "+42");
+    }
+
+    #[test]
+    fn printf_plus_sign_negative_int() {
+        let (fs, env, limits, np) = setup();
+        let c = ctx(&*fs, &env, &limits, &np);
+        let r = PrintfCommand.execute(&["%+d".into(), "-5".into()], &c);
+        assert_eq!(r.stdout, "-5");
+    }
+
+    #[test]
+    fn printf_alt_form_hex() {
+        let (fs, env, limits, np) = setup();
+        let c = ctx(&*fs, &env, &limits, &np);
+        let r = PrintfCommand.execute(&["%#x".into(), "255".into()], &c);
+        assert_eq!(r.stdout, "0xff");
+    }
+
+    #[test]
+    fn printf_alt_form_octal() {
+        let (fs, env, limits, np) = setup();
+        let c = ctx(&*fs, &env, &limits, &np);
+        let r = PrintfCommand.execute(&["%#o".into(), "8".into()], &c);
+        assert_eq!(r.stdout, "010");
+    }
+
+    #[test]
+    fn printf_string_precision_truncates() {
+        let (fs, env, limits, np) = setup();
+        let c = ctx(&*fs, &env, &limits, &np);
+        let r = PrintfCommand.execute(&["%.3s".into(), "hello".into()], &c);
+        assert_eq!(r.stdout, "hel");
+    }
+
+    #[test]
+    fn printf_star_width() {
+        let (fs, env, limits, np) = setup();
+        let c = ctx(&*fs, &env, &limits, &np);
+        let r = PrintfCommand.execute(&["%*d".into(), "8".into(), "42".into()], &c);
+        assert_eq!(r.stdout, "      42");
     }
 
     // ── paste tests ──────────────────────────────────────────────────
