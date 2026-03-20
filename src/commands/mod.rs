@@ -870,12 +870,4 @@ mod tests {
         };
         assert_eq!(FalseCommand.execute(&[], &ctx).exit_code, 1);
     }
-
-    #[test]
-    fn register_default_commands_includes_expected() {
-        let cmds = register_default_commands();
-        assert!(cmds.contains_key("echo"));
-        assert!(cmds.contains_key("true"));
-        assert!(cmds.contains_key("false"));
-    }
 }

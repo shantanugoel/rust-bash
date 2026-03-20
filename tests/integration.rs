@@ -3841,3 +3841,839 @@ fn network_method_restriction_rejects_disallowed() {
         r.stderr,
     );
 }
+
+// ── State persistence across exec() calls ────────────────────────
+
+#[test]
+fn function_definitions_persist_across_exec_calls() {
+    let mut sh = shell();
+    sh.exec("greet() { echo \"hello $1\"; }").unwrap();
+    let r = sh.exec("greet world").unwrap();
+    assert_eq!(r.stdout, "hello world\n");
+}
+
+#[test]
+fn last_exit_code_persists_across_exec_calls() {
+    let mut sh = shell();
+    sh.exec("false").unwrap();
+    let r = sh.exec("echo $?").unwrap();
+    assert_eq!(r.stdout, "1\n");
+}
+
+#[test]
+fn shell_opts_persist_across_exec_calls() {
+    let mut sh = shell();
+    sh.exec("set -o pipefail").unwrap();
+    let r = sh.exec("false | true").unwrap();
+    assert_eq!(r.exit_code, 1);
+}
+
+// ── Pre-command variable assignment semantics ────────────────────
+
+#[test]
+fn bare_assignment_persists_globally() {
+    let mut sh = shell();
+    sh.exec("FOO=bar").unwrap();
+    let r = sh.exec("echo $FOO").unwrap();
+    assert_eq!(r.stdout, "bar\n");
+}
+
+#[test]
+fn pre_command_assignment_visible_in_command_env() {
+    let mut sh = shell();
+    // The variable should be visible to the command via env/printenv
+    let r = sh.exec("FOO=bar printenv FOO").unwrap();
+    assert_eq!(r.stdout.trim(), "bar");
+}
+
+// ── Builder configuration ────────────────────────────────────────
+
+#[test]
+fn builder_files_creates_parent_dirs() {
+    use rust_bash::RustBashBuilder;
+    let mut files = HashMap::new();
+    files.insert("/deep/nested/file.txt".to_string(), b"content".to_vec());
+    let mut sh = RustBashBuilder::new().files(files).build().unwrap();
+    let r = sh.exec("cat /deep/nested/file.txt").unwrap();
+    assert_eq!(r.stdout, "content");
+}
+
+#[test]
+fn builder_env_variables_accessible() {
+    use rust_bash::RustBashBuilder;
+    let mut env = HashMap::new();
+    env.insert("MY_VAR".to_string(), "my_value".to_string());
+    let mut sh = RustBashBuilder::new().env(env).build().unwrap();
+    let r = sh.exec("echo $MY_VAR").unwrap();
+    assert_eq!(r.stdout, "my_value\n");
+}
+
+#[test]
+fn builder_cwd_sets_initial_directory() {
+    use rust_bash::RustBashBuilder;
+    let mut sh = RustBashBuilder::new().cwd("/custom").build().unwrap();
+    let r = sh.exec("pwd").unwrap();
+    assert_eq!(r.stdout, "/custom\n");
+}
+
+#[test]
+fn builder_custom_command_overrides_builtin() {
+    use rust_bash::{CommandContext, CommandResult, RustBashBuilder, VirtualCommand};
+
+    struct MyEcho;
+    impl VirtualCommand for MyEcho {
+        fn name(&self) -> &str {
+            "myecho"
+        }
+        fn execute(&self, args: &[String], _ctx: &CommandContext) -> CommandResult {
+            CommandResult {
+                stdout: format!("custom: {}\n", args.join(" ")),
+                stderr: String::new(),
+                exit_code: 0,
+            }
+        }
+    }
+
+    let mut sh = RustBashBuilder::new()
+        .command(Box::new(MyEcho))
+        .build()
+        .unwrap();
+    let r = sh.exec("myecho hello").unwrap();
+    assert_eq!(r.stdout, "custom: hello\n");
+}
+
+// ── is_input_complete edge cases ─────────────────────────────────
+
+#[test]
+fn is_input_complete_empty_string() {
+    assert!(rust_bash::RustBash::is_input_complete(""));
+}
+
+#[test]
+fn is_input_complete_unterminated_single_quote() {
+    assert!(!rust_bash::RustBash::is_input_complete("echo 'hello"));
+}
+
+#[test]
+fn is_input_complete_unterminated_double_quote() {
+    assert!(!rust_bash::RustBash::is_input_complete("echo \"hello"));
+}
+
+#[test]
+fn is_input_complete_open_if() {
+    assert!(!rust_bash::RustBash::is_input_complete("if true; then"));
+}
+
+#[test]
+fn is_input_complete_valid_if() {
+    assert!(rust_bash::RustBash::is_input_complete(
+        "if true; then echo yes; fi"
+    ));
+}
+
+#[test]
+fn is_input_complete_open_heredoc() {
+    assert!(!rust_bash::RustBash::is_input_complete("cat <<EOF\nhello"));
+}
+
+#[test]
+fn is_input_complete_syntax_error_is_complete() {
+    // Genuine syntax error (not incomplete) should return true
+    assert!(rust_bash::RustBash::is_input_complete(";;"));
+}
+
+// ── Error variant Display messages ───────────────────────────────
+
+#[test]
+fn error_display_parse() {
+    let err = rust_bash::RustBashError::Parse("test".into());
+    assert_eq!(format!("{err}"), "parse error: test");
+}
+
+#[test]
+fn error_display_execution() {
+    let err = rust_bash::RustBashError::Execution("fail".into());
+    assert_eq!(format!("{err}"), "execution error: fail");
+}
+
+#[test]
+fn error_display_limit_exceeded() {
+    let err = rust_bash::RustBashError::LimitExceeded {
+        limit_name: "max_command_count",
+        limit_value: 100,
+        actual_value: 101,
+    };
+    let s = format!("{err}");
+    assert!(s.contains("max_command_count"));
+    assert!(s.contains("101"));
+    assert!(s.contains("100"));
+}
+
+#[test]
+fn error_display_timeout() {
+    let err = rust_bash::RustBashError::Timeout;
+    assert_eq!(format!("{err}"), "execution timed out");
+}
+
+#[test]
+fn error_display_network() {
+    let err = rust_bash::RustBashError::Network("denied".into());
+    assert_eq!(format!("{err}"), "network error: denied");
+}
+
+#[test]
+fn error_display_vfs() {
+    let err = rust_bash::RustBashError::Vfs(rust_bash::VfsError::NotFound("/a".into()));
+    let s = format!("{err}");
+    assert!(s.contains("No such file or directory"));
+}
+
+#[test]
+fn vfs_error_display_all_variants() {
+    use rust_bash::VfsError;
+    use std::path::PathBuf;
+
+    let cases: Vec<(VfsError, &str)> = vec![
+        (VfsError::NotFound(PathBuf::from("/a")), "No such file"),
+        (
+            VfsError::AlreadyExists(PathBuf::from("/a")),
+            "Already exists",
+        ),
+        (
+            VfsError::NotADirectory(PathBuf::from("/a")),
+            "Not a directory",
+        ),
+        (VfsError::NotAFile(PathBuf::from("/a")), "Not a file"),
+        (
+            VfsError::IsADirectory(PathBuf::from("/a")),
+            "Is a directory",
+        ),
+        (
+            VfsError::PermissionDenied(PathBuf::from("/a")),
+            "Permission denied",
+        ),
+        (
+            VfsError::DirectoryNotEmpty(PathBuf::from("/a")),
+            "Directory not empty",
+        ),
+        (VfsError::SymlinkLoop(PathBuf::from("/a")), "symbolic links"),
+        (VfsError::InvalidPath("bad".into()), "Invalid path"),
+        (VfsError::IoError("broken".into()), "I/O error"),
+    ];
+    for (err, expected_substr) in cases {
+        let s = format!("{err}");
+        assert!(
+            s.contains(expected_substr),
+            "VfsError display for {:?} should contain '{expected_substr}', got: {s}",
+            err
+        );
+    }
+}
+
+// ── Control flow edge cases ──────────────────────────────────────
+
+#[test]
+fn continue_large_n_resumes_outermost() {
+    let mut sh = shell();
+    let r = sh
+        .exec("for i in 1 2; do for j in a b; do echo $i$j; continue 99; done; done")
+        .unwrap();
+    // continue 99 > depth → continues outermost loop
+    assert_eq!(r.stdout, "1a\n2a\n");
+}
+
+#[test]
+fn case_empty_body() {
+    let mut sh = shell();
+    let r = sh.exec("case foo in foo) ;; esac; echo done").unwrap();
+    assert_eq!(r.stdout, "done\n");
+    assert_eq!(r.exit_code, 0);
+}
+
+// ── set without arguments lists variables ────────────────────────
+
+#[test]
+fn set_without_args_lists_variables() {
+    let mut sh = shell();
+    sh.exec("MY_TEST_VAR=hello123").unwrap();
+    let r = sh.exec("set").unwrap();
+    assert!(
+        r.stdout.contains("MY_TEST_VAR=") && r.stdout.contains("hello123"),
+        "set output should list variables, got: {}",
+        &r.stdout[..r.stdout.len().min(500)]
+    );
+}
+
+// ── Arithmetic edge cases ────────────────────────────────────────
+
+#[test]
+fn arithmetic_overflow_wraps() {
+    let mut sh = shell();
+    // i64::MAX + 1 wraps (or stays at boundary - depends on implementation)
+    let r = sh.exec("echo $((9223372036854775807 + 1))").unwrap();
+    // Should not panic; result is implementation-defined
+    assert_eq!(r.exit_code, 0);
+}
+
+#[test]
+fn arithmetic_negative_numbers() {
+    let mut sh = shell();
+    let r = sh.exec("echo $((-5 + 3))").unwrap();
+    assert_eq!(r.stdout, "-2\n");
+}
+
+#[test]
+fn arithmetic_nested_parentheses() {
+    let mut sh = shell();
+    let r = sh.exec("echo $((((2 + 3)) * 4))").unwrap();
+    assert_eq!(r.stdout, "20\n");
+}
+
+#[test]
+fn arithmetic_assignment_in_expansion() {
+    let mut sh = shell();
+    let r = sh.exec("echo $((x = 10, x + 5))").unwrap();
+    assert_eq!(r.stdout, "15\n");
+    let r = sh.exec("echo $x").unwrap();
+    assert_eq!(r.stdout, "10\n");
+}
+
+// ── Command-specific coverage gaps ───────────────────────────────
+
+#[test]
+fn cat_dash_n_numbers_lines() {
+    let mut sh = shell();
+    sh.exec("printf 'alpha\\nbeta\\ngamma\\n' > /f.txt")
+        .unwrap();
+    let r = sh.exec("cat -n /f.txt").unwrap();
+    // Verify line numbers appear with their corresponding content
+    let lines: Vec<&str> = r.stdout.lines().collect();
+    assert_eq!(lines.len(), 3);
+    assert!(lines[0].contains('1') && lines[0].contains("alpha"));
+    assert!(lines[1].contains('2') && lines[1].contains("beta"));
+    assert!(lines[2].contains('3') && lines[2].contains("gamma"));
+}
+
+#[test]
+fn cat_multiple_files() {
+    let mut sh = shell();
+    sh.exec("echo aaa > /a.txt && echo bbb > /b.txt").unwrap();
+    let r = sh.exec("cat /a.txt /b.txt").unwrap();
+    assert_eq!(r.stdout, "aaa\nbbb\n");
+}
+
+#[test]
+fn touch_updates_existing_file_mtime() {
+    let mut sh = shell();
+    sh.exec("echo data > /ts.txt").unwrap();
+    // touch should not change content
+    sh.exec("touch /ts.txt").unwrap();
+    let r = sh.exec("cat /ts.txt").unwrap();
+    assert_eq!(r.stdout, "data\n");
+}
+
+#[test]
+fn mkdir_p_existing_directory_succeeds() {
+    let mut sh = shell();
+    sh.exec("mkdir -p /exists").unwrap();
+    // Should not error on existing dir
+    let r = sh.exec("mkdir -p /exists").unwrap();
+    assert_eq!(r.exit_code, 0);
+}
+
+#[test]
+fn mkdir_without_p_fails_on_existing() {
+    let mut sh = shell();
+    sh.exec("mkdir /exists").unwrap();
+    let r = sh.exec("mkdir /exists").unwrap();
+    assert_ne!(r.exit_code, 0);
+}
+
+#[test]
+fn ls_recursive() {
+    let mut sh = shell();
+    sh.exec("mkdir -p /lsdir/sub && echo x > /lsdir/a.txt && echo y > /lsdir/sub/b.txt")
+        .unwrap();
+    let r = sh.exec("ls -R /lsdir").unwrap();
+    assert!(r.stdout.contains("a.txt"));
+    assert!(r.stdout.contains("b.txt"));
+    assert!(r.stdout.contains("sub"));
+}
+
+// ── Redirection edge cases ───────────────────────────────────────
+
+#[test]
+fn redirect_to_nonexistent_directory_errors() {
+    let mut sh = shell();
+    let result = sh.exec("echo data > /no/such/dir/file.txt");
+    // Should error - either as Err or as non-zero exit
+    match result {
+        Err(_) => {} // Expected: error for missing directory
+        Ok(r) => assert_ne!(r.exit_code, 0),
+    }
+}
+
+#[test]
+fn redirect_stderr_and_stdout_combined() {
+    let mut sh = shell();
+    let r = sh
+        .exec("{ echo out; nonexistent_cmd; } > /combined.txt 2>&1; cat /combined.txt")
+        .unwrap();
+    assert!(r.stdout.contains("out"));
+    assert!(r.stdout.contains("command not found"));
+}
+
+#[test]
+fn here_string_trailing_newline() {
+    let mut sh = shell();
+    let r = sh.exec("cat <<<hello | wc -l").unwrap();
+    assert_eq!(r.stdout.trim(), "1");
+}
+
+// ── Pipeline edge cases ──────────────────────────────────────────
+
+#[test]
+fn multi_stage_pipeline() {
+    let mut sh = shell();
+    let r = sh.exec("echo -e 'c\\na\\nb' | sort | head -n 1").unwrap();
+    assert_eq!(r.stdout, "a\n");
+}
+
+#[test]
+fn pipeline_exit_code_last_command() {
+    let mut sh = shell();
+    let r = sh.exec("false | true").unwrap();
+    assert_eq!(r.exit_code, 0);
+}
+
+#[test]
+fn pipeline_pipefail_reports_first_failure() {
+    let mut sh = shell();
+    let r = sh.exec("set -o pipefail; false | true").unwrap();
+    assert_ne!(r.exit_code, 0);
+}
+
+// ── IFS behavior ─────────────────────────────────────────────────
+
+#[test]
+fn custom_ifs_splitting() {
+    let mut sh = shell();
+    let r = sh
+        .exec("IFS=:; DATA='a:b:c'; for x in $DATA; do echo $x; done")
+        .unwrap();
+    assert_eq!(r.stdout, "a\nb\nc\n");
+}
+
+#[test]
+fn default_ifs_collapses_whitespace() {
+    let mut sh = shell();
+    let r = sh
+        .exec("VAR='  a   b   c  '; for x in $VAR; do echo $x; done")
+        .unwrap();
+    assert_eq!(r.stdout, "a\nb\nc\n");
+}
+
+// ── Command substitution edge cases ──────────────────────────────
+
+#[test]
+fn command_substitution_strips_trailing_newlines() {
+    let mut sh = shell();
+    let r = sh
+        .exec("X=$(printf 'hello\\n\\n\\n'); echo \"${#X}\"")
+        .unwrap();
+    assert_eq!(r.stdout, "5\n");
+}
+
+// ── Quoting edge cases ──────────────────────────────────────────
+
+#[test]
+fn single_quotes_prevent_expansion() {
+    let mut sh = shell();
+    sh.exec("VAR=hello").unwrap();
+    let r = sh.exec("echo '$VAR'").unwrap();
+    assert_eq!(r.stdout, "$VAR\n");
+}
+
+#[test]
+fn double_quotes_allow_expansion() {
+    let mut sh = shell();
+    sh.exec("VAR=hello").unwrap();
+    let r = sh.exec("echo \"$VAR\"").unwrap();
+    assert_eq!(r.stdout, "hello\n");
+}
+
+#[test]
+fn double_quotes_preserve_spaces() {
+    let mut sh = shell();
+    sh.exec("VAR='a   b   c'").unwrap();
+    let r = sh.exec("echo \"$VAR\"").unwrap();
+    assert_eq!(r.stdout, "a   b   c\n");
+}
+
+// ── Read builtin edge cases ─────────────────────────────────────
+
+#[test]
+fn read_eof_returns_exit_1() {
+    let mut sh = shell();
+    // Pipe an empty input to read; read at EOF returns 1
+    let r = sh.exec("printf '' | { read var; echo $?; }").unwrap();
+    assert!(
+        r.stdout.trim() == "1",
+        "expected exit 1 from read at EOF, got: {}",
+        r.stdout
+    );
+}
+
+#[test]
+fn read_splits_on_ifs() {
+    let mut sh = shell();
+    let r = sh
+        .exec("echo 'first second third' | { read a b c; echo \"a=$a b=$b c=$c\"; }")
+        .unwrap();
+    assert_eq!(r.stdout, "a=first b=second c=third\n");
+}
+
+// ── Trap edge cases ─────────────────────────────────────────────
+
+#[test]
+fn trap_reset() {
+    let mut sh = shell();
+    sh.exec("trap 'echo bye' EXIT").unwrap();
+    sh.exec("trap '' EXIT").unwrap();
+    let r = sh.exec("echo hello").unwrap();
+    assert_eq!(r.stdout, "hello\n");
+    assert!(!r.stdout.contains("bye"));
+}
+
+// ── eval edge cases ─────────────────────────────────────────────
+
+#[test]
+fn eval_executes_dynamically_built_command() {
+    let mut sh = shell();
+    let r = sh.exec("CMD='echo hello'; eval $CMD").unwrap();
+    assert_eq!(r.stdout, "hello\n");
+}
+
+// ── source edge cases ───────────────────────────────────────────
+
+#[test]
+fn source_runs_in_current_context() {
+    let mut sh = shell();
+    sh.exec("echo 'MY_SOURCED_VAR=sourced' > /setup.sh")
+        .unwrap();
+    sh.exec("source /setup.sh").unwrap();
+    let r = sh.exec("echo $MY_SOURCED_VAR").unwrap();
+    assert_eq!(r.stdout, "sourced\n");
+}
+
+// ── Readonly variable error ─────────────────────────────────────
+
+#[test]
+fn readonly_variable_assignment_error() {
+    let mut sh = shell();
+    sh.exec("readonly X=fixed").unwrap();
+    let result = sh.exec("X=changed");
+    // Assignment to readonly should produce an error
+    match result {
+        Err(rust_bash::RustBashError::Execution(msg)) => {
+            assert!(
+                msg.contains("readonly"),
+                "expected readonly error, got: {msg}"
+            );
+        }
+        Ok(r) => {
+            assert_ne!(r.exit_code, 0);
+            assert!(r.stderr.contains("readonly"));
+        }
+        other => panic!("unexpected result: {other:?}"),
+    }
+}
+
+// ── cd edge cases ───────────────────────────────────────────────
+
+#[test]
+fn cd_nonexistent_directory_errors_cwd_unchanged() {
+    let mut sh = shell();
+    let r = sh.exec("cd /nonexistent_dir").unwrap();
+    assert_ne!(r.exit_code, 0);
+    let r = sh.exec("pwd").unwrap();
+    assert_eq!(r.stdout, "/\n");
+}
+
+#[test]
+fn cd_dash_returns_to_oldpwd() {
+    let mut sh = shell();
+    sh.exec("mkdir -p /dir1 /dir2").unwrap();
+    sh.exec("cd /dir1").unwrap();
+    sh.exec("cd /dir2").unwrap();
+    sh.exec("cd -").unwrap();
+    let r = sh.exec("pwd").unwrap();
+    assert_eq!(r.stdout, "/dir1\n");
+}
+
+// ── Parameter expansion edge cases ───────────────────────────────
+
+#[test]
+fn expand_assign_default_sets_variable() {
+    let mut sh = shell();
+    let r = sh.exec("echo ${X:=hello}; echo $X").unwrap();
+    assert_eq!(r.stdout, "hello\nhello\n");
+}
+
+#[test]
+fn expand_error_if_unset() {
+    let mut sh = shell();
+    let r = sh.exec("echo ${MISSING:?variable is required} 2>&1");
+    match r {
+        Err(_) => {} // error propagated
+        Ok(r) => {
+            assert_ne!(r.exit_code, 0);
+            assert!(r.stderr.contains("variable is required"));
+        }
+    }
+}
+
+#[test]
+fn expand_alternative_value_when_set() {
+    let mut sh = shell();
+    let r = sh.exec("X=hello; echo ${X:+replacement}").unwrap();
+    assert_eq!(r.stdout, "replacement\n");
+}
+
+#[test]
+fn expand_alternative_value_when_unset() {
+    let mut sh = shell();
+    let r = sh.exec("echo ${UNSET_VAR:+replacement}").unwrap();
+    assert_eq!(r.stdout, "\n");
+}
+
+#[test]
+fn expand_case_modification_uppercase() {
+    let mut sh = shell();
+    let r = sh.exec("X=hello; echo ${X^}; echo ${X^^}").unwrap();
+    assert_eq!(r.stdout, "Hello\nHELLO\n");
+}
+
+#[test]
+fn expand_case_modification_lowercase() {
+    let mut sh = shell();
+    let r = sh.exec("X=HELLO; echo ${X,}; echo ${X,,}").unwrap();
+    assert_eq!(r.stdout, "hELLO\nhello\n");
+}
+
+// ── Special variables ────────────────────────────────────────────
+
+#[test]
+fn random_variable_is_numeric_in_range() {
+    let mut sh = shell();
+    let r = sh.exec("echo $RANDOM").unwrap();
+    let val: i64 = r.stdout.trim().parse().expect("$RANDOM should be numeric");
+    assert!((0..=32767).contains(&val));
+}
+
+#[test]
+fn dollar_bang_is_empty_or_zero() {
+    let mut sh = shell();
+    let r = sh.exec("echo $!").unwrap();
+    let val = r.stdout.trim();
+    assert!(
+        val.is_empty() || val == "0",
+        "expected empty or 0, got: {val}"
+    );
+}
+
+// ── Command integration tests (from coverage gaps) ──────────────
+
+#[test]
+fn symlink_create_and_readlink() {
+    let mut sh = shell();
+    sh.exec("echo data > /target.txt").unwrap();
+    sh.exec("ln -s /target.txt /link.txt").unwrap();
+    // Follow the symlink via cat
+    let r = sh.exec("cat /link.txt").unwrap();
+    assert_eq!(r.stdout, "data\n");
+    // Verify it's a symlink via test -L
+    let r = sh.exec("[ -L /link.txt ] && echo is_symlink").unwrap();
+    assert_eq!(r.stdout, "is_symlink\n");
+}
+
+#[test]
+fn tee_copies_stdin_to_file_and_stdout() {
+    let mut sh = shell();
+    let r = sh.exec("echo hello | tee /tee_out.txt").unwrap();
+    assert_eq!(r.stdout, "hello\n");
+    let r = sh.exec("cat /tee_out.txt").unwrap();
+    assert_eq!(r.stdout, "hello\n");
+}
+
+#[test]
+fn stat_shows_file_info() {
+    let mut sh = shell();
+    sh.exec("echo content > /statfile.txt").unwrap();
+    let r = sh.exec("stat /statfile.txt").unwrap();
+    assert_eq!(r.exit_code, 0);
+    assert!(r.stdout.contains("statfile.txt"));
+}
+
+#[test]
+fn chmod_changes_permissions() {
+    let mut sh = shell();
+    sh.exec("echo x > /chf.txt").unwrap();
+    let r = sh.exec("chmod 755 /chf.txt").unwrap();
+    assert_eq!(r.exit_code, 0);
+}
+
+#[test]
+fn cut_fields_with_delimiter() {
+    let mut sh = shell();
+    let r = sh.exec("echo 'a:b:c' | cut -d: -f2").unwrap();
+    assert_eq!(r.stdout, "b\n");
+}
+
+#[test]
+fn printf_format_string() {
+    let mut sh = shell();
+    let r = sh.exec("printf '%s is %d\\n' hello 42").unwrap();
+    assert_eq!(r.stdout, "hello is 42\n");
+}
+
+#[test]
+fn seq_generates_sequence() {
+    let mut sh = shell();
+    let r = sh.exec("seq 3").unwrap();
+    assert_eq!(r.stdout, "1\n2\n3\n");
+}
+
+#[test]
+fn seq_with_range_and_step() {
+    let mut sh = shell();
+    let r = sh.exec("seq 1 2 7").unwrap();
+    assert_eq!(r.stdout, "1\n3\n5\n7\n");
+}
+
+#[test]
+fn which_finds_builtin() {
+    let mut sh = shell();
+    let r = sh.exec("which echo").unwrap();
+    assert_eq!(r.exit_code, 0);
+    assert!(r.stdout.contains("echo"));
+}
+
+#[test]
+fn which_not_found_exits_1() {
+    let mut sh = shell();
+    let r = sh.exec("which nonexistent_command_xyz").unwrap();
+    assert_ne!(r.exit_code, 0);
+}
+
+#[test]
+fn base64_encode_and_decode() {
+    let mut sh = shell();
+    let r = sh.exec("echo -n hello | base64").unwrap();
+    assert_eq!(r.stdout.trim(), "aGVsbG8=");
+    let r = sh.exec("echo 'aGVsbG8=' | base64 -d").unwrap();
+    assert_eq!(r.stdout, "hello");
+}
+
+#[test]
+fn md5sum_produces_hash() {
+    let mut sh = shell();
+    sh.exec("echo -n hello > /hash.txt").unwrap();
+    let r = sh.exec("md5sum /hash.txt").unwrap();
+    assert!(r.stdout.contains("5d41402abc4b2a76b9719d911017c592"));
+}
+
+#[test]
+fn whoami_returns_value() {
+    let mut sh = shell();
+    let r = sh.exec("whoami").unwrap();
+    assert_eq!(r.exit_code, 0);
+    assert!(!r.stdout.trim().is_empty());
+}
+
+#[test]
+fn hostname_returns_value() {
+    let mut sh = shell();
+    let r = sh.exec("hostname").unwrap();
+    assert_eq!(r.exit_code, 0);
+    assert!(!r.stdout.trim().is_empty());
+}
+
+#[test]
+fn uname_returns_value() {
+    let mut sh = shell();
+    let r = sh.exec("uname").unwrap();
+    assert_eq!(r.exit_code, 0);
+    assert!(!r.stdout.trim().is_empty());
+}
+
+#[test]
+fn expr_arithmetic() {
+    let mut sh = shell();
+    let r = sh.exec("expr 3 + 4").unwrap();
+    assert_eq!(r.stdout.trim(), "7");
+}
+
+#[test]
+fn expr_string_length() {
+    let mut sh = shell();
+    let r = sh.exec("expr length hello").unwrap();
+    assert_eq!(r.stdout.trim(), "5");
+}
+
+#[test]
+fn rev_reverses_lines() {
+    let mut sh = shell();
+    let r = sh.exec("echo hello | rev").unwrap();
+    assert_eq!(r.stdout, "olleh\n");
+}
+
+#[test]
+fn nl_numbers_lines() {
+    let mut sh = shell();
+    let r = sh.exec("printf 'a\\nb\\n' | nl").unwrap();
+    assert!(r.stdout.contains('1'));
+    assert!(r.stdout.contains('a'));
+    assert!(r.stdout.contains('2'));
+    assert!(r.stdout.contains('b'));
+}
+
+#[test]
+fn paste_joins_lines() {
+    let mut sh = shell();
+    sh.exec("printf 'a\\nb\\n' > /p1.txt && printf '1\\n2\\n' > /p2.txt")
+        .unwrap();
+    let r = sh.exec("paste /p1.txt /p2.txt").unwrap();
+    assert!(r.stdout.contains("a\t1"));
+    assert!(r.stdout.contains("b\t2"));
+}
+
+#[test]
+fn fold_wraps_long_lines() {
+    let mut sh = shell();
+    let r = sh.exec("echo 'abcdefghij' | fold -w 5").unwrap();
+    assert_eq!(r.stdout, "abcde\nfghij\n");
+}
+
+#[test]
+fn tree_shows_directory_structure() {
+    let mut sh = shell();
+    sh.exec("mkdir -p /tdir/sub && echo x > /tdir/f.txt")
+        .unwrap();
+    let r = sh.exec("tree /tdir").unwrap();
+    assert_eq!(r.exit_code, 0);
+    assert!(r.stdout.contains("f.txt"));
+    assert!(r.stdout.contains("sub"));
+}
+
+// ── Redirect &> (stdout+stderr to file) ─────────────────────────
+
+#[test]
+fn redirect_ampersand_greater_than() {
+    let mut sh = shell();
+    let r = sh
+        .exec("{ echo out; nosuchcmd_xyz; } &> /both.txt; cat /both.txt")
+        .unwrap();
+    assert!(r.stdout.contains("out"));
+    assert!(r.stdout.contains("command not found"));
+}

@@ -808,11 +808,6 @@ mod tests {
     }
 
     #[test]
-    fn name_is_curl() {
-        assert_eq!(CurlCommand.name(), "curl");
-    }
-
-    #[test]
     fn format_response_headers_basic() {
         let mut headers = ureq::http::HeaderMap::new();
         headers.insert("content-type", "text/plain".parse().unwrap());

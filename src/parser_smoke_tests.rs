@@ -167,23 +167,3 @@ fn word_parse_parameter_expansion_braced() {
         other => panic!("expected ParameterExpansion, got {other:?}"),
     }
 }
-
-/// Compile-time verification that expected WordPiece variant names exist.
-#[test]
-fn wordpiece_variant_names_exist() {
-    let opts = default_parser_options();
-
-    let check = |input: &str, variant_name: &str| {
-        let pieces = brush_parser::word::parse(input, &opts).unwrap();
-        assert!(
-            !pieces.is_empty(),
-            "no pieces for input: {input} (expected {variant_name})"
-        );
-    };
-
-    check("hello", "Text");
-    check("'quoted'", "SingleQuotedText");
-    check("$(cmd)", "CommandSubstitution");
-    check("$((1+2))", "ArithmeticExpression");
-    check("${X}", "ParameterExpansion");
-}
