@@ -833,8 +833,8 @@ impl VirtualFs for InMemoryFs {
         Ok(results)
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn deep_clone(&self) -> Arc<dyn VirtualFs> {
+        Arc::new(InMemoryFs::deep_clone(self))
     }
 }
 

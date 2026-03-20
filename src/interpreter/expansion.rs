@@ -7,13 +7,12 @@ use crate::interpreter::walker::{clone_commands, execute_program};
 use crate::interpreter::{
     ExecutionCounters, InterpreterState, next_random, parse, parser_options, set_variable,
 };
-use crate::vfs::InMemoryFs;
+
 use brush_parser::ast;
 use brush_parser::word::{
     Parameter, ParameterExpr, ParameterTestType, SpecialParameter, SubstringMatchKind, WordPiece,
 };
 use std::collections::HashMap;
-use std::sync::Arc;
 
 // ── Word expansion intermediate types ───────────────────────────────
 
@@ -227,12 +226,7 @@ fn execute_command_substitution(
     };
 
     // Create an isolated subshell state
-    let cloned_fs: Arc<dyn crate::vfs::VirtualFs> =
-        if let Some(memfs) = state.fs.as_any().downcast_ref::<InMemoryFs>() {
-            Arc::new(memfs.deep_clone())
-        } else {
-            Arc::clone(&state.fs)
-        };
+    let cloned_fs = state.fs.deep_clone();
 
     let mut sub_state = InterpreterState {
         fs: cloned_fs,

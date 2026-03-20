@@ -95,6 +95,7 @@ pub struct RustBashBuilder {
     custom_commands: Vec<Box<dyn VirtualCommand>>,
     limits: Option<ExecutionLimits>,
     network_policy: Option<NetworkPolicy>,
+    fs: Option<Arc<dyn VirtualFs>>,
 }
 
 impl Default for RustBashBuilder {
@@ -113,6 +114,7 @@ impl RustBashBuilder {
             custom_commands: Vec::new(),
             limits: None,
             network_policy: None,
+            fs: None,
         }
     }
 
@@ -152,9 +154,19 @@ impl RustBashBuilder {
         self
     }
 
+    /// Use a custom filesystem backend instead of the default InMemoryFs.
+    ///
+    /// When set, the builder uses this filesystem directly. The `.files()` method
+    /// still works — it writes seed files into the provided backend via VirtualFs
+    /// methods.
+    pub fn fs(mut self, fs: Arc<dyn VirtualFs>) -> Self {
+        self.fs = Some(fs);
+        self
+    }
+
     /// Build the shell instance.
     pub fn build(self) -> Result<RustBash, RustBashError> {
-        let fs = Arc::new(InMemoryFs::new());
+        let fs: Arc<dyn VirtualFs> = self.fs.unwrap_or_else(|| Arc::new(InMemoryFs::new()));
         let cwd = self.cwd.unwrap_or_else(|| "/".to_string());
         fs.mkdir_p(Path::new(&cwd))?;
 
@@ -1478,6 +1490,19 @@ mod tests {
         let names = sh.command_names();
         assert!(names.contains(&"echo"));
         assert!(names.contains(&"cat"));
+    }
+
+    #[test]
+    fn builder_accepts_custom_fs() {
+        let custom_fs = Arc::new(crate::vfs::InMemoryFs::new());
+        custom_fs
+            .write_file(std::path::Path::new("/pre-existing.txt"), b"hello")
+            .unwrap();
+
+        let mut shell = RustBashBuilder::new().fs(custom_fs).build().unwrap();
+
+        let result = shell.exec("cat /pre-existing.txt").unwrap();
+        assert_eq!(result.stdout.trim(), "hello");
     }
 
     #[test]

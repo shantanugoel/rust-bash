@@ -712,3 +712,17 @@ fn write_through_symlink() {
     fs.write_file(Path::new("/link.txt"), b"updated").unwrap();
     assert_eq!(fs.read_file(Path::new("/real.txt")).unwrap(), b"updated");
 }
+
+#[test]
+fn trait_deep_clone_produces_independent_copy() {
+    let fs = fs();
+    fs.write_file(Path::new("/a.txt"), b"original").unwrap();
+
+    let cloned: std::sync::Arc<dyn VirtualFs> = VirtualFs::deep_clone(&fs);
+    cloned.write_file(Path::new("/a.txt"), b"modified").unwrap();
+    cloned.write_file(Path::new("/new.txt"), b"new").unwrap();
+
+    // Original is untouched
+    assert_eq!(fs.read_file(Path::new("/a.txt")).unwrap(), b"original");
+    assert!(!fs.exists(Path::new("/new.txt")));
+}

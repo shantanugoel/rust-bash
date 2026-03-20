@@ -122,15 +122,15 @@ Implement `NetworkPolicy`. Sandboxed `curl` validates URL against allow-list bef
 
 ## Milestone 4: Filesystem Backends
 
-### M4.1 — OverlayFs
+### M4.1 — OverlayFs ✅
 
 Read from real directory, write to in-memory layer. Whiteout tracking for deletions. Merged directory listings.
 
-### M4.2 — ReadWriteFs
+### M4.2 — ReadWriteFs ✅
 
 Thin `std::fs` wrapper. Optional path restriction (chroot-like).
 
-### M4.3 — MountableFs
+### M4.3 — MountableFs ✅
 
 Composite backend with path-based delegation. Longest-prefix mount matching.
 

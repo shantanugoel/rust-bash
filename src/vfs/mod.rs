@@ -1,12 +1,28 @@
 mod memory;
+mod mountable;
+mod overlay;
+mod readwrite;
 
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod readwrite_tests;
+
+#[cfg(test)]
+mod overlay_tests;
+
+#[cfg(test)]
+mod mountable_tests;
+
 pub use memory::InMemoryFs;
+pub use mountable::MountableFs;
+pub use overlay::OverlayFs;
+pub use readwrite::ReadWriteFs;
 
 use crate::error::VfsError;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 /// Metadata for a filesystem node.
@@ -92,6 +108,14 @@ pub trait VirtualFs: Send + Sync {
     // Glob expansion (stub for now)
     fn glob(&self, pattern: &str, cwd: &Path) -> Result<Vec<PathBuf>, VfsError>;
 
-    /// Downcasting support for deep_clone in subshell isolation.
-    fn as_any(&self) -> &dyn std::any::Any;
+    /// Create an independent deep copy for subshell isolation.
+    ///
+    /// Subshells `( ... )` and command substitutions `$(...)` need an isolated
+    /// filesystem so their mutations don't leak back to the parent. Each backend
+    /// decides what "independent copy" means:
+    /// - InMemoryFs: clones the entire tree
+    /// - OverlayFs: clones the upper layer and whiteouts; lower is shared
+    /// - ReadWriteFs: no isolation (returns Arc::clone — writes hit real FS)
+    /// - MountableFs: recursively deep-clones each mount
+    fn deep_clone(&self) -> Arc<dyn VirtualFs>;
 }

@@ -2,11 +2,13 @@
 
 A sandboxed bash environment built in Rust. Execute bash scripts safely with a virtual filesystem — no containers, no VMs, no runtime dependencies.
 
-> ⚠️ **Status: Pre-alpha / Milestone 3 Complete** — Core shell interpreter with full text processing
-> and execution safety. Supports variable expansion, redirections, control flow, command substitution,
-> arithmetic, functions, globs, brace expansion, here-documents, and 70+ built-in commands including
-> text processing tools (grep, sed, awk, jq, diff) and network access (curl with policy controls).
-> All 10 execution limits are enforced with structured errors.
+> ⚠️ **Status: Pre-alpha / Milestone 4 Complete** — Core shell interpreter with full text processing,
+> execution safety, and multiple filesystem backends. Supports variable expansion, redirections,
+> control flow, command substitution, arithmetic, functions, globs, brace expansion, here-documents,
+> and 70+ built-in commands including text processing tools (grep, sed, awk, jq, diff) and network
+> access (curl with policy controls). All 10 execution limits are enforced with structured errors.
+> Filesystem backends: InMemoryFs (default), OverlayFs (copy-on-write), ReadWriteFs (passthrough),
+> MountableFs (composite).
 
 ## Design Goals
 
@@ -95,6 +97,62 @@ let mut shell = RustBash::builder()
 | `OverlayFs` | Copy-on-write over a real directory. Reads from disk, writes stay in memory. |
 | `ReadWriteFs` | Passthrough to real filesystem. For trusted execution. |
 | `MountableFs` | Compose backends at different mount points. |
+
+### OverlayFs — Read real files, sandbox writes
+
+```rust
+use rust_bash::{RustBashBuilder, OverlayFs};
+use std::sync::Arc;
+
+// Reads from ./my_project on disk; writes stay in memory
+let overlay = OverlayFs::new("./my_project").unwrap();
+let mut shell = RustBashBuilder::new()
+    .fs(Arc::new(overlay))
+    .cwd("/")
+    .build()
+    .unwrap();
+
+let result = shell.exec("cat /src/main.rs").unwrap();    // reads from disk
+shell.exec("echo patched > /src/main.rs").unwrap();       // writes to memory only
+```
+
+### ReadWriteFs — Direct filesystem access
+
+```rust
+use rust_bash::{RustBashBuilder, ReadWriteFs};
+use std::sync::Arc;
+
+// Restricted to /tmp/sandbox (chroot-like)
+let rwfs = ReadWriteFs::with_root("/tmp/sandbox").unwrap();
+let mut shell = RustBashBuilder::new()
+    .fs(Arc::new(rwfs))
+    .cwd("/")
+    .build()
+    .unwrap();
+
+shell.exec("echo hello > /output.txt").unwrap();  // writes to /tmp/sandbox/output.txt
+```
+
+### MountableFs — Combine backends at mount points
+
+```rust
+use rust_bash::{RustBashBuilder, InMemoryFs, MountableFs, OverlayFs};
+use std::sync::Arc;
+
+let mountable = MountableFs::new()
+    .mount("/", Arc::new(InMemoryFs::new()))                                // in-memory root
+    .mount("/project", Arc::new(OverlayFs::new("./myproject").unwrap()))    // overlay on real project
+    .mount("/tmp", Arc::new(InMemoryFs::new()));                            // separate temp space
+
+let mut shell = RustBashBuilder::new()
+    .fs(Arc::new(mountable))
+    .cwd("/")
+    .build()
+    .unwrap();
+
+shell.exec("cat /project/README.md").unwrap();   // reads from disk
+shell.exec("echo scratch > /tmp/work").unwrap(); // writes to in-memory /tmp
+```
 
 ## Recipes
 

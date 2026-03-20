@@ -12,7 +12,7 @@ pub use interpreter::{
     ExecResult, ExecutionCounters, ExecutionLimits, InterpreterState, ShellOpts, Variable,
 };
 pub use network::NetworkPolicy;
-pub use vfs::{InMemoryFs, VirtualFs};
+pub use vfs::{InMemoryFs, MountableFs, OverlayFs, ReadWriteFs, VirtualFs};
 
 #[cfg(test)]
 mod parser_smoke_tests;

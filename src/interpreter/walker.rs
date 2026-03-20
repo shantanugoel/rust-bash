@@ -8,7 +8,7 @@ use crate::interpreter::{
     ExecResult, ExecutionCounters, FunctionDef, InterpreterState, Variable, execute_trap, parse,
     set_variable,
 };
-use crate::vfs::InMemoryFs;
+
 use brush_parser::ast;
 use std::collections::HashMap;
 use std::path::Path;
@@ -680,13 +680,7 @@ fn execute_subshell(
     stdin: &str,
 ) -> Result<ExecResult, RustBashError> {
     // Deep-clone the filesystem so mutations in the subshell are isolated
-    let original_fs = &state.fs;
-    let cloned_fs: Arc<dyn crate::vfs::VirtualFs> =
-        if let Some(memfs) = original_fs.as_any().downcast_ref::<InMemoryFs>() {
-            Arc::new(memfs.deep_clone())
-        } else {
-            Arc::clone(original_fs)
-        };
+    let cloned_fs = state.fs.deep_clone();
 
     let mut sub_state = InterpreterState {
         fs: cloned_fs,
@@ -810,12 +804,7 @@ pub(crate) fn clone_commands(
 fn make_exec_callback(
     state: &InterpreterState,
 ) -> impl Fn(&str) -> Result<CommandResult, RustBashError> {
-    let cloned_fs: Arc<dyn crate::vfs::VirtualFs> =
-        if let Some(memfs) = state.fs.as_any().downcast_ref::<InMemoryFs>() {
-            Arc::new(memfs.deep_clone())
-        } else {
-            Arc::clone(&state.fs)
-        };
+    let cloned_fs = state.fs.deep_clone();
     let env = state.env.clone();
     let cwd = state.cwd.clone();
     let functions = state.functions.clone();
@@ -832,12 +821,7 @@ fn make_exec_callback(
     move |cmd_str: &str| {
         let program = parse(cmd_str)?;
 
-        let sub_fs: Arc<dyn crate::vfs::VirtualFs> =
-            if let Some(memfs) = cloned_fs.as_any().downcast_ref::<InMemoryFs>() {
-                Arc::new(memfs.deep_clone())
-            } else {
-                Arc::clone(&cloned_fs)
-            };
+        let sub_fs = cloned_fs.deep_clone();
 
         let mut sub_state = InterpreterState {
             fs: sub_fs,

@@ -42,6 +42,9 @@ pub trait VirtualFs: Send + Sync {
 
     // Glob expansion
     fn glob(&self, pattern: &str, cwd: &Path) -> Result<Vec<PathBuf>, VfsError>;
+
+    // Subshell isolation
+    fn deep_clone(&self) -> Arc<dyn VirtualFs>;
 }
 ```
 
@@ -90,15 +93,15 @@ enum FsNode {
 - `with_node_mut(path, f)` — write-lock, navigate to node, apply closure
 - `with_parent_mut(path, f)` — write-lock, navigate to parent, apply closure with child name
 
-### OverlayFs (Copy-on-Write) **(planned)**
+### OverlayFs (Copy-on-Write)
 
 Reads from a real directory, writes to an in-memory layer. Changes never touch disk.
 
 ```rust
 struct OverlayFs {
-    lower: PathBuf,                    // real directory (read-only source)
-    upper: InMemoryFs,                 // in-memory writes
-    whiteouts: HashSet<PathBuf>,       // tracks deletions
+    lower: PathBuf,                              // real directory (read-only source)
+    upper: InMemoryFs,                           // in-memory writes
+    whiteouts: Arc<RwLock<HashSet<PathBuf>>>,    // tracks deletions
 }
 ```
 
@@ -112,9 +115,30 @@ struct OverlayFs {
 
 **Delete operations**: Add path to `whiteouts`. If the file exists in `upper`, also remove it from there.
 
+**Subshell isolation** (`deep_clone`): Clones the upper layer and whiteout set. The lower directory reference is shared (it's read-only anyway).
+
 **Use case**: Let an agent read a real project's files while sandboxing all writes. Perfect for code analysis tools, linters, or build system simulations.
 
-### ReadWriteFs (Passthrough) **(planned)**
+**Example**:
+```rust
+use rust_bash::{RustBashBuilder, OverlayFs};
+use std::sync::Arc;
+
+let overlay = OverlayFs::new("./my_project").unwrap();
+let mut shell = RustBashBuilder::new()
+    .fs(Arc::new(overlay))
+    .cwd("/")
+    .build()
+    .unwrap();
+
+// Reads come from disk
+let result = shell.exec("cat /src/main.rs").unwrap();
+
+// Writes stay in memory — disk is never modified
+shell.exec("echo modified > /src/main.rs").unwrap();
+```
+
+### ReadWriteFs (Passthrough)
 
 Thin wrapper over `std::fs` implementing the `VirtualFs` trait. For trusted execution where you want real filesystem access.
 
@@ -124,26 +148,60 @@ struct ReadWriteFs {
 }
 ```
 
-If `root` is set, all paths are resolved relative to it and path traversal beyond the root is rejected.
+If `root` is set, all paths are resolved relative to it and path traversal beyond the root is rejected with `PermissionDenied`. Symlink-based escape attempts are also caught.
 
-### MountableFs (Composite) **(planned)**
+**Subshell isolation** (`deep_clone`): Creates a new `ReadWriteFs` with the same root — both instances point to the same real filesystem. There is no isolation since writes go directly to disk.
+
+**Example**:
+```rust
+use rust_bash::{RustBashBuilder, ReadWriteFs};
+use std::sync::Arc;
+
+// Restricted to a directory (chroot-like)
+let rwfs = ReadWriteFs::with_root("/tmp/sandbox").unwrap();
+let mut shell = RustBashBuilder::new()
+    .fs(Arc::new(rwfs))
+    .cwd("/")
+    .build()
+    .unwrap();
+
+// Operations hit the real filesystem under /tmp/sandbox
+shell.exec("echo hello > /output.txt").unwrap();  // writes to /tmp/sandbox/output.txt
+```
+
+### MountableFs (Composite)
 
 Combines multiple backends at different mount points.
 
 ```rust
-struct MountableFs {
-    mounts: BTreeMap<PathBuf, Box<dyn VirtualFs>>,
+pub struct MountableFs {
+    mounts: Arc<RwLock<BTreeMap<PathBuf, Arc<dyn VirtualFs>>>>,
 }
 ```
 
-**Resolution**: Find the longest matching mount prefix, delegate to that backend with the path stripped of the prefix.
+**Resolution**: Find the longest matching mount prefix, delegate to that backend with the path stripped of the prefix. Uses `BTreeMap` reverse iteration for efficient longest-prefix lookup.
+
+**Cross-mount operations**: `copy` and `rename` across mount boundaries use read+write (and delete for rename). `hardlink` across mounts returns an error, matching Unix behavior.
+
+**Directory listings**: Mount points appear as synthetic directory entries in their parent's listing, even if the parent filesystem doesn't contain them.
+
+**Subshell isolation** (`deep_clone`): Recursively deep-clones each mounted backend. Each mount gets its own independent copy.
 
 **Example configuration**:
 ```rust
-MountableFs::new()
-    .mount("/", InMemoryFs::new())                          // default: in-memory
-    .mount("/project", OverlayFs::new("./myproject"))       // read real project
-    .mount("/tmp", InMemoryFs::new())                       // separate temp space
+use rust_bash::{RustBashBuilder, InMemoryFs, MountableFs, OverlayFs};
+use std::sync::Arc;
+
+let mountable = MountableFs::new()
+    .mount("/", Arc::new(InMemoryFs::new()))                          // default: in-memory
+    .mount("/project", Arc::new(OverlayFs::new("./myproject").unwrap()))  // read real project
+    .mount("/tmp", Arc::new(InMemoryFs::new()));                      // separate temp space
+
+let mut shell = RustBashBuilder::new()
+    .fs(Arc::new(mountable))
+    .cwd("/")
+    .build()
+    .unwrap();
 ```
 
 ## VfsError
