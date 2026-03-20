@@ -6,9 +6,13 @@ description = "A sandboxed bash interpreter with a virtual filesystem"
 license = "MIT"
 keywords = ["bash", "shell", "interpreter", "sandbox", "virtual-filesystem"]
 
+[lib]
+crate-type = ["lib", "cdylib"]
+
 [features]
 default = ["cli"]
 cli = ["dep:clap", "dep:rustyline"]
+ffi = ["dep:serde"]
 
 [[bin]]
 name = "rust-bash"
@@ -26,6 +30,7 @@ md-5 = "0.10"
 parking_lot = "0.12.5"
 regex = "1.12.3"
 rustyline = { version = "17.0.2", optional = true }
+serde = { version = "1.0.228", features = ["derive"], optional = true }
 serde_json = "1"
 sha2 = "0.10"
 similar = "2.7.0"

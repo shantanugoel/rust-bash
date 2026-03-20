@@ -14,5 +14,8 @@ pub use interpreter::{
 pub use network::NetworkPolicy;
 pub use vfs::{InMemoryFs, MountableFs, OverlayFs, ReadWriteFs, VirtualFs};
 
+#[cfg(feature = "ffi")]
+pub mod ffi;
+
 #[cfg(test)]
 mod parser_smoke_tests;

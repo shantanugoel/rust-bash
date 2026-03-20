@@ -17,13 +17,13 @@ Task-oriented guides for common use cases. Each recipe is a self-contained docum
 | [Embedding in an AI Agent](ai-agent-tool.md) | Set up rust-bash as a sandboxed tool for LLM function calling |
 | [Error Handling](error-handling.md) | Handle errors, use `set -e`/`set -u`/`set -o pipefail`, and recover gracefully |
 | [Shell Scripting Features](shell-scripting.md) | Variables, control flow, functions, arithmetic, subshells, and more |
+| [FFI Usage](ffi-usage.md) | Embed rust-bash in Python, Go, or any C-compatible language via the shared library |
 
 ## Planned Recipes
 
 The following recipes will be written as the corresponding features become available:
 
 - **WASM in the Browser** — run bash in the browser with the WASM target (Milestone 5)
-- **C FFI from Python** — embed rust-bash in a Python application via ctypes (Milestone 5)
 - **Differential Testing** — compare rust-bash output against real bash
 
 ## Contributing a Recipe
