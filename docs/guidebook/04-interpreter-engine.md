@@ -20,18 +20,34 @@ The interpreter receives a parsed `Program` (a list of compound lists) and a mut
 
 ```rust
 pub struct InterpreterState {
-    pub fs: Box<dyn VirtualFs>,
+    pub fs: Arc<dyn VirtualFs>,
     pub env: HashMap<String, Variable>,
     pub cwd: String,
     pub functions: HashMap<String, FunctionDef>,
     pub last_exit_code: i32,
     pub commands: HashMap<String, Box<dyn VirtualCommand>>,
+    pub shell_opts: ShellOpts,
     pub limits: ExecutionLimits,
     pub counters: ExecutionCounters,
+    pub network_policy: NetworkPolicy,
+    pub positional_params: Vec<String>,
+    pub shell_name: String,
+    // Internal fields (pub(crate)):
+    // should_exit, loop_depth, control_flow, random_seed,
+    // local_scopes, in_function_depth, traps, in_trap,
+    // errexit_suppressed
 }
 ```
 
-The state is persistent across `exec()` calls — VFS contents, environment variables, function definitions, and cwd all carry over. Only stdout/stderr buffers and execution counters reset per call.
+The state is persistent across `exec()` calls — VFS contents, environment variables, function definitions, traps, and cwd all carry over. Only stdout/stderr buffers and execution counters reset per call.
+
+The interpreter is split across several submodules:
+- **`walker.rs`** — AST walking, pipeline execution, redirections, compound commands, function calls, subshells
+- **`expansion.rs`** — Word expansion (parameter, command substitution, tilde, glob, word splitting)
+- **`arithmetic.rs`** — Arithmetic expression evaluator for `$((...))`, `let`, `((...))` with full operator support
+- **`brace.rs`** — Brace expansion (`{a,b,c}` and `{1..10..2}`)
+- **`builtins.rs`** — Shell builtins that modify interpreter state (cd, export, set, trap, etc.)
+- **`pattern.rs`** — Glob pattern matching used by case statements and pathname expansion
 
 ## AST Walking
 
@@ -118,9 +134,7 @@ The interpreter evaluates these `brush_parser::word::WordPiece` variants:
 
 ### Command Substitution
 
-`$(cmd)` and backtick substitution execute the inner command string by recursively invoking the interpreter, capturing stdout, and stripping trailing newlines. This requires interior mutability of `InterpreterState` since word expansion (which triggers command substitution) occurs within contexts that already borrow the state.
-
-**Implementation approach**: use `RefCell<InterpreterState>` or restructure the expansion pipeline to accept `&mut InterpreterState` directly.
+`$(cmd)` and backtick substitution execute the inner command string by recursively invoking the interpreter, capturing stdout, and stripping trailing newlines. The `VirtualFs` trait uses interior mutability (`Arc<parking_lot::RwLock<…>>`), so command substitution can share the filesystem naturally. For subshells and `$(...)`, the interpreter deep-clones the VFS so mutations don't leak back to the parent scope.
 
 ### Word Splitting
 
@@ -197,7 +211,7 @@ Functions are stored in `state.functions`. When called:
 1. Positional parameters (`$1`, `$2`, etc.) are set from the call arguments
 2. `local` creates function-scoped variables that restore previous values on return
 3. `return N` exits the function with exit code N
-4. Function lookup: special builtins → functions → registered commands (see "Command Resolution Order" section above)
+4. Function lookup: special builtins → functions → registered commands (see "Command Resolution Order" section below)
 
 ## Redirections
 
@@ -215,7 +229,7 @@ For fd duplication (`2>&1`), the target fd's output is redirected to the source 
 
 When the interpreter encounters a command name, it resolves in this order:
 
-1. **Special shell builtins** — `cd`, `export`, `exit`, `set`, `local`, `return`, `break`, `continue`, `eval`, `source`, `read`, `trap`, `shift`, `unset`, `declare`, `readonly`. Handled directly by the interpreter because they modify interpreter state. These cannot be shadowed by functions.
+1. **Special shell builtins** — `cd`, `export`, `exit`, `set`, `local`, `return`, `break`, `continue`, `eval`, `source`, `read`, `trap`, `shift`, `unset`, `declare`, `readonly`, `let`, `:`. Handled directly by the interpreter because they modify interpreter state. These cannot be shadowed by functions.
 2. **User-defined functions** — stored in `InterpreterState.functions`. Functions *can* shadow registered commands (e.g., a function named `echo` overrides the built-in echo).
 3. **Registered commands** — looked up in `InterpreterState.commands` HashMap.
 4. **"Command not found"** — stderr error, exit code 127.
@@ -233,7 +247,7 @@ These commands are handled directly by the interpreter (not the command registry
 | `cd` | Changes `state.cwd` |
 | `export` | Marks variable as exported |
 | `unset` | Removes variable |
-| `set` | Sets shell options (`-e`, `-u`, `-o pipefail`) |
+| `set` | Sets shell options (`-e`, `-u`, `-o pipefail`, `-x`) |
 | `shift` | Shifts positional parameters |
 | `local` | Declares function-scoped variable |
 | `declare` | Declares variable with attributes |
@@ -245,6 +259,8 @@ These commands are handled directly by the interpreter (not the command registry
 | `source`/`.` | Parse and execute file |
 | `read` | Read line from stdin into variable |
 | `trap` | Register exit/error handler (only `trap EXIT` and `trap ERR` are meaningful; signal-based traps are no-ops in a sandbox) |
+| `let` | Evaluate arithmetic expression |
+| `:` | No-op (always succeeds) |
 
 ## Control Flow Signals
 
@@ -252,7 +268,7 @@ These commands are handled directly by the interpreter (not the command registry
 
 ## Shell Options Enforcement
 
-The `ShellOpts` struct tracks shell options set via `set` builtin. All options are fully enforced:
+The `ShellOpts` struct tracks shell options set via `set` builtin:
 
 ### `set -e` (errexit)
 

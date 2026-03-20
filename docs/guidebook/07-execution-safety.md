@@ -62,7 +62,7 @@ RustBashError::LimitExceeded {
 }
 ```
 
-The error propagates up and becomes the `ExecResult`'s stderr, with exit code 1. The sandbox remains usable for subsequent `exec()` calls — hitting a limit doesn't poison the sandbox.
+This error is returned as `Err(RustBashError::LimitExceeded{...})` from `shell.exec()`. The sandbox remains usable for subsequent `exec()` calls — hitting a limit does not poison the sandbox or its state.
 
 ## Network Policy
 
@@ -133,7 +133,7 @@ This prevents an allowed URL from redirecting to a malicious endpoint.
 ## Configuration
 
 ```rust
-let mut shell = RustBash::builder()
+let mut shell = RustBashBuilder::new()
     .execution_limits(ExecutionLimits {
         max_command_count: 1_000,
         max_execution_time: Duration::from_secs(5),
@@ -144,7 +144,8 @@ let mut shell = RustBash::builder()
         allowed_url_prefixes: vec!["https://api.example.com/".into()],
         ..Default::default()
     })
-    .build();
+    .build()
+    .unwrap();
 ```
 
 All limits have sensible defaults. You only need to configure limits you want to change.

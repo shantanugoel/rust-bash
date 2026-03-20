@@ -150,9 +150,15 @@ Stable C ABI: `rust_bash_create`, `rust_bash_exec`, `rust_bash_free`. JSON confi
 
 `wasm32-unknown-unknown` + `wasm-bindgen`. JavaScript wrapper. npm package with TypeScript types.
 
+**Design exploration (do before implementing):** Evaluate `napi-rs v3` (supports compiling the same Rust crate to both native Node.js addons and WASM from a single codebase) vs separate `wasm-bindgen` + `napi-rs` builds. Compare bundle size, API ergonomics, and maintenance cost. The dual-target capability of napi-rs v3 may allow M5.3 and M5.4 to share a single binding layer — investigate whether this simplifies or constrains the API surface.
+
 ### M5.4 — AI SDK Integration
 
 Tool definitions for OpenAI/Anthropic function calling. TypeScript wrapper for Vercel AI SDK.
+
+**Design exploration (do before implementing):** The TypeScript/JS package should offer a **native Node.js addon** (via napi-rs) as the primary backend for server-side AI agents, with WASM as an automatic fallback for browsers and edge runtimes. Investigate a unified `@rust-bash/core` package that auto-detects the environment. Compare this approach against shipping separate `@rust-bash/node` and `@rust-bash/wasm` packages.
+
+**Custom commands via TypeScript (and other language interfaces):** The `VirtualCommand` trait (`fn execute(&self, args, ctx) -> CommandResult`) maps cleanly to a JS/TS callback. Explore three approaches: (1) a `JsBridgeCommand` Rust struct that implements `VirtualCommand` but delegates to a registered TS callback via napi-rs `ThreadsafeFunction` (native) or `wasm-bindgen` imported function (WASM); (2) a catch-all `commandResolver` fallback for dynamic command sets (like bash's `command_not_found_handle`); (3) optionally exposing VFS read/write methods to TS callbacks, or letting them shell out via the existing `exec` callback on `CommandContext`. The same pattern generalizes to the C FFI (M5.2) by accepting function pointers for custom command dispatch. Approach (1) + (2) covers most use cases; (3) can be deferred.
 
 ---
 
@@ -184,29 +190,23 @@ M5.1–M5.4 ──────────────── (depend on M1 + M2 
 
 ---
 
-## Risk Register
+## Open Questions
 
-| Risk | Likelihood | Impact | Mitigation |
-|------|-----------|--------|------------|
-| brush-parser breaking changes | Medium | Medium | Pin to git rev, consider adapter layer |
-| awk/sed complexity explosion | High | Medium | Implement 80/20 subset first |
-| Word expansion edge cases | Medium | High | Differential testing against real bash |
-| WASM binary size too large | Medium | Medium | Feature-gate heavy commands |
-| Command substitution refactoring | Medium | Medium | RefCell approach; budget time for cascade |
-| Lock poisoning from panics | Medium | High | parking_lot::RwLock (non-poisoning) |
+1. **Adapter layer for brush-parser types?** Wrapping AST types insulates from upstream changes but adds code. Currently not implemented — we use brush-parser types directly.
+
+2. **Async vs sync API**: `exec()` is synchronous. An async wrapper can be added later if needed for timeout or concurrent pipe execution. Timeouts are currently implemented via wall-clock checks during execution.
+
+3. **Error message compatibility**: Currently matching bash error format (`cmd: msg`) but not exact wording. Close enough for AI agent usage.
 
 ---
 
-## Open Questions
+## Risk Register
 
-1. **Adapter layer for brush-parser types?** Wrapping AST types insulates from upstream changes but adds code.
-
-2. **awk/sed 80/20 scope**: Proposed minimum:
-   - **awk**: `{print $N}`, `-F`, `NR`/`NF`, `BEGIN`/`END`, conditions, `printf`, `split`
-   - **sed**: `s///g`, `d`, `p`, `q`, addresses, ranges. Ship without hold space first.
-
-3. **Async vs sync API**: Should `exec()` be async? Recommend: start sync, add async wrapper later if needed for timeout or concurrent pipes.
-
-4. **Error message compatibility**: Match bash format (`bash: <cmd>: <msg>`) but not exact wording.
-
-5. **Variable scoping**: Target: dynamic scoping matching bash — all variables are visible to called functions. `local` creates function-scoped variables. `export` marks variables for child process inheritance (not directly relevant in our no-process-spawning model, but maintained for script compatibility).
+| Risk | Likelihood | Impact | Mitigation | Status |
+|------|-----------|--------|------------|--------|
+| brush-parser breaking changes | Medium | Medium | Pin to crates.io version (`0.3.0`); update test suite on upgrade | Open |
+| awk/sed complexity explosion | Low | Medium | 80/20 subset implemented and shipped | ✅ Resolved |
+| Word expansion edge cases | Medium | High | Differential testing against real bash | Open |
+| WASM binary size too large | Medium | Medium | Feature-gate heavy commands (planned for M5) | Open |
+| Command substitution refactoring | Low | Medium | Interior mutability approach implemented | ✅ Resolved |
+| Lock poisoning from panics | Low | High | parking_lot::RwLock (non-poisoning) implemented | ✅ Resolved |

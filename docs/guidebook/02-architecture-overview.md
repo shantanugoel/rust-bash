@@ -21,7 +21,7 @@ We evaluated three approaches and chose **Strategy B+**:
 ```
 ┌─────────────────────────────────────────────────────┐
 │                    Public API                        │
-│  RustBash::builder().files(...).env(...).build()      │
+│  RustBashBuilder::new().files(...).env(...).build()   │
 │  shell.exec("cat file.txt | grep pattern")         │
 └──────────────────┬──────────────────────────────────┘
                    │
@@ -59,40 +59,51 @@ We evaluated three approaches and chose **Strategy B+**:
 rust-bash/
 ├── src/
 │   ├── lib.rs              # Module declarations, public re-exports
-│   ├── api.rs              # Public API: RustBash, RustBashBuilder, ExecResult
+│   ├── api.rs              # Public API: RustBash, RustBashBuilder
 │   ├── interpreter/
-│   │   ├── mod.rs          # InterpreterState, top-level execute_program()
-│   │   ├── expand.rs       # Word expansion (variables, quoting, globs, $())
-│   │   ├── pipeline.rs     # Pipeline and redirection execution
-│   │   └── control.rs      # Compound commands: if/for/while/case/functions
+│   │   ├── mod.rs          # InterpreterState, ExecutionLimits, parse(), core types
+│   │   ├── walker.rs       # AST walking: pipelines, redirections, compound commands
+│   │   ├── expansion.rs    # Word expansion (variables, quoting, globs, $())
+│   │   ├── arithmetic.rs   # Arithmetic expression evaluator ($((…)), let, ((…)))
+│   │   ├── brace.rs        # Brace expansion ({a,b,c}, {1..10..2})
+│   │   ├── builtins.rs     # Shell builtins (cd, export, set, trap, local, …)
+│   │   └── pattern.rs      # Glob pattern matching for case/pathname expansion
 │   ├── vfs/
-│   │   ├── mod.rs          # VirtualFs trait definition
+│   │   ├── mod.rs          # VirtualFs trait definition, Metadata, FsNode types
 │   │   ├── memory.rs       # InMemoryFs — default sandboxed backend
 │   │   ├── overlay.rs      # OverlayFs — copy-on-write over real directory
 │   │   ├── readwrite.rs    # ReadWriteFs — passthrough to real filesystem
 │   │   └── mountable.rs    # MountableFs — composite mount points
 │   ├── commands/
-│   │   ├── mod.rs          # VirtualCommand trait, CommandContext, registry
-│   │   ├── file_ops.rs     # cat, cp, mv, rm, ln, stat, tee, touch, chmod
-│   │   ├── text.rs         # grep, sort, uniq, cut, head, tail, wc, tr, rev
-│   │   ├── nav.rs          # ls, find, basename, dirname, realpath, tree
-│   │   ├── awk.rs          # awk implementation
-│   │   ├── sed.rs          # sed implementation
-│   │   ├── jq.rs           # jq via jaq-core
+│   │   ├── mod.rs          # VirtualCommand trait, CommandContext, echo, registry
+│   │   ├── file_ops.rs     # cp, mv, rm, tee, stat, chmod, ln
+│   │   ├── text.rs         # grep, sort, uniq, cut, head, tail, wc, tr, rev, fold,
+│   │   │                   # nl, printf, paste, tac, comm, join, fmt, column,
+│   │   │                   # expand, unexpand
+│   │   ├── navigation.rs   # realpath, basename, dirname, tree
+│   │   ├── awk/            # Full awk implementation (lexer, parser, runtime)
+│   │   │   ├── mod.rs
+│   │   │   ├── lexer.rs
+│   │   │   ├── parser.rs
+│   │   │   └── runtime.rs
+│   │   ├── sed.rs          # sed stream editor
+│   │   ├── diff_cmd.rs     # diff (unified, context, normal formats)
+│   │   ├── jq_cmd.rs       # jq via jaq-core
+│   │   ├── exec_cmds.rs    # xargs, find
+│   │   ├── test_cmd.rs     # test / [ command
 │   │   ├── net.rs          # curl with network policy
-│   │   └── util.rs         # echo, printf, date, sleep, seq, expr, env, test
-│   ├── limits.rs           # ExecutionLimits, counters, timeout enforcement
+│   │   ├── utils.rs        # expr, date, sleep, seq, env, printenv, which, base64,
+│   │   │                   # md5sum, sha256sum, whoami, hostname, uname, yes
+│   │   └── regex_util.rs   # BRE→ERE conversion shared by grep/sed/expr
 │   ├── network.rs          # NetworkPolicy, URL allow-listing
-│   ├── ffi.rs              # C FFI layer
-│   └── error.rs            # Unified error types (RustBashError hierarchy)
+│   └── error.rs            # Unified error types (RustBashError, VfsError)
 ├── examples/
-│   └── basic.rs            # Usage demonstration
+│   └── shell.rs            # Interactive REPL shell
 ├── Cargo.toml
 └── tests/
-    ├── interpreter.rs      # Interpreter integration tests
-    ├── vfs.rs              # VFS integration tests
-    ├── commands.rs         # Command integration tests
-    └── bash_compat.rs      # Bash compatibility test suite
+    ├── integration.rs          # End-to-end shell integration tests
+    ├── filesystem_backends.rs  # VFS backend integration tests
+    └── snapshots/              # insta snapshot files
 ```
 
 ## Data Flow
@@ -113,19 +124,26 @@ A call to `shell.exec("echo $HOME | wc -c")` flows through:
 The `RustBash` owns a persistent `InterpreterState`. Each `exec()` call mutates this state — VFS contents, environment variables, current working directory, and function definitions all persist across calls. Only stdout/stderr buffers are fresh per call.
 
 ```
-┌─ RustBash ─────────────────────────────────────────┐
-│  InterpreterState (persistent across exec() calls)  │
-│  ├── fs: Box<dyn VirtualFs> (persistent)            │
-│  ├── env: HashMap<String, String> (persistent)      │
-│  ├── cwd: String (persistent, updated by cd)        │
-│  ├── functions: HashMap<String, FunctionDef>        │
-│  ├── last_exit_code: i32 (updated per command)      │
-│  ├── limits: ExecutionLimits (immutable config)     │
-│  └── commands: HashMap<String, Box<dyn Command>>    │
-│                                                     │
-│  exec("cmd1") → mutates state, returns ExecResult   │
-│  exec("cmd2") → sees cmd1's writes in fs and env    │
-└─────────────────────────────────────────────────────┘
+┌─ RustBash ───────────────────────────────────────────────┐
+│  InterpreterState (persistent across exec() calls)        │
+│  ├── fs: Arc<dyn VirtualFs>        (VFS, persistent)      │
+│  ├── env: HashMap<String, Variable> (persistent)          │
+│  ├── cwd: String                   (updated by cd)        │
+│  ├── functions: HashMap<String, FunctionDef>              │
+│  ├── last_exit_code: i32           (updated per command)  │
+│  ├── commands: HashMap<String, Box<dyn VirtualCommand>>   │
+│  ├── shell_opts: ShellOpts         (errexit, nounset, …)  │
+│  ├── limits: ExecutionLimits       (immutable config)     │
+│  ├── counters: ExecutionCounters   (reset per exec())     │
+│  ├── network_policy: NetworkPolicy                        │
+│  ├── traps: HashMap<String, String>                       │
+│  ├── positional_params: Vec<String>                       │
+│  └── (internal: loop_depth, control_flow, local_scopes,   │
+│       in_function_depth, random_seed, …)                  │
+│                                                           │
+│  exec("cmd1") → mutates state, returns ExecResult         │
+│  exec("cmd2") → sees cmd1's writes in fs and env          │
+└───────────────────────────────────────────────────────────┘
 ```
 
 ## Key Dependency: brush-parser
@@ -135,10 +153,10 @@ brush-parser is used as a library dependency (not forked). We use these APIs:
 | API | Purpose |
 |-----|---------|
 | `tokenize_str(input)` | Tokenize raw command string |
-| `parse_tokens(&tokens, &options)` | Parse tokens into `Program` AST |
+| `parse_tokens(&tokens, &options, &source_info)` | Parse tokens into `Program` AST |
 | `word::parse(raw_word, &options)` | Decompose word string into `Vec<WordPieceWithSource>` |
 
-**Stability risk**: brush-parser's AST types are public but not versioned with stability guarantees. Breaking changes require interpreter updates. This is an accepted risk — the benefit of reusing a full bash grammar parser outweighs the cost. We pin to a specific git revision for reproducibility.
+**Stability risk**: brush-parser's AST types are public but not versioned with stability guarantees. Breaking changes require interpreter updates. This is an accepted risk — the benefit of reusing a full bash grammar parser outweighs the cost. We pin to a specific crates.io version (`brush-parser = "0.3.0"`) for reproducibility.
 
 ## Error Philosophy
 

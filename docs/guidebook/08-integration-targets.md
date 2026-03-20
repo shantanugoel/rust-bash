@@ -9,15 +9,23 @@ rust-bash is designed to be embedded anywhere. This chapter covers the integrati
 The primary interface. All other integration targets are thin wrappers around this.
 
 ```rust
-use rust_bash::{RustBash, ExecResult};
+use rust_bash::{RustBashBuilder, ExecResult};
+use std::collections::HashMap;
 
-let mut shell = RustBash::builder()
-    .files([("/data.txt", "hello world"), ("/config.json", "{}")])
-    .env([("USER", "agent"), ("HOME", "/home/agent")])
+let mut shell = RustBashBuilder::new()
+    .files(HashMap::from([
+        ("/data.txt".into(), b"hello world".to_vec()),
+        ("/config.json".into(), b"{}".to_vec()),
+    ]))
+    .env(HashMap::from([
+        ("USER".into(), "agent".into()),
+        ("HOME".into(), "/home/agent".into()),
+    ]))
     .cwd("/")
-    .build();
+    .build()
+    .unwrap();
 
-let result: ExecResult = shell.exec("cat /data.txt | grep hello")?;
+let result: ExecResult = shell.exec("cat /data.txt | grep hello").unwrap();
 assert_eq!(result.stdout, "hello world\n");
 assert_eq!(result.exit_code, 0);
 ```
@@ -25,14 +33,15 @@ assert_eq!(result.exit_code, 0);
 ### RustBashBuilder
 
 ```rust
-RustBash::builder()
-    .files([(path, content), ...])       // Seed VFS with files
-    .env([(key, value), ...])            // Set environment variables
-    .cwd("/path")                        // Set working directory
+RustBashBuilder::new()
+    .files(HashMap<String, Vec<u8>>)     // Seed VFS with files (path → bytes)
+    .env(HashMap<String, String>)        // Set environment variables
+    .cwd("/path")                        // Set working directory (created automatically)
     .execution_limits(limits)            // Configure limits
     .network_policy(policy)              // Configure network access
-    .command(Box::new(custom_cmd))       // Register custom command
-    .build()                             // Build the sandbox
+    .fs(Arc<dyn VirtualFs>)              // Use a custom filesystem backend
+    .command(Box::new(custom_cmd))       // Register a custom command
+    .build()                             // Returns Result<RustBash, RustBashError>
 ```
 
 ### ExecResult
@@ -47,7 +56,12 @@ pub struct ExecResult {
 
 ## CLI Binary **(planned)**
 
-A standalone binary for command-line usage.
+A standalone binary for command-line usage (Milestone M5.1).
+
+> **Note**: An interactive REPL is already available as a runnable example:
+> `cargo run --example shell` — useful for manual exploration during development.
+> It supports `--env KEY=VAL` and `--files ./dir` to seed the sandbox from the host.
+> This is a development tool, not the production CLI binary described below.
 
 ```bash
 # Execute a command
@@ -233,9 +247,10 @@ For use with OpenAI, Anthropic, and other function-calling LLM APIs.
 
 ```rust
 // Create sandbox once per agent session
-let mut shell = RustBash::builder()
+let mut shell = RustBashBuilder::new()
     .files(project_files)
-    .build();
+    .build()
+    .unwrap();
 
 // In the agent tool dispatch loop:
 match tool_call.name.as_str() {

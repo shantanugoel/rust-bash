@@ -24,11 +24,14 @@ pub struct CommandContext<'a> {
     pub env: &'a HashMap<String, String>,
     pub stdin: &'a str,
     pub limits: &'a ExecutionLimits,
-    pub exec: Option<&'a dyn Fn(&str) -> CommandResult>,
+    pub network_policy: &'a NetworkPolicy,
+    pub exec: Option<ExecCallback<'a>>,
 }
 ```
 
 > **Note on env type**: Commands see a flattened `String → String` view of the environment. The interpreter internally stores `Variable` structs with metadata (exported flag, readonly flag, etc.) and projects the string values into `CommandContext`.
+
+> **Note on exec type**: `ExecCallback<'a>` is `&'a dyn Fn(&str) -> Result<CommandResult, RustBashError>`. Commands like `xargs` and `find -exec` use this to invoke sub-commands through the interpreter.
 
 | Field | Purpose |
 |-------|---------|
@@ -37,6 +40,7 @@ pub struct CommandContext<'a> {
 | `env` | Environment variables (read-only from command's perspective) |
 | `stdin` | Input piped from the previous command in a pipeline |
 | `limits` | Execution limits (commands should respect max_output_size) |
+| `network_policy` | Network access policy (checked by `curl` before any HTTP request) |
 | `exec` | Callback to execute sub-commands (used by `xargs`, `find -exec`, etc.) |
 
 ## CommandResult
@@ -68,9 +72,9 @@ External process execution is impossible by design — there is no fallback to `
 
 These commands modify interpreter state and cannot be implemented as `VirtualCommand`:
 
-`cd`, `export`, `unset`, `set`, `shift`, `local`, `declare`, `readonly`, `return`, `exit`, `break`, `continue`, `eval`, `source`/`.`, `read`, `trap`
+`cd`, `export`, `unset`, `set`, `shift`, `local`, `declare`, `readonly`, `return`, `exit`, `break`, `continue`, `eval`, `source`/`.`, `read`, `trap`, `let`, `:`
 
-> `true` and `false` are also handled as builtins for performance, though they don't modify state and could be regular commands.
+> `true` and `false` are **not** builtins — they are registered `VirtualCommand` implementations and resolved at step 3 (registered commands).
 
 ### File Operations
 
@@ -196,9 +200,10 @@ impl VirtualCommand for MyCommand {
 The `RustBashBuilder` allows registering custom commands:
 
 ```rust
-let mut shell = RustBash::builder()
+let mut shell = RustBashBuilder::new()
     .command(Box::new(MyCustomCommand))
-    .build();
+    .build()
+    .unwrap();
 ```
 
 Custom commands have the same capabilities as built-in commands — full VFS access, environment access, and stdin. This is the extension point for domain-specific tools.

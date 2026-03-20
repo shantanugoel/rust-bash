@@ -1,80 +1,103 @@
 # rust-bash
 
-A sandboxed bash environment built in Rust. Execute bash scripts safely with a virtual filesystem — no containers, no VMs, no runtime dependencies.
+A sandboxed bash interpreter built in Rust. Execute bash scripts safely with a virtual filesystem — no containers, no VMs, no host access.
 
-> ⚠️ **Status: Pre-alpha / Milestone 4 Complete** — Core shell interpreter with full text processing,
-> execution safety, and multiple filesystem backends. Supports variable expansion, redirections,
-> control flow, command substitution, arithmetic, functions, globs, brace expansion, here-documents,
-> and 70+ built-in commands including text processing tools (grep, sed, awk, jq, diff) and network
-> access (curl with policy controls). All 10 execution limits are enforced with structured errors.
-> Filesystem backends: InMemoryFs (default), OverlayFs (copy-on-write), ReadWriteFs (passthrough),
-> MountableFs (composite).
+> ⚠️ **Status: Pre-alpha / Milestones 1–4 Complete** — Core interpreter, text processing,
+> execution safety, and filesystem backends are implemented. Integration targets (C FFI, WASM,
+> standalone CLI binary) are planned but not yet started.
 
-## Design Goals
+## Highlights
 
-- **Virtual filesystem** — all file operations happen in memory. No host files are touched.
-- **70+ commands** — echo, cat, grep, awk, sed, jq, find, sort, curl, and many more.
-- **Full bash syntax** — pipelines, redirections, variables, control flow, functions, command substitution, globs, arithmetic.
-- **Execution limits** — configurable bounds on time, commands, loops, and output size.
-- **Zero dependencies** — ships as a static binary or embeddable library.
-- **Multiple targets** — Rust crate, C FFI (for Python/Go/Ruby), WASM (for browsers), CLI binary.
+- **Virtual filesystem** — all file operations happen in memory by default. No host files are touched.
+- **80 commands** — echo, cat, grep, awk, sed, jq, find, sort, diff, curl, and many more.
+- **Full bash syntax** — pipelines, redirections, variables, control flow, functions, command substitution, globs, brace expansion, arithmetic, here-documents, case statements.
+- **Execution limits** — 10 configurable bounds (time, commands, loops, output size, call depth, string length, glob results, substitution depth, heredoc size, brace expansion).
+- **Network policy** — sandboxed `curl` with URL allow-lists, method restrictions, redirect and response-size limits.
+- **Multiple filesystem backends** — InMemoryFs (default), OverlayFs (copy-on-write), ReadWriteFs (passthrough), MountableFs (composite).
+- **Embeddable** — use as a Rust crate with a builder API. Custom commands via the `VirtualCommand` trait.
 
 ## Quick Start
 
-### As a Rust crate
+Add to `Cargo.toml`:
+
+```toml
+[dependencies]
+rust-bash = { path = "..." }  # or a git/registry reference once published
+```
+
+### Basic usage
 
 ```rust
-use rust_bash::RustBash;
+use rust_bash::RustBashBuilder;
+use std::collections::HashMap;
 
-let mut shell = RustBash::builder()
-    .files([("/data.txt", "hello world")])
-    .env([("USER", "agent")])
-    .build();
+let mut shell = RustBashBuilder::new()
+    .files(HashMap::from([
+        ("/data.txt".into(), b"hello world".to_vec()),
+    ]))
+    .env(HashMap::from([
+        ("USER".into(), "agent".into()),
+    ]))
+    .build()
+    .unwrap();
 
 let result = shell.exec("cat /data.txt | grep hello").unwrap();
 assert_eq!(result.stdout, "hello world\n");
 assert_eq!(result.exit_code, 0);
 ```
 
-### As a CLI
+### Interactive REPL (example)
+
+An interactive shell is provided as a runnable example:
 
 ```bash
-# Run a command
-rust-bash -c 'echo "hello world" | wc -w'
+cargo run --example shell
 
-# Seed files from disk
-rust-bash --files ./data.csv:/app/data.csv -c 'wc -l /app/data.csv'
-
-# Interactive mode
-rust-bash
-```
-
-### As a WASM module
-
-```javascript
-import { createSandbox } from 'rust-bash-wasm';
-
-const sandbox = createSandbox({ files: { '/data.txt': 'content' } });
-const result = shell.exec('cat /data.txt');
-console.log(result.stdout); // "content\n"
+# Seed environment variables and files from a host directory
+cargo run --example shell -- --env KEY=VAL --files ./seed-dir
 ```
 
 ## Use Cases
 
 - **AI agent tools** — give LLMs a bash sandbox without container overhead
 - **Code sandboxes** — run user-submitted scripts safely
-- **Education** — bash playground in the browser via WASM
 - **Testing** — deterministic bash execution with a controlled filesystem
+- **Embedded scripting** — add bash scripting to Rust applications
+
+## Built-in Commands
+
+### Registered commands (62)
+
+| Category | Commands |
+|----------|----------|
+| **Core** | `echo`, `cat`, `true`, `false`, `pwd`, `touch`, `mkdir`, `ls`, `test`, `[` |
+| **File ops** | `cp`, `mv`, `rm`, `tee`, `stat`, `chmod`, `ln` |
+| **Text** | `grep`, `sort`, `uniq`, `cut`, `head`, `tail`, `wc`, `tr`, `rev`, `fold`, `nl`, `printf`, `paste`, `tac`, `comm`, `join`, `fmt`, `column`, `expand`, `unexpand` |
+| **Text processing** | `sed`, `awk`, `jq`, `diff` |
+| **Navigation** | `realpath`, `basename`, `dirname`, `tree`, `find` |
+| **Utilities** | `expr`, `date`, `sleep`, `seq`, `env`, `printenv`, `which`, `base64`, `md5sum`, `sha256sum`, `whoami`, `hostname`, `uname`, `yes`, `xargs` |
+| **Network** | `curl` |
+
+### Interpreter builtins (18)
+
+`exit`, `cd`, `export`, `unset`, `set`, `shift`, `readonly`, `declare`, `read`, `eval`, `source` / `.`, `break`, `continue`, `:`, `let`, `local`, `return`, `trap`
+
+Additionally, `if`/`then`/`elif`/`else`/`fi`, `for`/`while`/`until`/`do`/`done`, `case`/`esac`, `((...))`, and `[[ ]]` are handled as shell syntax by the interpreter.
 
 ## Configuration
 
 ```rust
-use rust_bash::{RustBash, ExecutionLimits, NetworkPolicy};
+use rust_bash::{RustBashBuilder, ExecutionLimits, NetworkPolicy};
+use std::collections::HashMap;
 use std::time::Duration;
 
-let mut shell = RustBash::builder()
-    .files([("/app/script.sh", "echo hello")])
-    .env([("HOME", "/home/agent")])
+let mut shell = RustBashBuilder::new()
+    .files(HashMap::from([
+        ("/app/script.sh".into(), b"echo hello".to_vec()),
+    ]))
+    .env(HashMap::from([
+        ("HOME".into(), "/home/agent".into()),
+    ]))
     .cwd("/app")
     .execution_limits(ExecutionLimits {
         max_command_count: 1_000,
@@ -86,8 +109,24 @@ let mut shell = RustBash::builder()
         allowed_url_prefixes: vec!["https://api.example.com/".into()],
         ..Default::default()
     })
-    .build();
+    .build()
+    .unwrap();
 ```
+
+### Execution limits defaults
+
+| Limit | Default |
+|-------|---------|
+| `max_call_depth` | 100 |
+| `max_command_count` | 10,000 |
+| `max_loop_iterations` | 10,000 |
+| `max_execution_time` | 30 s |
+| `max_output_size` | 10 MB |
+| `max_string_length` | 10 MB |
+| `max_glob_results` | 100,000 |
+| `max_substitution_depth` | 50 |
+| `max_heredoc_size` | 10 MB |
+| `max_brace_expansion` | 10,000 |
 
 ## Filesystem Backends
 
@@ -154,20 +193,71 @@ shell.exec("cat /project/README.md").unwrap();   // reads from disk
 shell.exec("echo scratch > /tmp/work").unwrap(); // writes to in-memory /tmp
 ```
 
-## Recipes
+### Custom commands
 
-See [docs/recipes/](docs/recipes/) for detailed guides on common tasks:
+Register domain-specific commands via the `VirtualCommand` trait:
 
-- Embedding in an AI agent loop
-- Seeding the filesystem from a real project
-- Running in the browser with WASM
-- Writing custom commands
-- And more
+```rust
+use rust_bash::{RustBashBuilder, VirtualCommand, CommandContext, CommandResult};
+
+struct MyCommand;
+
+impl VirtualCommand for MyCommand {
+    fn name(&self) -> &str { "my-cmd" }
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
+        CommandResult {
+            stdout: format!("got {} args\n", args.len()),
+            ..Default::default()
+        }
+    }
+}
+
+let mut shell = RustBashBuilder::new()
+    .command(Box::new(MyCommand))
+    .build()
+    .unwrap();
+
+let result = shell.exec("my-cmd foo bar").unwrap();
+assert_eq!(result.stdout, "got 2 args\n");
+```
+
+## Public API
+
+| Type | Description |
+|------|-------------|
+| `RustBashBuilder` | Builder for configuring and constructing a shell instance |
+| `RustBash` | The shell instance — call `.exec(script)` to run commands |
+| `ExecResult` | Returned by `exec()`: `stdout`, `stderr`, `exit_code` |
+| `ExecutionLimits` | Configurable resource bounds |
+| `NetworkPolicy` | URL allow-list and HTTP method restrictions for `curl` |
+| `VirtualCommand` | Trait for registering custom commands |
+| `CommandContext` | Passed to command implementations (fs, cwd, env, stdin, limits) |
+| `CommandResult` | Returned by command implementations |
+| `RustBashError` | Top-level error: `Parse`, `Execution`, `LimitExceeded`, `Network`, `Vfs`, `Timeout` |
+| `VfsError` | Filesystem errors: `NotFound`, `AlreadyExists`, `PermissionDenied`, etc. |
+| `Variable` | A shell variable with `value`, `exported`, `readonly` metadata |
+| `ShellOpts` | Shell option flags: `errexit`, `nounset`, `pipefail`, `xtrace` |
+| `ExecutionCounters` | Per-`exec()` resource usage counters |
+| `InterpreterState` | Full mutable shell state (advanced: direct inspection/manipulation) |
+| `ExecCallback` | Callback type for sub-command execution (`xargs`, `find -exec`) |
+| `InMemoryFs` | In-memory filesystem backend |
+| `OverlayFs` | Copy-on-write overlay backend |
+| `ReadWriteFs` | Real filesystem passthrough backend |
+| `MountableFs` | Composite backend with path-based mount delegation |
+| `VirtualFs` | Trait for filesystem backends |
 
 ## Documentation
 
-- [Guidebook](docs/guidebook/) — internal engineering documentation (architecture, design, implementation details)
-- [Recipes](docs/recipes/) — task-oriented guides for common use cases
+- [Guidebook](docs/guidebook/) — architecture, design, and implementation details
+
+## Roadmap
+
+The following are planned but not yet implemented (Milestone 5):
+
+- Standalone CLI binary with `--files`, `--cwd`, `--env`, `--json` flags
+- C FFI for embedding from Python/Go/Ruby
+- WASM target for browser execution
+- AI SDK integration (OpenAI/Anthropic tool definitions)
 
 ## License
 

@@ -66,7 +66,7 @@ We evaluated six approaches to giving AI agents bash capabilities:
 
 ### Summary Scorecard
 
-All figures for rust-bash are projected (pre-implementation).
+Milestones M1–M4 (core interpreter, text processing, execution safety, and filesystem backends) are complete. M5 (C FFI, WASM, standalone CLI binary) is planned.
 
 | Metric | Container | just-bash | **rust-bash** | WASM bash | Real bash | Restricted bash |
 |--------|-----------|-----------|---------------|-----------|-----------|----------------|

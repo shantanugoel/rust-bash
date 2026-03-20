@@ -24,9 +24,12 @@ End-to-end tests through the `RustBash::exec()` API:
 ```rust
 #[test]
 fn pipeline_with_redirect() {
-    let mut sb = RustBash::builder()
-        .files([("/data.txt", "hello\nworld\nhello")])
-        .build();
+    let mut sb = RustBashBuilder::new()
+        .files(HashMap::from([
+            ("/data.txt".into(), b"hello\nworld\nhello".to_vec()),
+        ]))
+        .build()
+        .unwrap();
     let r = sb.exec("grep hello /data.txt | wc -l > /count.txt && cat /count.txt").unwrap();
     assert_eq!(r.stdout, "2\n");
     assert_eq!(r.exit_code, 0);
@@ -48,9 +51,14 @@ Use the `insta` crate for snapshot testing. Run a command through the sandbox an
 ```rust
 #[test]
 fn snapshot_ls_output() {
-    let mut sb = RustBash::builder()
-        .files([("/a.txt", ""), ("/b.txt", ""), ("/dir/c.txt", "")])
-        .build();
+    let mut sb = RustBashBuilder::new()
+        .files(HashMap::from([
+            ("/a.txt".into(), vec![]),
+            ("/b.txt".into(), vec![]),
+            ("/dir/c.txt".into(), vec![]),
+        ]))
+        .build()
+        .unwrap();
     let r = sb.exec("ls -la /").unwrap();
     insta::assert_snapshot!(r.stdout);
 }
@@ -109,30 +117,31 @@ Start fuzzing early — don't defer to later milestones. The parser → interpre
 rust-bash/
 ├── src/
 │   ├── vfs/
-│   │   └── memory.rs        # #[cfg(test)] mod tests — VFS unit tests
+│   │   ├── memory.rs          # InMemoryFs implementation
+│   │   ├── readwrite_tests.rs # #[cfg(test)] ReadWriteFs tests
+│   │   ├── overlay_tests.rs   # #[cfg(test)] OverlayFs tests
+│   │   ├── mountable_tests.rs # #[cfg(test)] MountableFs tests
+│   │   └── tests.rs           # #[cfg(test)] shared VFS trait tests
 │   ├── commands/
-│   │   └── text.rs           # #[cfg(test)] mod tests — command unit tests
-│   └── interpreter/
-│       └── expand.rs         # #[cfg(test)] mod tests — expansion unit tests
-├── tests/
-│   ├── interpreter.rs        # Integration: compound commands, control flow
-│   ├── vfs.rs                # Integration: VFS backend behavior
-│   ├── commands.rs           # Integration: command behavior through sandbox
-│   ├── bash_compat.rs        # Bash compatibility corpus
-│   └── snapshots/            # insta snapshot files
-└── fuzz/
-    └── fuzz_targets/
-        └── exec.rs           # Fuzz target: arbitrary string → shell.exec()
+│   │   └── mod.rs             # #[cfg(test)] mod tests — command unit tests (inline)
+│   ├── interpreter/
+│   │   ├── mod.rs             # #[cfg(test)] mod tests — parse + word expansion unit tests
+│   │   └── expansion.rs       # word expansion engine (no inline tests)
+│   └── parser_smoke_tests.rs  # Smoke tests for brush-parser API surface
+└── tests/
+    ├── integration.rs         # End-to-end tests through RustBash::exec()
+    ├── filesystem_backends.rs # VFS backend integration tests
+    └── snapshots/             # insta snapshot files
 ```
 
 ## CI Pipeline
 
 1. `cargo fmt --check` — formatting
 2. `cargo clippy -- -D warnings` — linting
-3. `cargo test` — all unit + integration tests
-4. `cargo insta test` — snapshot tests
-5. `cargo fuzz run exec -- -max_total_time=60` — fuzzing (limited time in CI)
-6. `cargo build --target wasm32-unknown-unknown` — verify WASM compilation
+3. `cargo test` — all unit + integration tests (including insta snapshot tests)
+4. `cargo insta review` — review any new or changed snapshots **(run locally before committing)**
+
+> **Fuzzing** is not yet set up — no `fuzz/` directory exists. Adding `cargo fuzz` targets is aspirational future work.
 
 ## Testing Conventions
 
