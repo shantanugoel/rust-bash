@@ -1,8 +1,13 @@
 //! Command trait and built-in command implementations.
 
+pub(crate) mod awk;
+pub(crate) mod diff_cmd;
 pub(crate) mod exec_cmds;
 pub(crate) mod file_ops;
+pub(crate) mod jq_cmd;
 pub(crate) mod navigation;
+pub(crate) mod regex_util;
+pub(crate) mod sed;
 pub(crate) mod test_cmd;
 pub(crate) mod text;
 pub(crate) mod utils;
@@ -635,6 +640,14 @@ pub fn register_default_commands() -> HashMap<String, Box<dyn VirtualCommand>> {
         Box::new(text::NlCommand),
         Box::new(text::PrintfCommand),
         Box::new(text::PasteCommand),
+        // M2.6: remaining text commands
+        Box::new(text::TacCommand),
+        Box::new(text::CommCommand),
+        Box::new(text::JoinCommand),
+        Box::new(text::FmtCommand),
+        Box::new(text::ColumnCommand),
+        Box::new(text::ExpandCommand),
+        Box::new(text::UnexpandCommand),
         // Phase 10c: navigation
         Box::new(navigation::RealpathCommand),
         Box::new(navigation::BasenameCommand),
@@ -658,6 +671,14 @@ pub fn register_default_commands() -> HashMap<String, Box<dyn VirtualCommand>> {
         // Phase 10e: commands needing exec callback
         Box::new(exec_cmds::XargsCommand),
         Box::new(exec_cmds::FindCommand),
+        // M2.5: diff
+        Box::new(diff_cmd::DiffCommand),
+        // M2.2: sed
+        Box::new(sed::SedCommand),
+        // M2.4: jq
+        Box::new(jq_cmd::JqCommand),
+        // M2.3: awk
+        Box::new(awk::AwkCommand),
     ];
     for cmd in defaults {
         commands.insert(cmd.name().to_string(), cmd);

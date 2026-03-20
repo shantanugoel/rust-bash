@@ -1,6 +1,7 @@
 //! Text processing commands: grep, sort, uniq, cut, head, tail, wc, tr, rev, fold, nl, printf, paste
 
 use crate::commands::{CommandContext, CommandResult};
+use crate::interpreter::pattern::glob_match;
 use regex::Regex;
 use std::path::PathBuf;
 
@@ -79,69 +80,486 @@ fn read_all_input(files: &[&str], ctx: &CommandContext) -> (String, String, i32)
 
 pub struct GrepCommand;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegexMode {
+    Extended,
+    Basic,
+    Fixed,
+}
+
+#[derive(Debug, Default)]
+struct GrepOpts<'a> {
+    case_insensitive: bool,
+    invert: bool,
+    show_line_numbers: bool,
+    count_only: bool,
+    files_with_matches: bool,
+    files_without_match: bool,
+    regex_mode: Option<RegexMode>,
+    word_regexp: bool,
+    line_regexp: bool,
+    recursive: bool,
+    only_matching: bool,
+    force_filename: Option<bool>,
+    quiet: bool,
+    max_count: Option<usize>,
+    after_context: usize,
+    before_context: usize,
+    context_requested: bool,
+    include_globs: Vec<&'a str>,
+    exclude_globs: Vec<&'a str>,
+    patterns: Vec<&'a str>,
+    pattern_files: Vec<&'a str>,
+    files: Vec<&'a str>,
+    perl_warned: bool,
+}
+
+fn parse_grep_args<'a>(args: &'a [String]) -> Result<GrepOpts<'a>, CommandResult> {
+    let mut opts = GrepOpts::default();
+    let mut opts_done = false;
+    let mut i = 0;
+
+    while i < args.len() {
+        let arg = &args[i];
+
+        if opts_done || !arg.starts_with('-') || arg == "-" {
+            if opts.patterns.is_empty() && opts.pattern_files.is_empty() {
+                opts.patterns.push(arg);
+            } else {
+                opts.files.push(arg);
+            }
+            i += 1;
+            continue;
+        }
+
+        if arg == "--" {
+            opts_done = true;
+            i += 1;
+            continue;
+        }
+
+        // Long flags
+        if let Some(flag) = arg.strip_prefix("--") {
+            if let Some(val) = flag.strip_prefix("include=") {
+                opts.include_globs.push(val);
+            } else if let Some(val) = flag.strip_prefix("exclude=") {
+                opts.exclude_globs.push(val);
+            } else if let Some(val) = flag.strip_prefix("after-context=") {
+                opts.after_context = parse_num_arg(val, "-A")?;
+                opts.context_requested = true;
+            } else if let Some(val) = flag.strip_prefix("before-context=") {
+                opts.before_context = parse_num_arg(val, "-B")?;
+                opts.context_requested = true;
+            } else if let Some(val) = flag.strip_prefix("context=") {
+                let n = parse_num_arg(val, "-C")?;
+                opts.after_context = n;
+                opts.before_context = n;
+                opts.context_requested = true;
+            } else if let Some(val) = flag.strip_prefix("max-count=") {
+                opts.max_count = Some(parse_num_arg(val, "-m")?);
+            } else if let Some(val) = flag.strip_prefix("file=") {
+                opts.pattern_files.push(val);
+            } else {
+                match flag {
+                    "extended-regexp" => opts.regex_mode = Some(RegexMode::Extended),
+                    "basic-regexp" => {
+                        opts.regex_mode = Some(RegexMode::Basic);
+                    }
+                    "perl-regexp" => {
+                        opts.regex_mode = Some(RegexMode::Extended);
+                        opts.perl_warned = true;
+                    }
+                    "fixed-strings" => opts.regex_mode = Some(RegexMode::Fixed),
+                    "ignore-case" => opts.case_insensitive = true,
+                    "invert-match" => opts.invert = true,
+                    "line-number" => opts.show_line_numbers = true,
+                    "count" => opts.count_only = true,
+                    "files-with-matches" => opts.files_with_matches = true,
+                    "files-without-match" => opts.files_without_match = true,
+                    "word-regexp" => opts.word_regexp = true,
+                    "line-regexp" => opts.line_regexp = true,
+                    "recursive" => opts.recursive = true,
+                    "only-matching" => opts.only_matching = true,
+                    "with-filename" => opts.force_filename = Some(true),
+                    "no-filename" => opts.force_filename = Some(false),
+                    "quiet" | "silent" => opts.quiet = true,
+                    _ => {
+                        return Err(CommandResult {
+                            stderr: format!("grep: unrecognized option '--{}'\n", flag),
+                            exit_code: 2,
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+            i += 1;
+            continue;
+        }
+
+        // Short flags — may be combined (e.g., -inl) unless a flag takes a value
+        let chars: Vec<char> = arg[1..].chars().collect();
+        let mut j = 0;
+        while j < chars.len() {
+            match chars[j] {
+                'i' => opts.case_insensitive = true,
+                'v' => opts.invert = true,
+                'n' => opts.show_line_numbers = true,
+                'c' => opts.count_only = true,
+                'l' => opts.files_with_matches = true,
+                'L' => opts.files_without_match = true,
+                'F' => opts.regex_mode = Some(RegexMode::Fixed),
+                'E' => opts.regex_mode = Some(RegexMode::Extended),
+                'G' => opts.regex_mode = Some(RegexMode::Basic),
+                'P' => {
+                    opts.regex_mode = Some(RegexMode::Extended);
+                    opts.perl_warned = true;
+                }
+                'w' => opts.word_regexp = true,
+                'x' => opts.line_regexp = true,
+                'r' | 'R' => opts.recursive = true,
+                'o' => opts.only_matching = true,
+                'H' => opts.force_filename = Some(true),
+                'h' => opts.force_filename = Some(false),
+                'q' => opts.quiet = true,
+                // Flags that consume the rest of the combined flag or the next arg as a value
+                'e' => {
+                    let val = get_flag_value(&chars, j, i, args, "-e")?;
+                    opts.patterns.push(val);
+                    if j + 1 < chars.len() {
+                        // consumed rest of current arg
+                        j = chars.len();
+                        continue;
+                    } else {
+                        i += 1; // consumed next arg
+                        j = chars.len();
+                        continue;
+                    }
+                }
+                'f' => {
+                    let val = get_flag_value(&chars, j, i, args, "-f")?;
+                    opts.pattern_files.push(val);
+                    if j + 1 < chars.len() {
+                        j = chars.len();
+                        continue;
+                    } else {
+                        i += 1;
+                        j = chars.len();
+                        continue;
+                    }
+                }
+                'A' => {
+                    let val = get_flag_value(&chars, j, i, args, "-A")?;
+                    opts.after_context = parse_num_arg(val, "-A")?;
+                    opts.context_requested = true;
+                    if j + 1 < chars.len() {
+                        j = chars.len();
+                        continue;
+                    } else {
+                        i += 1;
+                        j = chars.len();
+                        continue;
+                    }
+                }
+                'B' => {
+                    let val = get_flag_value(&chars, j, i, args, "-B")?;
+                    opts.before_context = parse_num_arg(val, "-B")?;
+                    opts.context_requested = true;
+                    if j + 1 < chars.len() {
+                        j = chars.len();
+                        continue;
+                    } else {
+                        i += 1;
+                        j = chars.len();
+                        continue;
+                    }
+                }
+                'C' => {
+                    let val = get_flag_value(&chars, j, i, args, "-C")?;
+                    let n = parse_num_arg(val, "-C")?;
+                    opts.after_context = n;
+                    opts.before_context = n;
+                    opts.context_requested = true;
+                    if j + 1 < chars.len() {
+                        j = chars.len();
+                        continue;
+                    } else {
+                        i += 1;
+                        j = chars.len();
+                        continue;
+                    }
+                }
+                'm' => {
+                    let val = get_flag_value(&chars, j, i, args, "-m")?;
+                    opts.max_count = Some(parse_num_arg(val, "-m")?);
+                    if j + 1 < chars.len() {
+                        j = chars.len();
+                        continue;
+                    } else {
+                        i += 1;
+                        j = chars.len();
+                        continue;
+                    }
+                }
+                _ => {
+                    return Err(CommandResult {
+                        stderr: format!("grep: invalid option -- '{}'\n", chars[j]),
+                        exit_code: 2,
+                        ..Default::default()
+                    });
+                }
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+
+    Ok(opts)
+}
+
+/// Extract the value for a flag that takes an argument. If there are remaining
+/// chars after `j` in the combined flag, those chars are the value. Otherwise
+/// the next arg is consumed.
+fn get_flag_value<'a>(
+    chars: &[char],
+    j: usize,
+    i: usize,
+    args: &'a [String],
+    flag_name: &str,
+) -> Result<&'a str, CommandResult> {
+    if j + 1 < chars.len() {
+        // Rest of this arg is the value — but we need a reference into args
+        // The value starts at byte offset corresponding to chars[j+1..]
+        let prefix_len: usize = 1 + chars[..=j].iter().map(|c| c.len_utf8()).sum::<usize>();
+        Ok(&args[i][prefix_len..])
+    } else if i + 1 < args.len() {
+        Ok(&args[i + 1])
+    } else {
+        Err(CommandResult {
+            stderr: format!("grep: option requires an argument -- '{}'\n", flag_name),
+            exit_code: 2,
+            ..Default::default()
+        })
+    }
+}
+
+fn parse_num_arg(val: &str, flag_name: &str) -> Result<usize, CommandResult> {
+    val.parse::<usize>().map_err(|_| CommandResult {
+        stderr: format!("grep: invalid argument '{}' for '{}'\n", val, flag_name),
+        exit_code: 2,
+        ..Default::default()
+    })
+}
+
+/// Collect files for grep, expanding directories recursively if needed.
+fn collect_grep_files<'a>(
+    files: &[&'a str],
+    recursive: bool,
+    include_globs: &[&str],
+    exclude_globs: &[&str],
+    ctx: &'a CommandContext,
+) -> Result<Vec<(String, String)>, CommandResult> {
+    if files.is_empty() {
+        if recursive {
+            // Recursive with no files: search current directory
+            let mut result = Vec::new();
+            collect_dir_recursive(
+                &PathBuf::from(ctx.cwd),
+                include_globs,
+                exclude_globs,
+                ctx,
+                &mut result,
+            )?;
+            result.sort_by(|a, b| a.0.cmp(&b.0));
+            return Ok(result);
+        }
+        return Ok(vec![(
+            "(standard input)".to_string(),
+            ctx.stdin.to_string(),
+        )]);
+    }
+
+    let mut result = Vec::new();
+    for file in files {
+        if *file == "-" {
+            result.push(("(standard input)".to_string(), ctx.stdin.to_string()));
+            continue;
+        }
+        let path = resolve_path(file, ctx.cwd);
+        if recursive {
+            let stat = ctx.fs.stat(&path).map_err(|e| CommandResult {
+                stderr: format!("grep: {}: {}\n", file, e),
+                exit_code: 2,
+                ..Default::default()
+            })?;
+            if stat.node_type == crate::vfs::NodeType::Directory {
+                collect_dir_recursive(&path, include_globs, exclude_globs, ctx, &mut result)?;
+                continue;
+            }
+        }
+        // Only apply include/exclude filters during recursive traversal
+        if recursive && !matches_glob_filters(file, include_globs, exclude_globs) {
+            continue;
+        }
+        match ctx.fs.read_file(&path) {
+            Ok(bytes) => {
+                result.push((
+                    file.to_string(),
+                    String::from_utf8_lossy(&bytes).to_string(),
+                ));
+            }
+            Err(e) => {
+                return Err(CommandResult {
+                    stderr: format!("grep: {}: {}\n", file, e),
+                    exit_code: 2,
+                    ..Default::default()
+                });
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn collect_dir_recursive(
+    dir: &std::path::Path,
+    include_globs: &[&str],
+    exclude_globs: &[&str],
+    ctx: &CommandContext,
+    result: &mut Vec<(String, String)>,
+) -> Result<(), CommandResult> {
+    let entries = ctx.fs.readdir(dir).map_err(|e| CommandResult {
+        stderr: format!("grep: {}: {}\n", dir.display(), e),
+        exit_code: 2,
+        ..Default::default()
+    })?;
+
+    let mut sorted_entries = entries;
+    sorted_entries.sort_by(|a, b| a.name.cmp(&b.name));
+
+    for entry in &sorted_entries {
+        let child = dir.join(&entry.name);
+        match entry.node_type {
+            crate::vfs::NodeType::Directory => {
+                collect_dir_recursive(&child, include_globs, exclude_globs, ctx, result)?;
+            }
+            crate::vfs::NodeType::File => {
+                let name_str = child.to_string_lossy().to_string();
+                if !matches_glob_filters(&entry.name, include_globs, exclude_globs) {
+                    continue;
+                }
+                match ctx.fs.read_file(&child) {
+                    Ok(bytes) => {
+                        result.push((name_str, String::from_utf8_lossy(&bytes).to_string()));
+                    }
+                    Err(e) => {
+                        return Err(CommandResult {
+                            stderr: format!("grep: {}: {}\n", name_str, e),
+                            exit_code: 2,
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+            _ => {} // skip symlinks etc.
+        }
+    }
+    Ok(())
+}
+
+fn matches_glob_filters(filename: &str, include_globs: &[&str], exclude_globs: &[&str]) -> bool {
+    // Extract just the filename component for matching
+    let basename = std::path::Path::new(filename)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| filename.to_string());
+
+    if !include_globs.is_empty() && !include_globs.iter().any(|g| glob_match(g, &basename)) {
+        return false;
+    }
+    if exclude_globs.iter().any(|g| glob_match(g, &basename)) {
+        return false;
+    }
+    true
+}
+
 impl super::VirtualCommand for GrepCommand {
     fn name(&self) -> &str {
         "grep"
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
-        let mut case_insensitive = false;
-        let mut invert = false;
-        let mut show_line_numbers = false;
-        let mut count_only = false;
-        let mut files_with_matches = false;
-        let mut fixed_string = false;
-        let mut opts_done = false;
-        let mut pattern_str: Option<&str> = None;
-        let mut files: Vec<&str> = Vec::new();
+        let opts = match parse_grep_args(args) {
+            Ok(o) => o,
+            Err(r) => return r,
+        };
 
-        for arg in args {
-            if !opts_done && arg == "--" {
-                opts_done = true;
-                continue;
-            }
-            if !opts_done && arg.starts_with('-') && arg.len() > 1 {
-                for c in arg[1..].chars() {
-                    match c {
-                        'i' => case_insensitive = true,
-                        'v' => invert = true,
-                        'n' => show_line_numbers = true,
-                        'c' => count_only = true,
-                        'l' => files_with_matches = true,
-                        'F' => fixed_string = true,
-                        _ => {}
+        let mut stderr = String::new();
+
+        if opts.perl_warned {
+            stderr.push_str("grep: warning: -P is not fully supported, using extended regex\n");
+        }
+
+        // Load patterns from files
+        let mut file_patterns: Vec<String> = Vec::new();
+        for pf in &opts.pattern_files {
+            let path = resolve_path(pf, ctx.cwd);
+            match ctx.fs.read_file(&path) {
+                Ok(bytes) => {
+                    let content = String::from_utf8_lossy(&bytes);
+                    for line in content.lines() {
+                        file_patterns.push(line.to_string());
                     }
                 }
-            } else if pattern_str.is_none() {
-                pattern_str = Some(arg);
-            } else {
-                files.push(arg);
+                Err(e) => {
+                    return CommandResult {
+                        stderr: format!("grep: {}: {}\n", pf, e),
+                        exit_code: 2,
+                        ..Default::default()
+                    };
+                }
             }
         }
 
-        let pattern_str = match pattern_str {
-            Some(p) => p,
-            None => {
-                return CommandResult {
-                    stderr: "grep: missing pattern\n".into(),
-                    exit_code: 2,
-                    ..Default::default()
-                };
-            }
+        // If no patterns from -e or -f, the first positional arg is the pattern
+        if opts.patterns.is_empty() && file_patterns.is_empty() {
+            return CommandResult {
+                stderr: "grep: missing pattern\n".into(),
+                exit_code: 2,
+                ..Default::default()
+            };
+        }
+
+        let regex_mode = opts.regex_mode.unwrap_or(RegexMode::Basic);
+
+        // Build combined regex from all patterns
+        let all_patterns: Vec<String> = opts
+            .patterns
+            .iter()
+            .map(|p| p.to_string())
+            .chain(file_patterns)
+            .collect();
+
+        let regex_parts: Vec<String> = all_patterns
+            .iter()
+            .map(|p| build_pattern(p, regex_mode, opts.word_regexp, opts.line_regexp))
+            .collect();
+
+        let combined_pattern = if regex_parts.len() == 1 {
+            regex_parts.into_iter().next().unwrap()
+        } else {
+            regex_parts
+                .iter()
+                .map(|p| format!("(?:{})", p))
+                .collect::<Vec<_>>()
+                .join("|")
         };
 
-        let regex_pattern = if fixed_string {
-            regex::escape(pattern_str)
+        let final_pattern = if opts.case_insensitive {
+            format!("(?i){}", combined_pattern)
         } else {
-            pattern_str.to_string()
-        };
-        let regex_pattern = if case_insensitive {
-            format!("(?i){}", regex_pattern)
-        } else {
-            regex_pattern
+            combined_pattern
         };
 
-        let re = match Regex::new(&regex_pattern) {
+        let re = match Regex::new(&final_pattern) {
             Ok(r) => r,
             Err(e) => {
                 return CommandResult {
@@ -152,61 +570,251 @@ impl super::VirtualCommand for GrepCommand {
             }
         };
 
-        let inputs = match read_input(&files, ctx) {
+        let inputs = match collect_grep_files(
+            &opts.files,
+            opts.recursive,
+            &opts.include_globs,
+            &opts.exclude_globs,
+            ctx,
+        ) {
             Ok(i) => i,
             Err(r) => return r,
         };
-        let multi_file = inputs.len() > 1;
+
+        let show_filename = match opts.force_filename {
+            Some(v) => v,
+            None => inputs.len() > 1 || opts.recursive,
+        };
 
         let mut stdout = String::new();
         let mut any_match = false;
+        let mut any_file_without_match = false;
+        let has_context = opts.context_requested;
 
         for (filename, content) in &inputs {
-            let mut file_match_count = 0u64;
+            let lines: Vec<&str> = content.lines().collect();
+            let mut file_match_count: usize = 0;
             let mut file_matched = false;
 
-            for (line_num, line) in content.lines().enumerate() {
-                let matched = re.is_match(line);
-                let matched = if invert { !matched } else { matched };
-
-                if matched {
-                    file_match_count += 1;
-                    file_matched = true;
+            if has_context
+                && !opts.count_only
+                && !opts.files_with_matches
+                && !opts.files_without_match
+                && !opts.quiet
+                && !opts.only_matching
+            {
+                // Context mode: track which lines to print
+                let cr = grep_with_context(&lines, &re, &opts, filename, show_filename);
+                file_match_count = cr.match_count;
+                file_matched = cr.had_match;
+                if cr.had_match {
                     any_match = true;
+                }
+                stdout.push_str(&cr.output);
+            } else {
+                // Non-context mode
+                for (line_idx, line) in lines.iter().enumerate() {
+                    if opts.max_count.is_some_and(|mc| file_match_count >= mc) {
+                        break;
+                    }
 
-                    if !count_only && !files_with_matches {
-                        if multi_file {
-                            stdout.push_str(filename);
-                            stdout.push(':');
+                    let matched = re.is_match(line);
+                    let matched = if opts.invert { !matched } else { matched };
+
+                    if matched {
+                        file_match_count += 1;
+                        file_matched = true;
+                        any_match = true;
+
+                        if opts.quiet {
+                            return CommandResult {
+                                stdout: String::new(),
+                                stderr,
+                                exit_code: 0,
+                            };
                         }
-                        if show_line_numbers {
-                            stdout.push_str(&format!("{}:", line_num + 1));
+
+                        if !opts.count_only && !opts.files_with_matches && !opts.files_without_match
+                        {
+                            if opts.only_matching && opts.invert {
+                                // -o with -v: inverted lines have no match to extract
+                            } else if opts.only_matching {
+                                // Print each match on the line
+                                for mat in re.find_iter(line) {
+                                    if show_filename {
+                                        stdout.push_str(filename);
+                                        stdout.push(':');
+                                    }
+                                    if opts.show_line_numbers {
+                                        stdout.push_str(&(line_idx + 1).to_string());
+                                        stdout.push(':');
+                                    }
+                                    stdout.push_str(mat.as_str());
+                                    stdout.push('\n');
+                                }
+                            } else {
+                                format_match_line(
+                                    &mut stdout,
+                                    filename,
+                                    line_idx + 1,
+                                    line,
+                                    ':',
+                                    show_filename,
+                                    opts.show_line_numbers,
+                                );
+                            }
                         }
-                        stdout.push_str(line);
-                        stdout.push('\n');
                     }
                 }
             }
 
-            if count_only {
-                if multi_file {
+            if opts.count_only && !opts.quiet {
+                if show_filename {
                     stdout.push_str(&format!("{}:{}\n", filename, file_match_count));
                 } else {
                     stdout.push_str(&format!("{}\n", file_match_count));
                 }
             }
 
-            if files_with_matches && file_matched {
+            if opts.files_with_matches && file_matched && !opts.quiet {
                 stdout.push_str(filename);
                 stdout.push('\n');
             }
+
+            if opts.files_without_match && !file_matched {
+                stdout.push_str(filename);
+                stdout.push('\n');
+                any_file_without_match = true;
+            }
         }
+
+        let exit_match = if opts.files_without_match {
+            any_file_without_match
+        } else {
+            any_match
+        };
 
         CommandResult {
             stdout,
-            exit_code: if any_match { 0 } else { 1 },
-            ..Default::default()
+            stderr,
+            exit_code: if exit_match { 0 } else { 1 },
         }
+    }
+}
+
+fn build_pattern(
+    pattern: &str,
+    regex_mode: RegexMode,
+    word_regexp: bool,
+    line_regexp: bool,
+) -> String {
+    let mut p = match regex_mode {
+        RegexMode::Fixed => regex::escape(pattern),
+        RegexMode::Basic => crate::commands::regex_util::bre_to_ere(pattern),
+        RegexMode::Extended => pattern.to_string(),
+    };
+
+    if word_regexp {
+        p = format!(r"\b{}\b", p);
+    }
+    if line_regexp {
+        p = format!("^{}$", p);
+    }
+    p
+}
+
+fn format_match_line(
+    out: &mut String,
+    filename: &str,
+    line_num: usize,
+    line: &str,
+    sep: char,
+    show_filename: bool,
+    show_line_numbers: bool,
+) {
+    if show_filename {
+        out.push_str(filename);
+        out.push(sep);
+    }
+    if show_line_numbers {
+        out.push_str(&line_num.to_string());
+        out.push(sep);
+    }
+    out.push_str(line);
+    out.push('\n');
+}
+
+struct ContextResult {
+    output: String,
+    match_count: usize,
+    had_match: bool,
+}
+
+fn grep_with_context(
+    lines: &[&str],
+    re: &Regex,
+    opts: &GrepOpts,
+    filename: &str,
+    show_filename: bool,
+) -> ContextResult {
+    let n = lines.len();
+    let mut match_count: usize = 0;
+    let mut had_match = false;
+
+    // Determine which lines are matches
+    let mut is_match = vec![false; n];
+    for (idx, line) in lines.iter().enumerate() {
+        if opts.max_count.is_some_and(|mc| match_count >= mc) {
+            break;
+        }
+        let matched = re.is_match(line);
+        let matched = if opts.invert { !matched } else { matched };
+        if matched {
+            is_match[idx] = true;
+            match_count += 1;
+            had_match = true;
+        }
+    }
+
+    // Calculate which lines should be printed (match lines + context)
+    let mut print_line = vec![false; n];
+    for (idx, matched) in is_match.iter().enumerate() {
+        if *matched {
+            let start = idx.saturating_sub(opts.before_context);
+            let end = (idx + opts.after_context + 1).min(n);
+            for flag in &mut print_line[start..end] {
+                *flag = true;
+            }
+        }
+    }
+
+    // Print with group separators
+    let mut output = String::new();
+    let mut last_printed: Option<usize> = None;
+    for (idx, (&should_print, &matched)) in print_line.iter().zip(is_match.iter()).enumerate() {
+        if !should_print {
+            continue;
+        }
+        if last_printed.is_some_and(|lp| idx > lp + 1) {
+            output.push_str("--\n");
+        }
+        let sep = if matched { ':' } else { '-' };
+        format_match_line(
+            &mut output,
+            filename,
+            idx + 1,
+            lines[idx],
+            sep,
+            show_filename,
+            opts.show_line_numbers,
+        );
+        last_printed = Some(idx);
+    }
+
+    ContextResult {
+        output,
+        match_count,
+        had_match,
     }
 }
 
@@ -302,8 +910,8 @@ impl super::VirtualCommand for SortCommand {
             let b_key = extract_sort_key(b, key_field, delim);
 
             if numeric {
-                let an = a_key.trim().parse::<f64>().unwrap_or(0.0);
-                let bn = b_key.trim().parse::<f64>().unwrap_or(0.0);
+                let an = parse_leading_number(a_key);
+                let bn = parse_leading_number(b_key);
                 an.partial_cmp(&bn).unwrap_or(std::cmp::Ordering::Equal)
             } else {
                 a_key.cmp(b_key)
@@ -337,6 +945,29 @@ fn extract_sort_key(line: &str, key_field: Option<usize>, delim: char) -> &str {
         Some(k) if k > 0 => line.split(delim).nth(k - 1).unwrap_or(""),
         _ => line,
     }
+}
+
+/// Extract the leading numeric value from a string, matching `sort -n` behavior.
+fn parse_leading_number(s: &str) -> f64 {
+    let trimmed = s.trim_start();
+    if trimmed.is_empty() {
+        return 0.0;
+    }
+    let mut end = 0;
+    let bytes = trimmed.as_bytes();
+    if end < bytes.len() && (bytes[end] == b'-' || bytes[end] == b'+') {
+        end += 1;
+    }
+    while end < bytes.len() && bytes[end].is_ascii_digit() {
+        end += 1;
+    }
+    if end < bytes.len() && bytes[end] == b'.' {
+        end += 1;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+    }
+    trimmed[..end].parse::<f64>().unwrap_or(0.0)
 }
 
 // ── uniq ─────────────────────────────────────────────────────────────
@@ -1395,6 +2026,975 @@ impl super::VirtualCommand for PasteCommand {
     }
 }
 
+// ── tac ──────────────────────────────────────────────────────────────
+
+pub struct TacCommand;
+
+impl super::VirtualCommand for TacCommand {
+    fn name(&self) -> &str {
+        "tac"
+    }
+
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
+        let mut separator: Option<&str> = None;
+        let mut opts_done = false;
+        let mut files: Vec<&str> = Vec::new();
+        let mut i = 0;
+
+        while i < args.len() {
+            let arg = &args[i];
+            if !opts_done && arg == "--" {
+                opts_done = true;
+                i += 1;
+                continue;
+            }
+            if !opts_done && arg == "-s" {
+                i += 1;
+                if i < args.len() {
+                    separator = Some(&args[i]);
+                }
+            } else if !opts_done && arg.starts_with("-s") {
+                separator = Some(&arg[2..]);
+            } else {
+                files.push(arg);
+            }
+            i += 1;
+        }
+
+        let (content, stderr, err_code) = read_all_input(&files, ctx);
+        if err_code != 0 {
+            return CommandResult {
+                stderr,
+                exit_code: err_code,
+                ..Default::default()
+            };
+        }
+
+        let sep = separator.unwrap_or("\n");
+        let mut parts: Vec<&str> = content.split(sep).collect();
+        // If content ends with the separator, the last element is empty — remove it
+        // so we don't produce a leading separator in the output.
+        if parts.last() == Some(&"") {
+            parts.pop();
+        }
+        parts.reverse();
+
+        let mut stdout = String::new();
+        if !parts.is_empty() {
+            for (idx, part) in parts.iter().enumerate() {
+                stdout.push_str(part);
+                if idx < parts.len() - 1 {
+                    stdout.push_str(sep);
+                }
+            }
+            stdout.push('\n');
+        }
+
+        CommandResult {
+            stdout,
+            stderr,
+            exit_code: 0,
+        }
+    }
+}
+
+// ── comm ─────────────────────────────────────────────────────────────
+
+pub struct CommCommand;
+
+impl super::VirtualCommand for CommCommand {
+    fn name(&self) -> &str {
+        "comm"
+    }
+
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
+        let mut suppress1 = false;
+        let mut suppress2 = false;
+        let mut suppress3 = false;
+        let mut opts_done = false;
+        let mut files: Vec<&str> = Vec::new();
+        let mut i = 0;
+
+        while i < args.len() {
+            let arg = &args[i];
+            if !opts_done && arg == "--" {
+                opts_done = true;
+                i += 1;
+                continue;
+            }
+            if !opts_done && arg.starts_with('-') && arg != "-" {
+                if arg == "--check-order" {
+                    // default behavior, no-op
+                } else {
+                    for c in arg[1..].chars() {
+                        match c {
+                            '1' => suppress1 = true,
+                            '2' => suppress2 = true,
+                            '3' => suppress3 = true,
+                            _ => {
+                                return CommandResult {
+                                    stderr: format!("comm: invalid option -- '{}'\n", c),
+                                    exit_code: 1,
+                                    ..Default::default()
+                                };
+                            }
+                        }
+                    }
+                }
+            } else {
+                files.push(arg);
+            }
+            i += 1;
+        }
+
+        if files.len() != 2 {
+            return CommandResult {
+                stderr: "comm: requires exactly two file arguments\n".to_string(),
+                exit_code: 1,
+                ..Default::default()
+            };
+        }
+
+        let inputs = match read_input(&files, ctx) {
+            Ok(i) => i,
+            Err(r) => return r,
+        };
+
+        let lines1: Vec<&str> = inputs[0].1.lines().collect();
+        let lines2: Vec<&str> = inputs[1].1.lines().collect();
+
+        let mut stdout = String::new();
+        let mut i1 = 0;
+        let mut i2 = 0;
+
+        while i1 < lines1.len() && i2 < lines2.len() {
+            match lines1[i1].cmp(lines2[i2]) {
+                std::cmp::Ordering::Less => {
+                    if !suppress1 {
+                        stdout.push_str(lines1[i1]);
+                        stdout.push('\n');
+                    }
+                    i1 += 1;
+                }
+                std::cmp::Ordering::Greater => {
+                    if !suppress2 {
+                        if !suppress1 {
+                            stdout.push('\t');
+                        }
+                        stdout.push_str(lines2[i2]);
+                        stdout.push('\n');
+                    }
+                    i2 += 1;
+                }
+                std::cmp::Ordering::Equal => {
+                    if !suppress3 {
+                        if !suppress1 {
+                            stdout.push('\t');
+                        }
+                        if !suppress2 {
+                            stdout.push('\t');
+                        }
+                        stdout.push_str(lines1[i1]);
+                        stdout.push('\n');
+                    }
+                    i1 += 1;
+                    i2 += 1;
+                }
+            }
+        }
+
+        while i1 < lines1.len() {
+            if !suppress1 {
+                stdout.push_str(lines1[i1]);
+                stdout.push('\n');
+            }
+            i1 += 1;
+        }
+
+        while i2 < lines2.len() {
+            if !suppress2 {
+                if !suppress1 {
+                    stdout.push('\t');
+                }
+                stdout.push_str(lines2[i2]);
+                stdout.push('\n');
+            }
+            i2 += 1;
+        }
+
+        CommandResult {
+            stdout,
+            ..Default::default()
+        }
+    }
+}
+
+// ── join ─────────────────────────────────────────────────────────────
+
+pub struct JoinCommand;
+
+impl super::VirtualCommand for JoinCommand {
+    fn name(&self) -> &str {
+        "join"
+    }
+
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
+        let mut field1: usize = 1;
+        let mut field2: usize = 1;
+        let mut separator: Option<String> = None;
+        let mut unpaired: Vec<usize> = Vec::new();
+        let mut empty_replacement: Option<String> = None;
+        let mut output_format: Option<String> = None;
+        let mut opts_done = false;
+        let mut files: Vec<&str> = Vec::new();
+        let mut i = 0;
+
+        while i < args.len() {
+            let arg = &args[i];
+            if !opts_done && arg == "--" {
+                opts_done = true;
+                i += 1;
+                continue;
+            }
+            if !opts_done && arg == "-t" {
+                i += 1;
+                if i < args.len() {
+                    separator = Some(args[i].clone());
+                }
+            } else if !opts_done && arg.starts_with("-t") {
+                separator = Some(arg[2..].to_string());
+            } else if !opts_done && arg == "-j" {
+                i += 1;
+                if i < args.len() {
+                    let f: usize = args[i].parse().unwrap_or(1);
+                    field1 = f;
+                    field2 = f;
+                }
+            } else if !opts_done && arg == "-1" {
+                i += 1;
+                if i < args.len() {
+                    field1 = args[i].parse().unwrap_or(1);
+                }
+            } else if !opts_done && arg == "-2" {
+                i += 1;
+                if i < args.len() {
+                    field2 = args[i].parse().unwrap_or(1);
+                }
+            } else if !opts_done && arg == "-a" {
+                i += 1;
+                if i < args.len()
+                    && let Ok(n) = args[i].parse::<usize>()
+                {
+                    unpaired.push(n);
+                }
+            } else if !opts_done && arg == "-e" {
+                i += 1;
+                if i < args.len() {
+                    empty_replacement = Some(args[i].clone());
+                }
+            } else if !opts_done && arg == "-o" {
+                i += 1;
+                if i < args.len() {
+                    output_format = Some(args[i].clone());
+                }
+            } else {
+                files.push(arg);
+            }
+            i += 1;
+        }
+
+        if files.len() != 2 {
+            return CommandResult {
+                stderr: "join: requires exactly two file arguments\n".to_string(),
+                exit_code: 1,
+                ..Default::default()
+            };
+        }
+
+        let inputs = match read_input(&files, ctx) {
+            Ok(i) => i,
+            Err(r) => return r,
+        };
+
+        let out_sep = separator.as_deref().unwrap_or(" ");
+
+        let split_line = |line: &str| -> Vec<String> {
+            if let Some(ref sep) = separator {
+                line.split(sep.as_str()).map(|s| s.to_string()).collect()
+            } else {
+                line.split_whitespace().map(|s| s.to_string()).collect()
+            }
+        };
+
+        let get_key = |fields: &[String], field_idx: usize| -> String {
+            if field_idx == 0 || field_idx > fields.len() {
+                String::new()
+            } else {
+                fields[field_idx - 1].clone()
+            }
+        };
+
+        let lines1: Vec<Vec<String>> = inputs[0].1.lines().map(split_line).collect();
+        let lines2: Vec<Vec<String>> = inputs[1].1.lines().map(split_line).collect();
+
+        let format_output =
+            |key: &str, f1: Option<&Vec<String>>, f2: Option<&Vec<String>>| -> String {
+                if let Some(ref fmt) = output_format {
+                    let specs: Vec<&str> = fmt.split(',').collect();
+                    let mut parts: Vec<String> = Vec::new();
+                    for spec in &specs {
+                        if *spec == "0" {
+                            parts.push(key.to_string());
+                        } else if let Some(rest) = spec.strip_prefix("1.")
+                            && let Ok(idx) = rest.parse::<usize>()
+                        {
+                            let val = f1
+                                .and_then(|f| {
+                                    if idx > 0 && idx <= f.len() {
+                                        Some(f[idx - 1].as_str())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .or(empty_replacement.as_deref())
+                                .unwrap_or("");
+                            parts.push(val.to_string());
+                        } else if let Some(rest) = spec.strip_prefix("2.")
+                            && let Ok(idx) = rest.parse::<usize>()
+                        {
+                            let val = f2
+                                .and_then(|f| {
+                                    if idx > 0 && idx <= f.len() {
+                                        Some(f[idx - 1].as_str())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .or(empty_replacement.as_deref())
+                                .unwrap_or("");
+                            parts.push(val.to_string());
+                        }
+                    }
+                    parts.join(out_sep)
+                } else {
+                    let mut parts: Vec<String> = vec![key.to_string()];
+                    if let Some(f) = f1 {
+                        for (idx, val) in f.iter().enumerate() {
+                            if idx + 1 != field1 {
+                                parts.push(val.clone());
+                            }
+                        }
+                    }
+                    if let Some(f) = f2 {
+                        for (idx, val) in f.iter().enumerate() {
+                            if idx + 1 != field2 {
+                                parts.push(val.clone());
+                            }
+                        }
+                    }
+                    parts.join(out_sep)
+                }
+            };
+
+        let mut stdout = String::new();
+        let mut j = 0;
+        let mut match_end: usize = 0;
+        let mut prev_key1 = String::new();
+
+        for fields1 in &lines1 {
+            let key1 = get_key(fields1, field1);
+
+            if key1 != prev_key1 {
+                j = match_end;
+
+                while j < lines2.len() {
+                    let key2 = get_key(&lines2[j], field2);
+                    if key2 < key1 {
+                        if unpaired.contains(&2) {
+                            stdout.push_str(&format_output(&key2, None, Some(&lines2[j])));
+                            stdout.push('\n');
+                        }
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            let mut k = j;
+            let mut matched = false;
+            while k < lines2.len() {
+                let key2 = get_key(&lines2[k], field2);
+                if key2 == key1 {
+                    stdout.push_str(&format_output(&key1, Some(fields1), Some(&lines2[k])));
+                    stdout.push('\n');
+                    matched = true;
+                    k += 1;
+                } else {
+                    break;
+                }
+            }
+            match_end = match_end.max(k);
+
+            if !matched && unpaired.contains(&1) {
+                stdout.push_str(&format_output(&key1, Some(fields1), None));
+                stdout.push('\n');
+            }
+            prev_key1 = key1;
+        }
+
+        // Remaining unmatched lines from file 2
+        j = match_end;
+        while j < lines2.len() {
+            if unpaired.contains(&2) {
+                stdout.push_str(&format_output(
+                    &get_key(&lines2[j], field2),
+                    None,
+                    Some(&lines2[j]),
+                ));
+                stdout.push('\n');
+            }
+            j += 1;
+        }
+
+        CommandResult {
+            stdout,
+            ..Default::default()
+        }
+    }
+}
+
+// ── fmt ──────────────────────────────────────────────────────────────
+
+pub struct FmtCommand;
+
+impl super::VirtualCommand for FmtCommand {
+    fn name(&self) -> &str {
+        "fmt"
+    }
+
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
+        let mut width: usize = 75;
+        let mut split_only = false;
+        let mut opts_done = false;
+        let mut files: Vec<&str> = Vec::new();
+        let mut i = 0;
+
+        while i < args.len() {
+            let arg = &args[i];
+            if !opts_done && arg == "--" {
+                opts_done = true;
+                i += 1;
+                continue;
+            }
+            if !opts_done && arg == "-w" {
+                i += 1;
+                if i < args.len() {
+                    width = args[i].parse().unwrap_or(75).max(1);
+                }
+            } else if !opts_done && arg.starts_with("-w") {
+                width = arg[2..].parse().unwrap_or(75).max(1);
+            } else if !opts_done && arg == "-s" {
+                split_only = true;
+            } else if !opts_done && arg.starts_with('-') && arg != "-" {
+                // ignore unknown options
+            } else {
+                files.push(arg);
+            }
+            i += 1;
+        }
+
+        let (content, stderr, err_code) = read_all_input(&files, ctx);
+        if err_code != 0 {
+            return CommandResult {
+                stderr,
+                exit_code: err_code,
+                ..Default::default()
+            };
+        }
+
+        let mut stdout = String::new();
+        let paragraphs = split_paragraphs(&content);
+
+        for para in &paragraphs {
+            if para.is_empty() {
+                stdout.push('\n');
+                continue;
+            }
+
+            if split_only {
+                for line in para.lines() {
+                    if line.len() <= width {
+                        stdout.push_str(line);
+                        stdout.push('\n');
+                    } else {
+                        let mut remaining = line;
+                        while remaining.len() > width {
+                            let split_pos = remaining[..width].rfind(' ').unwrap_or(width);
+                            stdout.push_str(&remaining[..split_pos]);
+                            stdout.push('\n');
+                            remaining = remaining[split_pos..].trim_start();
+                        }
+                        if !remaining.is_empty() {
+                            stdout.push_str(remaining);
+                            stdout.push('\n');
+                        }
+                    }
+                }
+            } else {
+                let words: Vec<&str> = para.split_whitespace().collect();
+                let mut line_len = 0;
+                for (word_idx, word) in words.iter().enumerate() {
+                    if word_idx == 0 {
+                        stdout.push_str(word);
+                        line_len = word.len();
+                    } else if line_len + 1 + word.len() > width {
+                        stdout.push('\n');
+                        stdout.push_str(word);
+                        line_len = word.len();
+                    } else {
+                        stdout.push(' ');
+                        stdout.push_str(word);
+                        line_len += 1 + word.len();
+                    }
+                }
+                stdout.push('\n');
+            }
+        }
+
+        CommandResult {
+            stdout,
+            stderr,
+            exit_code: 0,
+        }
+    }
+}
+
+fn split_paragraphs(input: &str) -> Vec<String> {
+    let mut paragraphs = Vec::new();
+    let mut current = String::new();
+
+    for line in input.lines() {
+        if line.trim().is_empty() {
+            if !current.is_empty() {
+                paragraphs.push(current.clone());
+                current.clear();
+            }
+            paragraphs.push(String::new());
+        } else {
+            if !current.is_empty() {
+                current.push('\n');
+            }
+            current.push_str(line);
+        }
+    }
+
+    if !current.is_empty() {
+        paragraphs.push(current);
+    }
+
+    paragraphs
+}
+
+// ── column ───────────────────────────────────────────────────────────
+
+pub struct ColumnCommand;
+
+impl super::VirtualCommand for ColumnCommand {
+    fn name(&self) -> &str {
+        "column"
+    }
+
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
+        let mut table_mode = false;
+        let mut input_sep: Option<String> = None;
+        let mut output_sep = "  ".to_string();
+        let mut opts_done = false;
+        let mut files: Vec<&str> = Vec::new();
+        let mut i = 0;
+
+        while i < args.len() {
+            let arg = &args[i];
+            if !opts_done && arg == "--" {
+                opts_done = true;
+                i += 1;
+                continue;
+            }
+            if !opts_done && arg == "-t" {
+                table_mode = true;
+            } else if !opts_done && arg == "-s" {
+                i += 1;
+                if i < args.len() {
+                    input_sep = Some(args[i].clone());
+                }
+            } else if !opts_done && arg.starts_with("-s") {
+                input_sep = Some(arg[2..].to_string());
+            } else if !opts_done && arg == "-o" {
+                i += 1;
+                if i < args.len() {
+                    output_sep = args[i].clone();
+                }
+            } else if !opts_done && arg.starts_with("-o") {
+                output_sep = arg[2..].to_string();
+            } else {
+                files.push(arg);
+            }
+            i += 1;
+        }
+
+        let (content, stderr, err_code) = read_all_input(&files, ctx);
+        if err_code != 0 {
+            return CommandResult {
+                stderr,
+                exit_code: err_code,
+                ..Default::default()
+            };
+        }
+
+        let lines: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+        if lines.is_empty() {
+            return CommandResult::default();
+        }
+
+        if table_mode {
+            let split_line = |line: &str| -> Vec<String> {
+                if let Some(ref sep) = input_sep {
+                    line.split(sep.as_str())
+                        .map(|s| s.trim().to_string())
+                        .collect()
+                } else {
+                    line.split_whitespace().map(|s| s.to_string()).collect()
+                }
+            };
+
+            let rows: Vec<Vec<String>> = lines.iter().map(|l| split_line(l)).collect();
+            let num_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+            let mut col_widths = vec![0usize; num_cols];
+            for row in &rows {
+                for (col_idx, cell) in row.iter().enumerate() {
+                    col_widths[col_idx] = col_widths[col_idx].max(cell.len());
+                }
+            }
+
+            let mut stdout = String::new();
+            for row in &rows {
+                for (col_idx, cell) in row.iter().enumerate() {
+                    if col_idx > 0 {
+                        stdout.push_str(&output_sep);
+                    }
+                    if col_idx < row.len() - 1 {
+                        stdout.push_str(cell);
+                        let padding = col_widths[col_idx].saturating_sub(cell.len());
+                        for _ in 0..padding {
+                            stdout.push(' ');
+                        }
+                    } else {
+                        stdout.push_str(cell);
+                    }
+                }
+                stdout.push('\n');
+            }
+
+            CommandResult {
+                stdout,
+                stderr,
+                exit_code: 0,
+            }
+        } else {
+            // Fill columns mode (newspaper style)
+            let max_width = 80;
+            let max_len = lines.iter().map(|l| l.len()).max().unwrap_or(0);
+            let col_width = max_len + 2;
+            let num_cols = (max_width / col_width).max(1);
+            let num_rows = lines.len().div_ceil(num_cols);
+
+            let mut stdout = String::new();
+            for row in 0..num_rows {
+                for col in 0..num_cols {
+                    let idx = col * num_rows + row;
+                    if idx < lines.len() {
+                        if col > 0 {
+                            stdout.push_str("  ");
+                        }
+                        let entry = lines[idx];
+                        stdout.push_str(entry);
+                        if col < num_cols - 1 && (col + 1) * num_rows + row < lines.len() {
+                            let padding = col_width.saturating_sub(entry.len() + 2);
+                            for _ in 0..padding {
+                                stdout.push(' ');
+                            }
+                        }
+                    }
+                }
+                stdout.push('\n');
+            }
+
+            CommandResult {
+                stdout,
+                stderr,
+                exit_code: 0,
+            }
+        }
+    }
+}
+
+// ── expand ───────────────────────────────────────────────────────────
+
+pub struct ExpandCommand;
+
+impl super::VirtualCommand for ExpandCommand {
+    fn name(&self) -> &str {
+        "expand"
+    }
+
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
+        let mut tab_stops = TabStops::Uniform(8);
+        let mut opts_done = false;
+        let mut files: Vec<&str> = Vec::new();
+        let mut i = 0;
+
+        while i < args.len() {
+            let arg = &args[i];
+            if !opts_done && arg == "--" {
+                opts_done = true;
+                i += 1;
+                continue;
+            }
+            if !opts_done && arg == "-t" {
+                i += 1;
+                if i < args.len() {
+                    tab_stops = parse_tab_stops(&args[i]);
+                }
+            } else if !opts_done && arg.starts_with("-t") {
+                tab_stops = parse_tab_stops(&arg[2..]);
+            } else {
+                files.push(arg);
+            }
+            i += 1;
+        }
+
+        let (content, stderr, err_code) = read_all_input(&files, ctx);
+        if err_code != 0 {
+            return CommandResult {
+                stderr,
+                exit_code: err_code,
+                ..Default::default()
+            };
+        }
+
+        let mut stdout = String::new();
+        for line in content.lines() {
+            let mut col = 0;
+            for ch in line.chars() {
+                if ch == '\t' {
+                    let next_stop = next_tab_stop(col, &tab_stops);
+                    let spaces = next_stop - col;
+                    for _ in 0..spaces {
+                        stdout.push(' ');
+                    }
+                    col = next_stop;
+                } else {
+                    stdout.push(ch);
+                    col += 1;
+                }
+            }
+            stdout.push('\n');
+        }
+
+        CommandResult {
+            stdout,
+            stderr,
+            exit_code: 0,
+        }
+    }
+}
+
+// ── unexpand ─────────────────────────────────────────────────────────
+
+pub struct UnexpandCommand;
+
+impl super::VirtualCommand for UnexpandCommand {
+    fn name(&self) -> &str {
+        "unexpand"
+    }
+
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
+        let mut tab_width: usize = 8;
+        let mut convert_all = false;
+        let mut opts_done = false;
+        let mut files: Vec<&str> = Vec::new();
+        let mut i = 0;
+
+        while i < args.len() {
+            let arg = &args[i];
+            if !opts_done && arg == "--" {
+                opts_done = true;
+                i += 1;
+                continue;
+            }
+            if !opts_done && arg == "-a" {
+                convert_all = true;
+            } else if !opts_done && arg == "-t" {
+                i += 1;
+                if i < args.len() {
+                    tab_width = args[i].parse().unwrap_or(8);
+                    convert_all = true;
+                }
+            } else if !opts_done && arg.starts_with("-t") {
+                tab_width = arg[2..].parse().unwrap_or(8);
+                convert_all = true;
+            } else {
+                files.push(arg);
+            }
+            i += 1;
+        }
+
+        if tab_width == 0 {
+            tab_width = 8;
+        }
+
+        let (content, stderr, err_code) = read_all_input(&files, ctx);
+        if err_code != 0 {
+            return CommandResult {
+                stderr,
+                exit_code: err_code,
+                ..Default::default()
+            };
+        }
+
+        let mut stdout = String::new();
+        for line in content.lines() {
+            stdout.push_str(&unexpand_line(line, tab_width, convert_all));
+            stdout.push('\n');
+        }
+
+        CommandResult {
+            stdout,
+            stderr,
+            exit_code: 0,
+        }
+    }
+}
+
+enum TabStops {
+    Uniform(usize),
+    List(Vec<usize>),
+}
+
+fn parse_tab_stops(s: &str) -> TabStops {
+    if s.contains(',') {
+        let stops: Vec<usize> = s.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+        if stops.is_empty() {
+            TabStops::Uniform(8)
+        } else {
+            TabStops::List(stops)
+        }
+    } else {
+        match s.parse::<usize>() {
+            Ok(n) if n > 0 => TabStops::Uniform(n),
+            _ => TabStops::Uniform(8),
+        }
+    }
+}
+
+fn next_tab_stop(col: usize, stops: &TabStops) -> usize {
+    match stops {
+        TabStops::Uniform(n) => ((col / n) + 1) * n,
+        TabStops::List(list) => {
+            for &stop in list {
+                if stop > col {
+                    return stop;
+                }
+            }
+            // Past all explicit stops, use last interval or just advance by 1
+            if let Some(&last) = list.last() {
+                let interval = if list.len() >= 2 {
+                    last - list[list.len() - 2]
+                } else {
+                    last
+                };
+                let past = col - last;
+                last + ((past / interval) + 1) * interval
+            } else {
+                col + 1
+            }
+        }
+    }
+}
+
+fn unexpand_line(line: &str, tab_width: usize, convert_all: bool) -> String {
+    if !convert_all {
+        // Only convert leading spaces
+        let mut result = String::new();
+        let mut space_count = 0;
+        let mut in_leading = true;
+
+        for ch in line.chars() {
+            if in_leading && ch == ' ' {
+                space_count += 1;
+                if space_count == tab_width {
+                    result.push('\t');
+                    space_count = 0;
+                }
+            } else {
+                if in_leading {
+                    for _ in 0..space_count {
+                        result.push(' ');
+                    }
+                    space_count = 0;
+                    in_leading = false;
+                }
+                result.push(ch);
+            }
+        }
+        // Handle trailing leading spaces
+        for _ in 0..space_count {
+            result.push(' ');
+        }
+        result
+    } else {
+        // Convert all sequences of spaces at tab boundaries
+        let mut result = String::new();
+        let mut col = 0;
+        let mut space_start_col = None;
+
+        for ch in line.chars() {
+            if ch == ' ' {
+                if space_start_col.is_none() {
+                    space_start_col = Some(col);
+                }
+                col += 1;
+                // Check if we're at a tab stop
+                if col % tab_width == 0 {
+                    result.push('\t');
+                    space_start_col = None;
+                }
+            } else {
+                if let Some(start) = space_start_col {
+                    // Flush remaining spaces that didn't reach a tab stop
+                    let spaces = col % tab_width;
+                    if spaces > 0 {
+                        let start_in_tab = start % tab_width;
+                        for _ in start_in_tab..(start_in_tab + (col - start)) {
+                            result.push(' ');
+                        }
+                    }
+                    space_start_col = None;
+                }
+                result.push(ch);
+                col += 1;
+            }
+        }
+        // Flush any trailing spaces
+        if let Some(start) = space_start_col {
+            for _ in 0..(col - start) {
+                result.push(' ');
+            }
+        }
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1526,6 +3126,570 @@ mod tests {
         assert_eq!(r.stdout, "a.b\n");
     }
 
+    #[test]
+    fn grep_extended_regexp_alternation() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "cat\ndog\nbird\n");
+        let r = GrepCommand.execute(&["-E".into(), "cat|dog".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.stdout, "cat\ndog\n");
+    }
+
+    #[test]
+    fn grep_extended_regexp_groups() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "abcabc\nabc\nab\n");
+        let r = GrepCommand.execute(&["-E".into(), "(abc)+".into()], &c);
+        assert_eq!(r.stdout, "abcabc\nabc\n");
+    }
+
+    #[test]
+    fn grep_basic_regexp_bre_translation() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "abc\ndef\n");
+        // In BRE, \(abc\) should become group (abc) in ERE
+        let r = GrepCommand.execute(&["-G".into(), r"\(abc\)".to_string()], &c);
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.stdout, "abc\n");
+    }
+
+    #[test]
+    fn grep_perl_regexp_warns() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "hello\nworld\n");
+        let r = GrepCommand.execute(&["-P".into(), "hello".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.stdout, "hello\n");
+        assert!(r.stderr.contains("warning: -P is not fully supported"));
+    }
+
+    #[test]
+    fn grep_word_regexp() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "cat concatenate\nthe cat sat\n");
+        let r = GrepCommand.execute(&["-w".into(), "cat".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        // Both lines contain "cat" as a whole word
+        assert_eq!(r.stdout, "cat concatenate\nthe cat sat\n");
+    }
+
+    #[test]
+    fn grep_word_regexp_no_partial() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "concatenate\n");
+        let r = GrepCommand.execute(&["-ow".into(), "cat".into()], &c);
+        // "cat" does not appear as whole word in "concatenate"
+        assert_eq!(r.exit_code, 1);
+        assert_eq!(r.stdout, "");
+    }
+
+    #[test]
+    fn grep_line_regexp() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "hello\nhello world\n");
+        let r = GrepCommand.execute(&["-x".into(), "hello".into()], &c);
+        assert_eq!(r.stdout, "hello\n");
+    }
+
+    #[test]
+    fn grep_recursive_search() {
+        let (fs, env, limits) = setup();
+        fs.mkdir_p(Path::new("/project/src")).unwrap();
+        fs.write_file(Path::new("/project/src/main.rs"), b"fn main() {}\n")
+            .unwrap();
+        fs.write_file(Path::new("/project/src/lib.rs"), b"pub fn hello() {}\n")
+            .unwrap();
+        fs.write_file(Path::new("/project/README.md"), b"hello world\n")
+            .unwrap();
+
+        let c = CommandContext {
+            fs: &*fs,
+            cwd: "/project",
+            env: &env,
+            stdin: "",
+            limits: &limits,
+            exec: None,
+        };
+        let r = GrepCommand.execute(&["-r".into(), "hello".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        assert!(r.stdout.contains("hello"));
+        // Should show filenames in recursive mode
+        assert!(r.stdout.contains(":"));
+    }
+
+    #[test]
+    fn grep_recursive_with_include() {
+        let (fs, env, limits) = setup();
+        fs.mkdir_p(Path::new("/proj/src")).unwrap();
+        fs.write_file(Path::new("/proj/src/main.rs"), b"fn hello() {}\n")
+            .unwrap();
+        fs.write_file(Path::new("/proj/src/readme.txt"), b"hello docs\n")
+            .unwrap();
+
+        let c = CommandContext {
+            fs: &*fs,
+            cwd: "/proj",
+            env: &env,
+            stdin: "",
+            limits: &limits,
+            exec: None,
+        };
+        let r = GrepCommand.execute(&["-r".into(), "--include=*.txt".into(), "hello".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        assert!(r.stdout.contains("readme.txt"));
+        assert!(!r.stdout.contains("main.rs"));
+    }
+
+    #[test]
+    fn grep_recursive_with_exclude() {
+        let (fs, env, limits) = setup();
+        fs.mkdir_p(Path::new("/proj2/logs")).unwrap();
+        fs.write_file(Path::new("/proj2/data.txt"), b"error found\n")
+            .unwrap();
+        fs.write_file(Path::new("/proj2/logs/app.log"), b"error occurred\n")
+            .unwrap();
+
+        let c = CommandContext {
+            fs: &*fs,
+            cwd: "/proj2",
+            env: &env,
+            stdin: "",
+            limits: &limits,
+            exec: None,
+        };
+        let r = GrepCommand.execute(&["-r".into(), "--exclude=*.log".into(), "error".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        assert!(r.stdout.contains("data.txt"));
+        assert!(!r.stdout.contains("app.log"));
+    }
+
+    #[test]
+    fn grep_after_context() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(
+            &*fs,
+            &env,
+            &limits,
+            "line1\nline2\nmatch\nline4\nline5\nline6\n",
+        );
+        let r = GrepCommand.execute(&["-A".into(), "2".into(), "match".into()], &c);
+        assert!(r.stdout.contains("match\n"));
+        assert!(r.stdout.contains("line4"));
+        assert!(r.stdout.contains("line5"));
+        assert!(!r.stdout.contains("line6"));
+    }
+
+    #[test]
+    fn grep_before_context() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "line1\nline2\nmatch\nline4\nline5\n");
+        let r = GrepCommand.execute(&["-B".into(), "2".into(), "match".into()], &c);
+        assert!(r.stdout.contains("line1"));
+        assert!(r.stdout.contains("line2"));
+        assert!(r.stdout.contains("match"));
+        assert!(!r.stdout.contains("line4"));
+    }
+
+    #[test]
+    fn grep_context_both() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "a\nb\nc\nmatch\ne\nf\ng\n");
+        let r = GrepCommand.execute(&["-C".into(), "1".into(), "match".into()], &c);
+        assert!(r.stdout.contains("c\n"));
+        assert!(r.stdout.contains("match\n"));
+        assert!(r.stdout.contains("e\n"));
+        assert!(!r.stdout.contains("a\n"));
+    }
+
+    #[test]
+    fn grep_context_separator() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "a\nmatch1\nb\nc\nd\nmatch2\ne\n");
+        let r = GrepCommand.execute(&["-C".into(), "0".into(), "match".into()], &c);
+        assert!(r.stdout.contains("match1\n--\nmatch2\n"));
+    }
+
+    #[test]
+    fn grep_only_matching() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "foo123bar\nhello456\n");
+        let r = GrepCommand.execute(&["-oE".into(), "[0-9]+".into()], &c);
+        assert_eq!(r.stdout, "123\n456\n");
+    }
+
+    #[test]
+    fn grep_with_filename() {
+        let (fs, env, limits) = setup();
+        let c = ctx(&*fs, &env, &limits);
+        let r = GrepCommand.execute(&["-H".into(), "apple".into(), "lines.txt".into()], &c);
+        assert!(r.stdout.contains("lines.txt:apple"));
+    }
+
+    #[test]
+    fn grep_no_filename() {
+        let (fs, env, limits) = setup();
+        let c = ctx(&*fs, &env, &limits);
+        let r = GrepCommand.execute(
+            &[
+                "-h".into(),
+                "apple".into(),
+                "lines.txt".into(),
+                "lines.txt".into(),
+            ],
+            &c,
+        );
+        // With -h, no filename even with multiple files
+        assert!(!r.stdout.contains("lines.txt:"));
+        assert_eq!(r.stdout, "apple\napple\napple\napple\n");
+    }
+
+    #[test]
+    fn grep_quiet_match() {
+        let (fs, env, limits) = setup();
+        let c = ctx(&*fs, &env, &limits);
+        let r = GrepCommand.execute(&["-q".into(), "apple".into(), "lines.txt".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.stdout, "");
+    }
+
+    #[test]
+    fn grep_quiet_no_match() {
+        let (fs, env, limits) = setup();
+        let c = ctx(&*fs, &env, &limits);
+        let r = GrepCommand.execute(&["-q".into(), "grape".into(), "lines.txt".into()], &c);
+        assert_eq!(r.exit_code, 1);
+        assert_eq!(r.stdout, "");
+    }
+
+    #[test]
+    fn grep_max_count() {
+        let (fs, env, limits) = setup();
+        let c = ctx(&*fs, &env, &limits);
+        let r = GrepCommand.execute(
+            &["-m".into(), "1".into(), "apple".into(), "lines.txt".into()],
+            &c,
+        );
+        assert_eq!(r.stdout, "apple\n");
+    }
+
+    #[test]
+    fn grep_multiple_patterns_with_e() {
+        let (fs, env, limits) = setup();
+        let c = ctx(&*fs, &env, &limits);
+        let r = GrepCommand.execute(
+            &[
+                "-e".into(),
+                "apple".into(),
+                "-e".into(),
+                "cherry".into(),
+                "lines.txt".into(),
+            ],
+            &c,
+        );
+        assert_eq!(r.exit_code, 0);
+        assert!(r.stdout.contains("apple"));
+        assert!(r.stdout.contains("cherry"));
+        assert!(!r.stdout.contains("banana"));
+    }
+
+    #[test]
+    fn grep_patterns_from_file() {
+        let (fs, env, limits) = setup();
+        fs.write_file(Path::new("/patterns.txt"), b"apple\ncherry\n")
+            .unwrap();
+        let c = ctx(&*fs, &env, &limits);
+        let r = GrepCommand.execute(
+            &["-f".into(), "patterns.txt".into(), "lines.txt".into()],
+            &c,
+        );
+        assert_eq!(r.exit_code, 0);
+        assert!(r.stdout.contains("apple"));
+        assert!(r.stdout.contains("cherry"));
+        assert!(!r.stdout.contains("banana"));
+    }
+
+    #[test]
+    fn grep_files_without_match() {
+        let (fs, env, limits) = setup();
+        let c = ctx(&*fs, &env, &limits);
+        let r = GrepCommand.execute(
+            &[
+                "-L".into(),
+                "grape".into(),
+                "lines.txt".into(),
+                "nums.txt".into(),
+            ],
+            &c,
+        );
+        assert!(r.stdout.contains("lines.txt"));
+        assert!(r.stdout.contains("nums.txt"));
+    }
+
+    #[test]
+    fn grep_files_without_match_partial() {
+        let (fs, env, limits) = setup();
+        let c = ctx(&*fs, &env, &limits);
+        let r = GrepCommand.execute(
+            &[
+                "-L".into(),
+                "apple".into(),
+                "lines.txt".into(),
+                "nums.txt".into(),
+            ],
+            &c,
+        );
+        // lines.txt has "apple" so it should NOT be listed
+        assert!(!r.stdout.contains("lines.txt"));
+        // nums.txt has no "apple" so it SHOULD be listed
+        assert!(r.stdout.contains("nums.txt"));
+        assert_eq!(r.exit_code, 0);
+    }
+
+    #[test]
+    fn grep_files_without_match_all_matched() {
+        let (fs, env, limits) = setup();
+        let c = ctx(&*fs, &env, &limits);
+        // "a" appears in both lines.txt and data.txt
+        let r = GrepCommand.execute(
+            &[
+                "-L".into(),
+                "a".into(),
+                "lines.txt".into(),
+                "data.txt".into(),
+            ],
+            &c,
+        );
+        // Both files have "a", so no files printed → exit 1
+        assert_eq!(r.stdout, "");
+        assert_eq!(r.exit_code, 1);
+    }
+
+    #[test]
+    fn grep_combined_short_flags() {
+        let (fs, env, limits) = setup();
+        let c = ctx(&*fs, &env, &limits);
+        let r = GrepCommand.execute(&["-in".into(), "apple".into(), "lines.txt".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        assert!(r.stdout.contains("2:apple"));
+        assert!(r.stdout.contains("4:apple"));
+    }
+
+    #[test]
+    fn grep_combined_recursive_insensitive_line_numbers() {
+        let (fs, env, limits) = setup();
+        fs.mkdir_p(Path::new("/rtest")).unwrap();
+        fs.write_file(Path::new("/rtest/a.txt"), b"Hello\nworld\n")
+            .unwrap();
+
+        let c = CommandContext {
+            fs: &*fs,
+            cwd: "/rtest",
+            env: &env,
+            stdin: "",
+            limits: &limits,
+            exec: None,
+        };
+        let r = GrepCommand.execute(&["-rin".into(), "hello".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        assert!(r.stdout.contains("1:") || r.stdout.contains(":1:"));
+        assert!(r.stdout.contains("Hello"));
+    }
+
+    #[test]
+    fn grep_empty_pattern_matches_all() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "line1\nline2\n");
+        let r = GrepCommand.execute(&["".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.stdout, "line1\nline2\n");
+    }
+
+    #[test]
+    fn grep_no_matches_exit_code_1() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "aaa\nbbb\n");
+        let r = GrepCommand.execute(&["zzz".into()], &c);
+        assert_eq!(r.exit_code, 1);
+        assert_eq!(r.stdout, "");
+    }
+
+    #[test]
+    fn grep_long_flags() {
+        let (fs, env, limits) = setup();
+        let c = ctx(&*fs, &env, &limits);
+        let r = GrepCommand.execute(
+            &[
+                "--ignore-case".into(),
+                "--line-number".into(),
+                "APPLE".into(),
+                "lines.txt".into(),
+            ],
+            &c,
+        );
+        assert_eq!(r.exit_code, 0);
+        assert!(r.stdout.contains("2:apple"));
+    }
+
+    #[test]
+    fn grep_e_combined_value() {
+        // Test -e with value attached: -epattern
+        let (fs, env, limits) = setup();
+        let c = ctx(&*fs, &env, &limits);
+        let r = GrepCommand.execute(&["-eapple".into(), "lines.txt".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.stdout, "apple\napple\n");
+    }
+
+    #[test]
+    fn grep_context_with_line_numbers() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "a\nb\nMATCH\nd\ne\n");
+        let r = GrepCommand.execute(
+            &[
+                "-n".into(),
+                "-B".into(),
+                "1".into(),
+                "-A".into(),
+                "1".into(),
+                "MATCH".into(),
+            ],
+            &c,
+        );
+        assert!(r.stdout.contains("2-b"));
+        assert!(r.stdout.contains("3:MATCH"));
+        assert!(r.stdout.contains("4-d"));
+    }
+
+    #[test]
+    fn grep_max_count_with_context() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "a\nmatch\nb\nmatch\nc\n");
+        let r = GrepCommand.execute(
+            &[
+                "-m".into(),
+                "1".into(),
+                "-A".into(),
+                "1".into(),
+                "match".into(),
+            ],
+            &c,
+        );
+        // Only first match + context
+        assert!(r.stdout.contains("match\n"));
+        assert!(r.stdout.contains("b\n"));
+        // Should not have second match
+        let match_count = r.stdout.matches("match").count();
+        assert_eq!(match_count, 1);
+    }
+
+    #[test]
+    fn grep_recursive_on_explicit_directory() {
+        let (fs, env, limits) = setup();
+        fs.mkdir_p(Path::new("/searchdir/sub")).unwrap();
+        fs.write_file(Path::new("/searchdir/a.txt"), b"found it\n")
+            .unwrap();
+        fs.write_file(Path::new("/searchdir/sub/b.txt"), b"found it too\n")
+            .unwrap();
+
+        let c = ctx(&*fs, &env, &limits);
+        let r = GrepCommand.execute(&["-r".into(), "found".into(), "/searchdir".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        assert!(r.stdout.contains("found it"));
+        assert!(r.stdout.contains("found it too"));
+    }
+
+    #[test]
+    fn grep_only_matching_with_filename() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "abc123def\n");
+        let r = GrepCommand.execute(&["-oHE".into(), "[0-9]+".into()], &c);
+        assert!(r.stdout.contains("(standard input):123"));
+    }
+
+    #[test]
+    fn grep_context_long_flag_equals() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "a\nb\nMATCH\nd\ne\n");
+        let r = GrepCommand.execute(&["--context=1".into(), "MATCH".into()], &c);
+        assert!(r.stdout.contains("b\n"));
+        assert!(r.stdout.contains("MATCH\n"));
+        assert!(r.stdout.contains("d\n"));
+    }
+
+    #[test]
+    fn grep_bre_default_plus_literal() {
+        // Default mode is BRE: bare + is literal
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "a+b\naab\n");
+        let r = GrepCommand.execute(&["a+b".into()], &c);
+        assert_eq!(r.stdout, "a+b\n");
+    }
+
+    #[test]
+    fn grep_bre_escaped_plus_is_quantifier() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "aab\nab\nb\n");
+        let r = GrepCommand.execute(&[r"a\+b".to_string()], &c);
+        // \+ in BRE means one-or-more: matches "aab" and "ab"
+        assert!(r.stdout.contains("aab"));
+        assert!(r.stdout.contains("ab"));
+        assert!(!r.stdout.contains("\nb\n"));
+    }
+
+    #[test]
+    fn grep_bre_pipe_literal() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "a|b\nab\n");
+        let r = GrepCommand.execute(&["a|b".into()], &c);
+        // Bare | is literal in BRE
+        assert_eq!(r.stdout, "a|b\n");
+    }
+
+    #[test]
+    fn grep_end_of_options_separator() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "-v\nhello\n");
+        // Search for literal "-v" using -- separator
+        let r = GrepCommand.execute(&["--".into(), "-v".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.stdout, "-v\n");
+    }
+
+    #[test]
+    fn grep_e_pattern_starting_with_dash() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "-v\nhello\n");
+        let r = GrepCommand.execute(&["-e".into(), "-v".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.stdout, "-v\n");
+    }
+
+    #[test]
+    fn grep_recursive_no_matches_exit_1() {
+        let (fs, env, limits) = setup();
+        fs.mkdir_p(Path::new("/nomatch")).unwrap();
+        fs.write_file(Path::new("/nomatch/a.txt"), b"hello\n")
+            .unwrap();
+        let c = CommandContext {
+            fs: &*fs,
+            cwd: "/nomatch",
+            env: &env,
+            stdin: "",
+            limits: &limits,
+            exec: None,
+        };
+        let r = GrepCommand.execute(&["-r".into(), "zzzzz".into()], &c);
+        assert_eq!(r.exit_code, 1);
+    }
+
+    #[test]
+    fn grep_word_and_line_regexp_combined() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "cat\ncat dog\n");
+        let r = GrepCommand.execute(&["-xw".into(), "cat".into()], &c);
+        assert_eq!(r.stdout, "cat\n");
+    }
+
     // ── sort tests ───────────────────────────────────────────────────
 
     #[test]
@@ -1550,6 +3714,30 @@ mod tests {
         let c = ctx(&*fs, &env, &limits);
         let r = SortCommand.execute(&["-n".into(), "nums.txt".into()], &c);
         assert_eq!(r.stdout, "1\n2\n3\n10\n");
+    }
+
+    #[test]
+    fn sort_numeric_with_leading_spaces() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(
+            &*fs,
+            &env,
+            &limits,
+            "      3 eng\n      1 dept\n      2 sales\n",
+        );
+        let r = SortCommand.execute(&["-rn".into()], &c);
+        assert_eq!(r.stdout, "      3 eng\n      2 sales\n      1 dept\n");
+    }
+
+    #[test]
+    fn parse_leading_number_cases() {
+        assert_eq!(parse_leading_number("  3 eng"), 3.0);
+        assert_eq!(parse_leading_number("-5.3 foo"), -5.3);
+        assert_eq!(parse_leading_number("abc"), 0.0);
+        assert_eq!(parse_leading_number(""), 0.0);
+        assert_eq!(parse_leading_number("-"), 0.0);
+        assert_eq!(parse_leading_number(".5"), 0.5);
+        assert_eq!(parse_leading_number("  +42rest"), 42.0);
     }
 
     #[test]
@@ -1897,5 +4085,459 @@ mod tests {
         let c = ctx_with_stdin(&*fs, &env, &limits, "x\ny\n");
         let r = PasteCommand.execute(&[], &c);
         assert_eq!(r.stdout, "x\ny\n");
+    }
+
+    // ── tac tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn tac_reverse_lines() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "a\nb\nc\n");
+        let r = TacCommand.execute(&[], &c);
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.stdout, "c\nb\na\n");
+    }
+
+    #[test]
+    fn tac_from_file() {
+        let (fs, env, limits) = setup();
+        let c = ctx(&*fs, &env, &limits);
+        let r = TacCommand.execute(&["lines.txt".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.stdout, "apple\ncherry\napple\nbanana\n");
+    }
+
+    #[test]
+    fn tac_single_line() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "only\n");
+        let r = TacCommand.execute(&[], &c);
+        assert_eq!(r.stdout, "only\n");
+    }
+
+    #[test]
+    fn tac_empty_input() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "");
+        let r = TacCommand.execute(&[], &c);
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.stdout, "");
+    }
+
+    #[test]
+    fn tac_custom_separator() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "a:b:c");
+        let r = TacCommand.execute(&["-s".into(), ":".into()], &c);
+        assert_eq!(r.stdout, "c:b:a\n");
+    }
+
+    // ── comm tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn comm_basic() {
+        let (fs, env, limits) = setup();
+        fs.write_file(Path::new("/sorted1.txt"), b"a\nb\nd\n")
+            .unwrap();
+        fs.write_file(Path::new("/sorted2.txt"), b"b\nc\nd\n")
+            .unwrap();
+        let c = ctx(&*fs, &env, &limits);
+        let r = CommCommand.execute(&["sorted1.txt".into(), "sorted2.txt".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.stdout, "a\n\t\tb\n\tc\n\t\td\n");
+    }
+
+    #[test]
+    fn comm_suppress_col1() {
+        let (fs, env, limits) = setup();
+        fs.write_file(Path::new("/s1.txt"), b"a\nb\nd\n").unwrap();
+        fs.write_file(Path::new("/s2.txt"), b"b\nc\nd\n").unwrap();
+        let c = ctx(&*fs, &env, &limits);
+        let r = CommCommand.execute(&["-1".into(), "s1.txt".into(), "s2.txt".into()], &c);
+        assert_eq!(r.stdout, "\tb\nc\n\td\n");
+    }
+
+    #[test]
+    fn comm_suppress_col2() {
+        let (fs, env, limits) = setup();
+        fs.write_file(Path::new("/s1.txt"), b"a\nb\nd\n").unwrap();
+        fs.write_file(Path::new("/s2.txt"), b"b\nc\nd\n").unwrap();
+        let c = ctx(&*fs, &env, &limits);
+        let r = CommCommand.execute(&["-2".into(), "s1.txt".into(), "s2.txt".into()], &c);
+        assert_eq!(r.stdout, "a\n\tb\n\td\n");
+    }
+
+    #[test]
+    fn comm_suppress_col3() {
+        let (fs, env, limits) = setup();
+        fs.write_file(Path::new("/s1.txt"), b"a\nb\nd\n").unwrap();
+        fs.write_file(Path::new("/s2.txt"), b"b\nc\nd\n").unwrap();
+        let c = ctx(&*fs, &env, &limits);
+        let r = CommCommand.execute(&["-3".into(), "s1.txt".into(), "s2.txt".into()], &c);
+        assert_eq!(r.stdout, "a\n\tc\n");
+    }
+
+    #[test]
+    fn comm_suppress_col12() {
+        let (fs, env, limits) = setup();
+        fs.write_file(Path::new("/s1.txt"), b"a\nb\nd\n").unwrap();
+        fs.write_file(Path::new("/s2.txt"), b"b\nc\nd\n").unwrap();
+        let c = ctx(&*fs, &env, &limits);
+        let r = CommCommand.execute(&["-12".into(), "s1.txt".into(), "s2.txt".into()], &c);
+        assert_eq!(r.stdout, "b\nd\n");
+    }
+
+    // ── join tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn join_basic() {
+        let (fs, env, limits) = setup();
+        fs.write_file(Path::new("/j1.txt"), b"1 Alice\n2 Bob\n3 Carol\n")
+            .unwrap();
+        fs.write_file(Path::new("/j2.txt"), b"1 NY\n2 LA\n4 SF\n")
+            .unwrap();
+        let c = ctx(&*fs, &env, &limits);
+        let r = JoinCommand.execute(&["j1.txt".into(), "j2.txt".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.stdout, "1 Alice NY\n2 Bob LA\n");
+    }
+
+    #[test]
+    fn join_with_separator() {
+        let (fs, env, limits) = setup();
+        fs.write_file(Path::new("/j1.txt"), b"1:Alice\n2:Bob\n")
+            .unwrap();
+        fs.write_file(Path::new("/j2.txt"), b"1:NY\n2:LA\n")
+            .unwrap();
+        let c = ctx(&*fs, &env, &limits);
+        let r = JoinCommand.execute(
+            &["-t".into(), ":".into(), "j1.txt".into(), "j2.txt".into()],
+            &c,
+        );
+        assert_eq!(r.stdout, "1:Alice:NY\n2:Bob:LA\n");
+    }
+
+    #[test]
+    fn join_unpairable() {
+        let (fs, env, limits) = setup();
+        fs.write_file(Path::new("/j1.txt"), b"1 Alice\n2 Bob\n3 Carol\n")
+            .unwrap();
+        fs.write_file(Path::new("/j2.txt"), b"1 NY\n2 LA\n4 SF\n")
+            .unwrap();
+        let c = ctx(&*fs, &env, &limits);
+        let r = JoinCommand.execute(
+            &["-a".into(), "1".into(), "j1.txt".into(), "j2.txt".into()],
+            &c,
+        );
+        assert!(r.stdout.contains("1 Alice NY"));
+        assert!(r.stdout.contains("2 Bob LA"));
+        assert!(r.stdout.contains("3 Carol"));
+    }
+
+    // ── fmt tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn fmt_reflow_paragraph() {
+        let (fs, env, limits) = setup();
+        let input =
+            "This is a long line that should be reflowed to fit within forty characters width.\n";
+        let c = ctx_with_stdin(&*fs, &env, &limits, input);
+        let r = FmtCommand.execute(&["-w".into(), "40".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        for line in r.stdout.lines() {
+            assert!(
+                line.len() <= 40,
+                "Line too long: {:?} ({})",
+                line,
+                line.len()
+            );
+        }
+        // All words must be preserved
+        let original_words: Vec<&str> = input.split_whitespace().collect();
+        let output_words: Vec<&str> = r.stdout.split_whitespace().collect();
+        assert_eq!(original_words, output_words);
+    }
+
+    #[test]
+    fn fmt_preserves_paragraph_breaks() {
+        let (fs, env, limits) = setup();
+        let input = "Para one.\n\nPara two.\n";
+        let c = ctx_with_stdin(&*fs, &env, &limits, input);
+        let r = FmtCommand.execute(&["-w".into(), "75".into()], &c);
+        assert!(
+            r.stdout.contains("\n\n"),
+            "Should preserve blank line between paragraphs"
+        );
+    }
+
+    #[test]
+    fn fmt_split_only() {
+        let (fs, env, limits) = setup();
+        let input = "short\nvery long line that exceeds twenty characters in width\n";
+        let c = ctx_with_stdin(&*fs, &env, &limits, input);
+        let r = FmtCommand.execute(&["-s".into(), "-w".into(), "20".into()], &c);
+        // Short lines should NOT be joined
+        assert!(r.stdout.starts_with("short\n"));
+    }
+
+    #[test]
+    fn fmt_empty_input() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "");
+        let r = FmtCommand.execute(&[], &c);
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.stdout, "");
+    }
+
+    // ── column tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn column_table_mode() {
+        let (fs, env, limits) = setup();
+        let input = "name age city\nAlice 30 NYC\nBob 25 LA\n";
+        let c = ctx_with_stdin(&*fs, &env, &limits, input);
+        let r = ColumnCommand.execute(&["-t".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        let lines: Vec<&str> = r.stdout.lines().collect();
+        assert_eq!(lines.len(), 3);
+        // Columns should be aligned
+        assert!(lines[0].contains("name"));
+        assert!(lines[0].contains("age"));
+        assert!(lines[0].contains("city"));
+    }
+
+    #[test]
+    fn column_table_custom_sep() {
+        let (fs, env, limits) = setup();
+        let input = "Alice:30:NYC\nBob:25:LA\n";
+        let c = ctx_with_stdin(&*fs, &env, &limits, input);
+        let r = ColumnCommand.execute(&["-t".into(), "-s".into(), ":".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        assert!(r.stdout.contains("Alice"));
+        assert!(r.stdout.contains("NYC"));
+    }
+
+    #[test]
+    fn column_table_custom_output_sep() {
+        let (fs, env, limits) = setup();
+        let input = "a 1\nb 2\n";
+        let c = ctx_with_stdin(&*fs, &env, &limits, input);
+        let r = ColumnCommand.execute(&["-t".into(), "-o".into(), " | ".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        assert!(r.stdout.contains(" | "));
+    }
+
+    #[test]
+    fn column_empty_input() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "");
+        let r = ColumnCommand.execute(&["-t".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.stdout, "");
+    }
+
+    // ── expand tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn expand_default() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "\thello\n");
+        let r = ExpandCommand.execute(&[], &c);
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.stdout, "        hello\n");
+    }
+
+    #[test]
+    fn expand_custom_width() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "\thello\n");
+        let r = ExpandCommand.execute(&["-t".into(), "4".into()], &c);
+        assert_eq!(r.stdout, "    hello\n");
+    }
+
+    #[test]
+    fn expand_tab_positions() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "\ta\tb\n");
+        let r = ExpandCommand.execute(&["-t".into(), "4,8".into()], &c);
+        assert_eq!(r.stdout, "    a   b\n");
+    }
+
+    #[test]
+    fn expand_mid_line_tab() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "ab\tcd\n");
+        let r = ExpandCommand.execute(&["-t".into(), "8".into()], &c);
+        assert_eq!(r.stdout, "ab      cd\n");
+    }
+
+    #[test]
+    fn expand_from_file() {
+        let (fs, env, limits) = setup();
+        fs.write_file(Path::new("/tabs.txt"), b"\thello\n\tworld\n")
+            .unwrap();
+        let c = ctx(&*fs, &env, &limits);
+        let r = ExpandCommand.execute(&["-t".into(), "4".into(), "tabs.txt".into()], &c);
+        assert_eq!(r.stdout, "    hello\n    world\n");
+    }
+
+    #[test]
+    fn expand_empty_input() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "");
+        let r = ExpandCommand.execute(&[], &c);
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.stdout, "");
+    }
+
+    // ── unexpand tests ───────────────────────────────────────────────
+
+    #[test]
+    fn unexpand_leading_spaces() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "        hello\n");
+        let r = UnexpandCommand.execute(&[], &c);
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.stdout, "\thello\n");
+    }
+
+    #[test]
+    fn unexpand_custom_width() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "    hello\n");
+        let r = UnexpandCommand.execute(&["-t".into(), "4".into()], &c);
+        assert_eq!(r.stdout, "\thello\n");
+    }
+
+    #[test]
+    fn unexpand_all_spaces() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "hello   world\n");
+        let r = UnexpandCommand.execute(&["-a".into(), "-t".into(), "4".into()], &c);
+        // "hello   world" - 'hello' takes cols 0-4, then 3 spaces at cols 5,6,7 -> tab at 8
+        assert_eq!(r.stdout, "hello\tworld\n");
+    }
+
+    #[test]
+    fn unexpand_no_convert_middle_without_a() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "hello        world\n");
+        let r = UnexpandCommand.execute(&[], &c);
+        // Without -a, only leading spaces are converted; there are no leading spaces
+        assert_eq!(r.stdout, "hello        world\n");
+    }
+
+    #[test]
+    fn unexpand_empty_input() {
+        let (fs, env, limits) = setup();
+        let c = ctx_with_stdin(&*fs, &env, &limits, "");
+        let r = UnexpandCommand.execute(&[], &c);
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.stdout, "");
+    }
+
+    // ── additional edge-case tests ───────────────────────────────────
+
+    #[test]
+    fn join_a2_unpairable_file2() {
+        let (fs, env, limits) = setup();
+        fs.write_file(Path::new("/j1.txt"), b"1 Alice\n2 Bob\n")
+            .unwrap();
+        fs.write_file(Path::new("/j2.txt"), b"1 NY\n3 SF\n")
+            .unwrap();
+        let c = ctx(&*fs, &env, &limits);
+        let r = JoinCommand.execute(
+            &["-a".into(), "2".into(), "j1.txt".into(), "j2.txt".into()],
+            &c,
+        );
+        assert_eq!(r.stdout, "1 Alice NY\n3 SF\n");
+    }
+
+    #[test]
+    fn join_duplicate_keys_cross_product() {
+        let (fs, env, limits) = setup();
+        fs.write_file(Path::new("/j1.txt"), b"1 A\n1 B\n").unwrap();
+        fs.write_file(Path::new("/j2.txt"), b"1 X\n1 Y\n").unwrap();
+        let c = ctx(&*fs, &env, &limits);
+        let r = JoinCommand.execute(&["j1.txt".into(), "j2.txt".into()], &c);
+        assert_eq!(r.stdout, "1 A X\n1 A Y\n1 B X\n1 B Y\n");
+    }
+
+    #[test]
+    fn join_output_format() {
+        let (fs, env, limits) = setup();
+        fs.write_file(Path::new("/j1.txt"), b"1 Alice\n2 Bob\n")
+            .unwrap();
+        fs.write_file(Path::new("/j2.txt"), b"1 NY\n2 LA\n")
+            .unwrap();
+        let c = ctx(&*fs, &env, &limits);
+        let r = JoinCommand.execute(
+            &[
+                "-o".into(),
+                "0,2.2,1.2".into(),
+                "j1.txt".into(),
+                "j2.txt".into(),
+            ],
+            &c,
+        );
+        assert_eq!(r.stdout, "1 NY Alice\n2 LA Bob\n");
+    }
+
+    #[test]
+    fn join_empty_replacement() {
+        let (fs, env, limits) = setup();
+        fs.write_file(Path::new("/j1.txt"), b"1 Alice\n2 Bob\n")
+            .unwrap();
+        fs.write_file(Path::new("/j2.txt"), b"1 NY\n").unwrap();
+        let c = ctx(&*fs, &env, &limits);
+        let r = JoinCommand.execute(
+            &[
+                "-a".into(),
+                "1".into(),
+                "-e".into(),
+                "EMPTY".into(),
+                "-o".into(),
+                "0,1.2,2.2".into(),
+                "j1.txt".into(),
+                "j2.txt".into(),
+            ],
+            &c,
+        );
+        assert_eq!(r.stdout, "1 Alice NY\n2 Bob EMPTY\n");
+    }
+
+    #[test]
+    fn tac_multiple_files() {
+        let (fs, env, limits) = setup();
+        fs.write_file(Path::new("/t1.txt"), b"a\nb\n").unwrap();
+        fs.write_file(Path::new("/t2.txt"), b"c\nd\n").unwrap();
+        let c = ctx(&*fs, &env, &limits);
+        let r = TacCommand.execute(&["t1.txt".into(), "t2.txt".into()], &c);
+        assert_eq!(r.stdout, "d\nc\nb\na\n");
+    }
+
+    #[test]
+    fn column_fill_mode() {
+        let (fs, env, limits) = setup();
+        let input = "alpha\nbeta\ngamma\ndelta\n";
+        let c = ctx_with_stdin(&*fs, &env, &limits, input);
+        let r = ColumnCommand.execute(&[], &c);
+        assert_eq!(r.exit_code, 0);
+        assert!(!r.stdout.is_empty());
+        // All words should appear
+        assert!(r.stdout.contains("alpha"));
+        assert!(r.stdout.contains("delta"));
+    }
+
+    #[test]
+    fn comm_with_empty_file() {
+        let (fs, env, limits) = setup();
+        fs.write_file(Path::new("/nonempty.txt"), b"a\nb\n")
+            .unwrap();
+        fs.write_file(Path::new("/mt.txt"), b"").unwrap();
+        let c = ctx(&*fs, &env, &limits);
+        let r = CommCommand.execute(&["nonempty.txt".into(), "mt.txt".into()], &c);
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.stdout, "a\nb\n");
     }
 }

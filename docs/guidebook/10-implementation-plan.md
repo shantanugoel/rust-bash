@@ -66,11 +66,11 @@ Implement `$((...))` evaluator: arithmetic operators, comparisons, boolean logic
 
 Store function definitions. Implement function call with positional parameters. `local` for function-scoped variables. `return` builtin. Distinguish exported vs non-exported variables.
 
-### M1.13 — Case Statements
+### M1.13 — Case Statements ✅
 
 Implement `case` with glob pattern matching, `|` alternation, `;;`/`;&`/`;;&` terminators.
 
-### M1.14 — Additional Core Commands
+### M1.14 — Additional Core Commands ✅
 
 File ops: `cp`, `mv`, `rm`, `tee`, `stat`, `chmod`. Text: `cut`, `printf`, `rev`, `fold`, `nl`. Navigation: `find`, `realpath`. Utilities: `expr`, `date`, `sleep`, `env`, `which`, `xargs`, `read`, `base64`, `md5sum`, `sha256sum`, `whoami`, `hostname`, `uname`. Minimal `trap EXIT` support.
 
@@ -82,27 +82,27 @@ Define `RustBashError` enum. All public APIs return `Result<T, RustBashError>`. 
 
 ## Milestone 2: Text Processing
 
-### M2.1 — grep (Full)
+### M2.1 — grep (Full) ✅
 
-Add `regex` crate. Support `-E`, `-P`, `-F`, `-n`, `-l`, `-r`, `-o`, `-A`/`-B`/`-C`, `-v`, `-c`.
+Add `regex` crate. Support `-E`, `-G`, `-P`, `-F`, `-n`, `-l`, `-L`, `-r`, `-R`, `-o`, `-A`/`-B`/`-C`, `-v`, `-c`, `-w`, `-x`, `-H`, `-h`, `-q`, `-m`, `-e`, `-f`, `--include`, `--exclude`.
 
-### M2.2 — sed
+### M2.2 — sed ✅
 
 Core commands: `s///`, `d`, `p`, `q`, `a`, `i`, `c`. Address types: line number, `$`, `/regex/`, ranges. Hold space for multi-line operations. `-i` for in-place VFS edit.
 
-### M2.3 — awk
+### M2.3 — awk ✅
 
 Field splitting, patterns, actions, BEGIN/END, built-in variables (NR, NF, FS), control flow, built-in functions, associative arrays. Start with 80/20 subset.
 
-### M2.4 — jq
+### M2.4 — jq ✅
 
 Via `jaq-core` crate. Common filters: `.field`, `.[]`, `select()`, `map()`, `keys`, `length`, `|`. Flags: `-r`, `-e`, `-c`, `-S`.
 
-### M2.5 — diff
+### M2.5 — diff ✅
 
 Via `similar` crate. Unified (`-u`), context (`-c`), and normal diff formats. `-r` for recursive directory diff.
 
-### M2.6 — Remaining Text Commands
+### M2.6 — Remaining Text Commands ✅
 
 `comm`, `join`, `fmt`, `column`, `expand`/`unexpand`, `yes`, `tac`.
 

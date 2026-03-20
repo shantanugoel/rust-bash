@@ -2,14 +2,11 @@
 
 A sandboxed bash environment built in Rust. Execute bash scripts safely with a virtual filesystem — no containers, no VMs, no runtime dependencies.
 
-> ⚠️ **Status: Pre-alpha / Phase 7d Complete** — Variable expansion, redirections, core builtins,
-> control flow, command substitution, and arithmetic expansion are functional.
-> Supports `$VAR`, `${VAR:-default}`, `${#VAR}`, `${VAR%pat}`, `${VAR/pat/repl}`, `${VAR:off:len}`,
-> case modification, special variables (`$?`, `$#`, `$@`, `$*`, `$0`–`$9`, `$$`, `$RANDOM`),
-> tilde expansion, redirections (`>`, `>>`, `<`, `2>`, `2>&1`, `&>`, `/dev/null`),
-> builtins (`cd`, `export`, `unset`, `set`, `shift`, `readonly`, `declare`, `read`, `let`, `exit`),
-> arithmetic expansion (`$((...))`, `(( ))`, C-style `for`),
-> and commands (`echo`, `cat`, `true`, `false`).
+> ⚠️ **Status: Pre-alpha / Milestone 2 Complete** — Core shell interpreter with full text processing.
+> Supports variable expansion, redirections, control flow, command substitution, arithmetic,
+> functions, globs, brace expansion, here-documents, and 70+ built-in commands including
+> text processing tools: grep (full), sed, awk, jq, diff, tac, comm, join, fmt, column,
+> expand, unexpand.
 
 ## Design Goals
 

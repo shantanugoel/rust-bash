@@ -36,6 +36,54 @@ impl RustBash {
 
         Ok(result)
     }
+
+    /// Returns the current working directory.
+    pub fn cwd(&self) -> &str {
+        &self.state.cwd
+    }
+
+    /// Returns the exit code of the last executed command.
+    pub fn last_exit_code(&self) -> i32 {
+        self.state.last_exit_code
+    }
+
+    /// Returns `true` if the shell received an `exit` command.
+    pub fn should_exit(&self) -> bool {
+        self.state.should_exit
+    }
+
+    /// Returns the names of all registered commands (builtins + custom).
+    pub fn command_names(&self) -> Vec<&str> {
+        self.state.commands.keys().map(|k| k.as_str()).collect()
+    }
+
+    /// Check whether `input` looks like a complete shell statement.
+    ///
+    /// Returns `true` when the input can be tokenized and parsed without
+    /// hitting an "unexpected end-of-input" / unterminated-quote error.
+    /// Useful for implementing multi-line REPL input.
+    ///
+    /// Note: mirrors the tokenize → parse flow from `interpreter::parse()`.
+    pub fn is_input_complete(input: &str) -> bool {
+        match brush_parser::tokenize_str(input) {
+            Err(e) if e.is_incomplete() => false,
+            Err(_) => true, // genuine syntax error, not incomplete
+            Ok(tokens) => {
+                if tokens.is_empty() {
+                    return true;
+                }
+                let options = interpreter::parser_options();
+                let source_info = brush_parser::SourceInfo {
+                    source: input.to_string(),
+                };
+                match brush_parser::parse_tokens(&tokens, &options, &source_info) {
+                    Ok(_) => true,
+                    Err(brush_parser::ParseError::ParsingAtEndOfInput) => false,
+                    Err(_) => true, // genuine syntax error
+                }
+            }
+        }
+    }
 }
 
 /// Builder for configuring a [`RustBash`] instance.
@@ -1371,5 +1419,62 @@ mod tests {
         assert!(cmds.contains_key("mkdir"));
         assert!(cmds.contains_key("ls"));
         assert!(cmds.contains_key("pwd"));
+    }
+
+    // ── is_input_complete ──────────────────────────────────────────
+
+    #[test]
+    fn complete_simple_commands() {
+        assert!(RustBash::is_input_complete("echo hello"));
+        assert!(RustBash::is_input_complete(""));
+        assert!(RustBash::is_input_complete("   "));
+    }
+
+    #[test]
+    fn incomplete_unterminated_quotes() {
+        assert!(!RustBash::is_input_complete("echo \"hello"));
+        assert!(!RustBash::is_input_complete("echo 'hello"));
+    }
+
+    #[test]
+    fn incomplete_open_block() {
+        assert!(!RustBash::is_input_complete("if true; then"));
+        assert!(!RustBash::is_input_complete("for i in 1 2; do"));
+    }
+
+    #[test]
+    fn incomplete_trailing_pipe() {
+        assert!(!RustBash::is_input_complete("echo hello |"));
+    }
+
+    // ── Public accessors ───────────────────────────────────────────
+
+    #[test]
+    fn cwd_accessor() {
+        let sh = shell();
+        assert_eq!(sh.cwd(), "/");
+    }
+
+    #[test]
+    fn last_exit_code_accessor() {
+        let mut sh = shell();
+        sh.exec("false").unwrap();
+        assert_eq!(sh.last_exit_code(), 1);
+    }
+
+    #[test]
+    fn command_names_accessor() {
+        let sh = shell();
+        let names = sh.command_names();
+        assert!(names.contains(&"echo"));
+        assert!(names.contains(&"cat"));
+    }
+
+    #[test]
+    fn should_exit_accessor() {
+        let mut sh = shell();
+        assert!(!sh.should_exit());
+        sh.exec("exit").unwrap();
+        assert!(sh.should_exit());
     }
 }

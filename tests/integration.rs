@@ -3008,3 +3008,309 @@ fn errexit_pipefail_combined() {
     assert_eq!(r.stdout, "");
     assert_eq!(r.exit_code, 1);
 }
+
+// ── M2 Cross-command pipeline integration tests ───────────────────
+
+#[test]
+fn pipeline_grep_recursive_wc() {
+    let mut sh = shell();
+    sh.exec("mkdir -p /src").unwrap();
+    sh.exec("echo 'TODO fix this' > /src/main.rs").unwrap();
+    sh.exec("echo 'no match here' > /src/lib.rs").unwrap();
+    sh.exec("echo 'another TODO item\nand TODO again' > /src/util.rs")
+        .unwrap();
+    let r = sh.exec("grep -r 'TODO' /src | wc -l").unwrap();
+    assert_eq!(r.stdout.trim(), "3");
+    assert_eq!(r.exit_code, 0);
+}
+
+#[test]
+fn pipeline_csv_column_frequency() {
+    let mut sh = shell();
+    sh.exec("echo 'name,dept\nalice,eng\nbob,sales\ncarol,eng\ndave,eng\neve,sales' > /data.csv")
+        .unwrap();
+    let r = sh
+        .exec("cat /data.csv | awk -F, '{print $2}' | sort | uniq -c | sed 's/^ *//' | sort -rn")
+        .unwrap();
+    let lines: Vec<&str> = r.stdout.trim().lines().collect();
+    // dept column values include the header "dept" (1x), "eng" (3x), "sales" (2x)
+    assert!(
+        lines[0].contains("eng"),
+        "eng should be most frequent, got: {:?}",
+        lines
+    );
+    assert!(
+        lines[0].starts_with('3'),
+        "eng count should be 3, got: {:?}",
+        lines
+    );
+    assert_eq!(r.exit_code, 0);
+}
+
+#[test]
+fn pipeline_jq_sort() {
+    let mut sh = shell();
+    let r = sh
+        .exec(r#"echo '{"users":[{"name":"charlie"},{"name":"alice"},{"name":"bob"}]}' | jq '.users[].name' | sort"#)
+        .unwrap();
+    let lines: Vec<&str> = r.stdout.trim().lines().collect();
+    assert_eq!(lines, vec![r#""alice""#, r#""bob""#, r#""charlie""#]);
+    assert_eq!(r.exit_code, 0);
+}
+
+#[test]
+fn pipeline_jq_raw_sort() {
+    let mut sh = shell();
+    let r = sh
+        .exec(r#"echo '{"users":[{"name":"charlie"},{"name":"alice"},{"name":"bob"}]}' | jq -r '.users[].name' | sort"#)
+        .unwrap();
+    assert_eq!(r.stdout, "alice\nbob\ncharlie\n");
+}
+
+#[test]
+fn pipeline_sed_grep_count() {
+    let mut sh = shell();
+    sh.exec("echo 'old value old stuff\nkeep this\nold again' > /input.txt")
+        .unwrap();
+    let r = sh
+        .exec("sed 's/old/new/g' /input.txt | grep -c new")
+        .unwrap();
+    assert_eq!(r.stdout.trim(), "2");
+    assert_eq!(r.exit_code, 0);
+}
+
+#[test]
+fn pipeline_awk_sort_join() {
+    let mut sh = shell();
+    sh.exec("echo 'alice 100\nbob 200\nalice 50\ncarol 300' > /data")
+        .unwrap();
+    sh.exec("echo 'alice admin\nbob user\ncarol admin' > /reference.txt")
+        .unwrap();
+    let r = sh
+        .exec("awk '{print $1}' /data | sort -u | join - /reference.txt")
+        .unwrap();
+    let lines: Vec<&str> = r.stdout.trim().lines().collect();
+    assert_eq!(lines.len(), 3);
+    assert!(r.stdout.contains("alice admin"));
+    assert!(r.stdout.contains("bob user"));
+    assert!(r.stdout.contains("carol admin"));
+}
+
+#[test]
+fn pipeline_comm_common_lines() {
+    let mut sh = shell();
+    sh.exec("echo 'alpha\nbravo\ncharlie\ndelta' > /sorted1")
+        .unwrap();
+    sh.exec("echo 'bravo\ncharlie\necho\nfoxtrot' > /sorted2")
+        .unwrap();
+    let r = sh.exec("comm -12 /sorted1 /sorted2").unwrap();
+    assert_eq!(r.stdout, "bravo\ncharlie\n");
+    assert_eq!(r.exit_code, 0);
+}
+
+#[test]
+fn pipeline_diff_two_files() {
+    let mut sh = shell();
+    sh.exec("echo 'line1\nline2\nline3' > /file1").unwrap();
+    sh.exec("echo 'line1\nchanged\nline3' > /file2").unwrap();
+    let r = sh.exec("diff /file1 /file2").unwrap();
+    assert!(r.stdout.contains("line2"));
+    assert!(r.stdout.contains("changed"));
+    assert_ne!(r.exit_code, 0); // diff returns 1 when files differ
+}
+
+#[test]
+fn pipeline_diff_unified_format() {
+    let mut sh = shell();
+    sh.exec("echo 'aaa\nbbb\nccc' > /a.txt").unwrap();
+    sh.exec("echo 'aaa\nxxx\nccc' > /b.txt").unwrap();
+    let r = sh.exec("diff -u /a.txt /b.txt").unwrap();
+    assert!(r.stdout.contains("---"));
+    assert!(r.stdout.contains("+++"));
+    assert!(r.stdout.contains("-bbb"));
+    assert!(r.stdout.contains("+xxx"));
+}
+
+#[test]
+fn pipeline_tac_reverse_lines() {
+    let mut sh = shell();
+    sh.exec("echo 'first\nsecond\nthird' > /lines.txt").unwrap();
+    let r = sh.exec("tac /lines.txt").unwrap();
+    assert_eq!(r.stdout, "third\nsecond\nfirst\n");
+}
+
+#[test]
+fn pipeline_tac_pipe_grep() {
+    let mut sh = shell();
+    let r = sh
+        .exec("echo 'aaa\nbbb\nccc\nddd' | tac | grep -n '.'")
+        .unwrap();
+    let lines: Vec<&str> = r.stdout.trim().lines().collect();
+    assert_eq!(lines[0], "1:ddd");
+    assert_eq!(lines[3], "4:aaa");
+}
+
+#[test]
+fn pipeline_sed_awk_combined() {
+    let mut sh = shell();
+    sh.exec("echo 'name: Alice\nage: 30\nname: Bob\nage: 25' > /info.txt")
+        .unwrap();
+    let r = sh
+        .exec("grep 'name' /info.txt | sed 's/name: //' | awk '{print NR, $0}'")
+        .unwrap();
+    assert_eq!(r.stdout, "1 Alice\n2 Bob\n");
+}
+
+#[test]
+fn pipeline_echo_jq_create_and_filter() {
+    let mut sh = shell();
+    let r = sh
+        .exec(r#"echo '{"a":1,"b":2,"c":3}' | jq -r 'keys[]' | sort"#)
+        .unwrap();
+    assert_eq!(r.stdout, "a\nb\nc\n");
+}
+
+#[test]
+fn pipeline_awk_sum_column() {
+    let mut sh = shell();
+    sh.exec("echo '10\n20\n30\n40' > /nums.txt").unwrap();
+    let r = sh
+        .exec("cat /nums.txt | awk '{sum += $1} END {print sum}'")
+        .unwrap();
+    assert_eq!(r.stdout.trim(), "100");
+}
+
+#[test]
+fn pipeline_grep_sed_awk_chain() {
+    let mut sh = shell();
+    sh.exec("echo 'ERROR: disk full\nINFO: ok\nERROR: timeout\nWARN: slow\nERROR: oom' > /log.txt")
+        .unwrap();
+    let r = sh
+        .exec("grep 'ERROR' /log.txt | sed 's/ERROR: //' | awk '{print NR\": \"$0}'")
+        .unwrap();
+    assert_eq!(r.stdout, "1: disk full\n2: timeout\n3: oom\n");
+}
+
+#[test]
+fn pipeline_sort_uniq_head() {
+    let mut sh = shell();
+    sh.exec("echo 'banana\napple\ncherry\napple\nbanana\napple' > /fruits.txt")
+        .unwrap();
+    let r = sh
+        .exec("sort /fruits.txt | uniq -c | sed 's/^ *//' | sort -rn | head -1")
+        .unwrap();
+    assert!(
+        r.stdout.trim().contains("apple"),
+        "apple should be most frequent, got: {}",
+        r.stdout
+    );
+    assert!(
+        r.stdout.trim().starts_with('3'),
+        "apple count should be 3, got: {}",
+        r.stdout
+    );
+}
+
+#[test]
+fn pipeline_expand_unexpand_roundtrip() {
+    let mut sh = shell();
+    sh.exec("printf 'col1\\tcol2\\tcol3\\n' > /tabs.txt")
+        .unwrap();
+    let r = sh.exec("expand /tabs.txt | unexpand -a").unwrap();
+    assert!(r.stdout.contains('\t'), "should re-create tabs");
+    assert!(r.stdout.contains("col1"), "should preserve col1");
+    assert!(r.stdout.contains("col3"), "should preserve col3");
+}
+
+#[test]
+fn pipeline_column_table_formatting() {
+    let mut sh = shell();
+    sh.exec("echo 'name:age:city\nalice:30:ny\nbob:25:sf' > /data.csv")
+        .unwrap();
+    let r = sh.exec("column -t -s ':' /data.csv").unwrap();
+    assert!(r.stdout.contains("name"));
+    assert!(r.stdout.contains("alice"));
+    // Column should align output
+    let lines: Vec<&str> = r.stdout.trim().lines().collect();
+    assert_eq!(lines.len(), 3);
+}
+
+#[test]
+fn pipeline_fmt_wrapping() {
+    let mut sh = shell();
+    sh.exec("echo 'this is a very long line that should be wrapped by the fmt command to a reasonable width for display' > /long.txt").unwrap();
+    let r = sh.exec("fmt -w 40 /long.txt").unwrap();
+    for line in r.stdout.lines() {
+        assert!(
+            line.len() <= 40,
+            "line too long: {} chars: {}",
+            line.len(),
+            line
+        );
+    }
+}
+
+#[test]
+fn pipeline_comm_only_unique_to_first() {
+    let mut sh = shell();
+    sh.exec("echo 'a\nb\nc\nd' > /s1").unwrap();
+    sh.exec("echo 'b\nc\ne\nf' > /s2").unwrap();
+    let r = sh.exec("comm -23 /s1 /s2").unwrap();
+    assert_eq!(r.stdout, "a\nd\n");
+}
+
+#[test]
+fn pipeline_join_custom_field() {
+    let mut sh = shell();
+    sh.exec("echo '1 Alice\n2 Bob\n3 Carol' > /names.txt")
+        .unwrap();
+    sh.exec("echo '1 Engineering\n2 Sales\n3 Marketing' > /depts.txt")
+        .unwrap();
+    let r = sh.exec("join /names.txt /depts.txt").unwrap();
+    assert!(r.stdout.contains("1 Alice Engineering"));
+    assert!(r.stdout.contains("2 Bob Sales"));
+    assert!(r.stdout.contains("3 Carol Marketing"));
+}
+
+#[test]
+fn pipeline_sed_in_place_then_cat() {
+    let mut sh = shell();
+    sh.exec("echo 'hello world' > /greet.txt").unwrap();
+    sh.exec("sed -i 's/world/rust/' /greet.txt").unwrap();
+    let r = sh.exec("cat /greet.txt").unwrap();
+    assert_eq!(r.stdout, "hello rust\n");
+}
+
+#[test]
+fn pipeline_jq_nested_select() {
+    let mut sh = shell();
+    let r = sh
+        .exec(r#"echo '[{"name":"alice","age":30},{"name":"bob","age":17},{"name":"carol","age":25}]' | jq -r '[.[] | select(.age >= 18)] | .[].name'"#)
+        .unwrap();
+    let lines: Vec<&str> = r.stdout.trim().lines().collect();
+    assert_eq!(lines, vec!["alice", "carol"]);
+}
+
+#[test]
+fn pipeline_multi_stage_text_processing() {
+    let mut sh = shell();
+    sh.exec(
+        "echo 'alice:eng:100\nbob:sales:200\ncarol:eng:150\ndave:sales:300\neve:eng:250' > /employees.csv",
+    )
+    .unwrap();
+    // Get engineering department totals
+    let r = sh
+        .exec("grep 'eng' /employees.csv | awk -F: '{sum += $3} END {print sum}'")
+        .unwrap();
+    assert_eq!(r.stdout.trim(), "500");
+}
+
+#[test]
+fn pipeline_diff_identical_files() {
+    let mut sh = shell();
+    sh.exec("echo 'same content' > /f1").unwrap();
+    sh.exec("echo 'same content' > /f2").unwrap();
+    let r = sh.exec("diff /f1 /f2").unwrap();
+    assert_eq!(r.stdout, "");
+    assert_eq!(r.exit_code, 0);
+}
