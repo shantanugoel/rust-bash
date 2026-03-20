@@ -9,10 +9,10 @@
 | M3 | Execution Safety | Limits enforcement, network policy |
 | M4 | Filesystem Backends | OverlayFs, ReadWriteFs, MountableFs |
 | M5 | Integration | C FFI, WASM, CLI binary, AI SDK wrapper |
-| M6 | Shell Language Completeness | Arrays, shopt, process substitution, special vars, advanced redirections, missing builtins |
-| M7 | Command Coverage & Discoverability | Missing commands, `--help` for all commands |
-| M8 | Embedded Runtimes & Data Formats | Python, JavaScript, SQLite, yq, xan |
-| M9 | Platform & API Features | Cancellation, lazy files, AST transforms, sandbox API, fuzz testing |
+| M6 | Shell Language Completeness | Arrays, shopt, process substitution, special vars, advanced redirections, missing builtins, differential testing |
+| M7 | Command Coverage & Discoverability | Missing commands, `--help` for all commands, AI agent docs, agent workflow tests |
+| M8 | Embedded Runtimes & Data Formats | Python, JavaScript, SQLite, yq, xan, runtime boundary hardening |
+| M9 | Platform, Security & Execution API | Cancellation, lazy files, AST transforms, sandbox API, fuzz testing, threat model, binary encoding, network enhancements, VFS fidelity |
 
 ---
 
@@ -197,7 +197,7 @@ Implement missing builtins that AI-generated scripts commonly use:
 - `pushd [-n] [dir | +N | -N]` / `popd [-n] [+N | -N]` / `dirs [-clpv] [+N | -N]` — full directory stack. ~260 lines in just-bash. Very common in build scripts and CI.
 - `alias name=value` / `unalias name` — define and remove aliases. Requires pre-expansion token rewriting before command execution. Lower priority than other builtins due to architectural complexity with brush-parser.
 - `select var in list; do ... done` — menu selection loop. Low priority (interactive feature, rarely used by AI agents), but completes the control-flow set.
-- `hash [-r] [name]` — command path caching (can be a no-op that tracks a hash table for compatibility).
+- `hash [-r] [name]` — command path caching with real hash table. Maintain `HashMap<String, PathBuf>` in interpreter state. `hash name` resolves and caches the PATH lookup; subsequent invocations skip PATH search. `hash -r` clears the table. `hash` with no args lists cached entries. just-bash implements this with a real `hashTable: Map`; matching that behavior avoids silent divergence in scripts that use `hash -r` to force re-resolution after PATH changes.
 - `wait [pid|jobspec]` — no-op stub that returns 0 immediately. Prevents scripts from failing when they include `wait`.
 
 ### M6.5 — Full `read` Flags
@@ -266,6 +266,16 @@ Implement `${var@operator}` syntax for variable transformations:
 - **`printf -v varname`** — assign formatted output to a variable instead of stdout. Very common pattern to avoid subshell overhead: `printf -v hex '%02x' 255`.
 
 Also add `printf` format specifiers `%b` (interpret backslash escapes) and `%q` (shell-quote output).
+
+### M6.12 — Differential Testing Against Real Bash
+
+Build a comparison test suite that runs bash scripts against both rust-bash and real `/bin/bash`, comparing stdout/stderr/exit code. Inspired by just-bash's 30+ `*.comparison.test.ts` files with fixture recording for offline replay.
+
+- **Fixture-based runner**: Each test case is a bash script + recorded expected output. Tests run against rust-bash only by default (`cargo test`). A `RECORD_FIXTURES=1` mode re-records expected output from real bash.
+- **Coverage areas**: Start with shell language features (quoting, expansion, word splitting, globs, redirections, pipes, control flow, functions, here-documents). Expand to command output format matching as commands are added in M7.
+- **Spec tests by domain**: Add dedicated spec-test suites for `awk`, `grep`, `sed`, and `jq` — structured test cases testing specific features of each mini-language, separate from the comparison suite. just-bash has dedicated spec-test directories for each.
+
+**Why in M6**: Shell language correctness is the highest-leverage testing target. These tests directly validate M6 features (arrays, shopt, builtins, advanced expansions) against ground truth.
 
 ---
 
@@ -338,6 +348,28 @@ Add infrastructure for systematic command correctness:
 - **Comparison test suite**: Fixture-based tests that run scripts against real bash and assert matching stdout/stderr/exit code. Record expected output in fixture files for offline replay. Enables differential testing without requiring bash at every `cargo test`.
 - **Per-command flag metadata**: Each command exports a declarative flag list (name, type, implemented vs stubbed). Enables coverage tracking and systematic fuzzing of flag combinations.
 
+### M7.9 — AI Agent Documentation (`AGENTS.md`)
+
+Ship a purpose-built `AGENTS.md` in the npm package and alongside the CLI binary. This is the primary interface documentation for AI agents consuming rust-bash. Inspired by just-bash's `AGENTS.npm.md` which ships as `dist/AGENTS.md`.
+
+- **Content**: Quick-start examples, available commands grouped by category, tools-by-file-format recipes (JSON with `jq`, YAML with `yq`, CSV with `xan`), key behavioral notes (isolation model, no real filesystem, no network by default).
+- **Distribution**: Include in npm package (`@rust-bash/core`), embed in CLI `--help`, and publish to docs site.
+- **Validation**: Add a test that verifies all documented commands actually exist in the registry and all code examples parse successfully.
+
+### M7.10 — Agent Workflow Integration Tests
+
+Build a test suite simulating realistic AI agent workflows, inspired by just-bash's 13 `agent-examples/*.test.ts` files. Each test represents a real-world agent task:
+
+- **Bug investigation**: grep through logs, analyze stack traces, identify root causes.
+- **Code review**: diff files, check for patterns, analyze dependencies.
+- **Codebase exploration**: find files, read configs, navigate directory structures.
+- **Log analysis**: parse structured logs with awk/jq, aggregate statistics.
+- **Text processing workflows**: multi-stage pipelines combining sed, awk, sort, uniq.
+- **Config analysis**: read JSON/YAML configs, extract values, validate structure.
+- **Security audit**: grep for secrets, check file permissions, analyze network configs.
+
+These tests validate the command surface against realistic agent patterns, not just shell correctness. They also serve as living documentation of expected usage.
+
 ---
 
 ## Milestone 8: Embedded Runtimes and Data Formats
@@ -368,15 +400,28 @@ Add opt-in `js-exec` command. **Design exploration required**: evaluate (a) embe
 
 Implement `html-to-markdown` command for converting HTML to Markdown. Useful for AI agents processing web content fetched via `curl`. Via a Rust HTML-to-Markdown crate (e.g., `htmd` or custom using `scraper` + formatting logic). Support `-b` (bullet character), `-c` (code fence style), heading style selection.
 
+### M8.7 — Runtime Boundary Hardening
+
+When embedded runtimes (Python, JavaScript) and FFI/WASM boundaries are introduced, add defense-in-depth measures at each boundary crossing. Inspired by just-bash's `DefenseInDepthBox` system (AsyncLocalStorage-based context tracking, monkey-patching dangerous globals, violation logging), but adapted to Rust's capabilities:
+
+- **Capability-based isolation**: Embedded runtimes (M8.4/M8.5) receive only the capabilities explicitly granted — VFS access, environment variables, network policy. No ambient authority leaks through the runtime boundary.
+- **Context propagation**: Track execution context across async/FFI boundaries. Ensure that cancellation signals, execution limits, and network policy enforcement propagate correctly when commands cross runtime boundaries (e.g., `js-exec` calling back into the shell via `exec`).
+- **WASM boundary audit**: Verify that the `wasm-bindgen` boundary in M5.3 does not expose host filesystem, environment variables, or network access beyond what is explicitly granted. Document the attack surface of the WASM boundary.
+- **FFI boundary audit**: Verify that the C FFI boundary in M5.2 does not allow memory corruption, use-after-free, or double-free via the exported API. Document all unsafe invariants.
+
+**Why in M8**: This work becomes concrete only when embedded runtimes exist. The security design should be done alongside the runtime implementations, not retrofitted.
+
 ---
 
-## Milestone 9: Platform and API Features
+## Milestone 9: Platform, Security & Execution API
 
 **Goal**: Add platform-level capabilities that make rust-bash a better embeddable runtime for host applications.
 
 ### M9.1 — Cooperative Cancellation
 
 Add `Arc<AtomicBool>` cancellation flag to `InterpreterState`. Check in `check_limits()` alongside existing wall-clock timeout. Expose `RustBash::cancel_handle() -> CancelHandle` that the host can call from another thread. This is more ergonomic than the current wall-clock-only approach — hosts get immediate, cooperative cancellation at the next statement boundary.
+
+Additionally, support **per-exec cancellation** via an optional `signal` parameter on `exec()`. just-bash accepts `AbortSignal` per-exec call, enabling agent orchestrators to cancel individual commands without destroying the entire shell instance. In Rust, this can be an `Option<Arc<AtomicBool>>` on `ExecOptions` that overrides the instance-level cancel handle for that execution only. This is important for timeout-per-command patterns in agent loops.
 
 ### M9.2 — Lazy File Loading
 
@@ -391,10 +436,12 @@ Expose brush-parser AST via a public `parse()` API. Build a `TransformPipeline` 
 Add high-level convenience features to the `Bash` class (TypeScript) and `RustBashBuilder` (Rust): command filtering, per-exec env/cwd isolation, logger interface, virtual process info, safe argument passing, script normalization. These enrich the existing API rather than introducing a separate `Sandbox` class.
 
 Additional API features:
-- **Command filtering** — `commands: Vec<CommandName>` option restricts which commands are available per-session. Critical for least-privilege sandboxing (e.g., prevent `curl`, `rm -rf /`).
-- **Per-exec env/cwd isolation** — `exec()` accepts `env`, `cwd`, `replace_env` overrides that are restored after execution. Useful for multi-tenant scenarios.
+- **Command filtering** — `commands: Vec<CommandName>` option restricts which commands are available per-session. Critical for least-privilege sandboxing (e.g., prevent `curl`, `rm -rf /`). just-bash has this as `commands?: CommandName[]` in `BashOptions`.
+- **Per-exec env/cwd isolation** — `exec()` accepts `env`, `cwd`, `replace_env` overrides that are restored after execution. Useful for multi-tenant scenarios. The `replace_env: bool` option starts execution with an empty environment (only the provided env vars), rather than merging. This is important for reproducibility and isolation — just-bash supports this as `replaceEnv`.
+- **ExecResult environment snapshot** — Return the post-execution environment as `env: HashMap<String, String>` in `ExecResult`. Critical for AI agent frameworks that need to inspect env changes after a script runs (e.g., `source .env` then read the vars). just-bash includes this as `env: Record<string, string>` in every exec result.
 - **Logger interface** — `BashLogger` trait with `info`/`debug` methods for execution tracing (xtrace, command dispatch, etc.). Essential for debugging in production.
-- **Virtual process info** — configurable `ProcessInfo { pid, ppid, uid, gid }` in options. Powers `$$`, `$PPID`, `$UID`, `$EUID`. Supports multi-sandbox scenarios with unique PIDs.
+- **Trace/performance profiling** — `TraceCallback` for per-command timing events with category, name, duration, and details. Enables performance analysis of scripts. just-bash has `TraceEvent` with `{ category, name, durationMs, details }`. Can be implemented as an extension of the logger or a separate callback.
+- **Virtual process info** — configurable `ProcessInfo { pid, ppid, uid, gid }` in builder options. Powers `$$`, `$PPID`, `$UID`, `$EUID`, `$BASHPID`, and `/proc/self/status`. Supports multi-sandbox scenarios with unique PIDs. just-bash wires this through constructor options as `processInfo`.
 - **Safe argument passing** — `ExecOptions.args: Vec<String>` for additional argv entries that bypass shell parsing entirely (no escaping/splitting/globbing). Like `child_process.spawn(cmd, args)`. Safe way to pass filenames with special characters.
 - **Script normalization** — strip leading whitespace from template literals while preserving heredoc content. `raw_script: bool` option to disable.
 
@@ -404,7 +451,22 @@ Add virtual `/proc/self/status`, `/proc/version`, `/proc/self/fd/`, and `/proc/s
 
 ### M9.6 — Defense-in-Depth Security Hardening
 
-Formalize security guarantees beyond VFS + NetworkPolicy + ExecutionLimits. Add: resource accounting per-exec (peak memory, total I/O bytes), documentation of the threat model, and audit all command implementations for potential panics or unbounded allocations. **ReDoS audit**: verify that all user-provided regex paths (`=~`, `grep`, `sed`) use Rust's `regex` crate (which is RE2-based, linear-time by default) and that no `fancy-regex` or PCRE paths are exposed to untrusted input. **Exported env isolation**: audit that non-exported shell variables do not leak to child commands — only exported variables should be visible.
+Formalize security guarantees beyond VFS + NetworkPolicy + ExecutionLimits. This milestone covers both runtime hardening and documentation.
+
+**Runtime hardening:**
+- **Resource accounting per-exec** — track peak memory, total I/O bytes, and command counts. Return as optional metrics in `ExecResult` for observability.
+- **ReDoS audit** — verify that all user-provided regex paths (`=~`, `grep`, `sed`) use Rust's `regex` crate (RE2-based, linear-time by default) and that no `fancy-regex` or PCRE paths are exposed to untrusted input.
+- **Exported env isolation** — audit that non-exported shell variables do not leak to child commands — only exported variables should be visible.
+- **Panic audit** — audit all command implementations for potential panics or unbounded allocations. Every command must handle invalid input gracefully.
+
+**Threat model documentation:**
+Write a comprehensive `THREAT_MODEL.md` (inspired by just-bash's 400-line threat model) covering:
+- **Threat actors**: Untrusted script author (primary), malicious data source, compromised dependency.
+- **Trust boundaries**: Script input → parser, interpreter → VFS, interpreter → commands, interpreter → network, FFI/WASM boundaries.
+- **Trust assumptions**: What is trusted (host application, Rust runtime, OS kernel) and what is not (scripts, data, network responses).
+- **Attack surface analysis**: For each boundary, enumerate attack vectors and existing mitigations.
+- **Residual risks**: Known gaps, accepted risks, and their mitigations.
+- **Security properties**: What the sandbox guarantees (no host FS access, no process spawning, no network without policy) and what it does not.
 
 ### M9.7 — Fuzz Testing Suite
 
@@ -415,6 +477,32 @@ Dedicated fuzz testing infrastructure for the interpreter and all command implem
 - **Property-based testing** — use `proptest` or `arbitrary` crates for structured fuzzing with invariant checks: (a) no command should panic regardless of input, (b) execution limits should never be exceeded without returning `LimitExceeded`, (c) VFS operations should never corrupt internal state, (d) every command should produce valid UTF-8 or controlled binary output.
 - **Differential fuzzing** — generate random scripts, run in both rust-bash and real bash, compare stdout/stderr/exit code. Flag divergences for investigation. Builds on M7.8 comparison infrastructure.
 - **Continuous integration** — configure fuzz targets to run in CI with a time budget (e.g., 5 minutes per target per run). Store crash artifacts in `fuzz/artifacts/` for regression testing.
+
+### M9.8 — Binary Data and Output Encoding Model
+
+Design and implement a systematic approach to binary data flow through the shell pipeline. This is a prerequisite for M7.3 (compression/archiving) and affects the exec() output boundary.
+
+- **Pipeline byte transparency**: Audit and ensure that pipe data flows as `Vec<u8>` through the entire pipeline path (command stdout → pipe → next command stdin). Verify that no intermediate step lossy-converts to `String`. Rust's `Vec<u8>` is naturally correct, but the pipe/redirect/capture paths must be audited.
+- **Output boundary encoding**: At the `exec()` return boundary, decide how to handle non-UTF-8 output. Options: (a) return `Vec<u8>` for stdout/stderr (breaking API change), (b) return `String` with lossy replacement and a separate `stdout_bytes: Option<Vec<u8>>` field, (c) add an `encoding_hint: Option<String>` field to `ExecResult` indicating binary content (like just-bash's `stdoutEncoding?: "binary"`).
+- **Input boundary**: Ensure `stdin` can carry binary data. Currently `stdin` is `&str` — consider `Option<&[u8]>` for binary stdin support.
+
+just-bash solves this with latin1 strings internally (each char = one byte) and a `decodeBinaryToUtf8()` function at the output boundary. Rust should leverage `Vec<u8>` naturally but must design the API boundary carefully.
+
+### M9.9 — Network Policy Enhancements
+
+Extend `NetworkPolicy` with features from just-bash's battle-tested network layer:
+
+- **`dangerously_allow_all: bool`** — convenience bypass for development/trusted environments. Clearly named to discourage production use. just-bash has `dangerouslyAllowFullInternetAccess`.
+- **`deny_private_ranges: bool`** — reject URLs that resolve to private/loopback IP addresses (10.x, 172.16.x, 192.168.x, 127.x, ::1, link-local). Performs both lexical hostname checks and DNS resolution to catch DNS rebinding attacks. Enforced even when `dangerously_allow_all` is true. Uses resolved-IP pinning to prevent TOCTOU attacks.
+- **Request transforms / credential brokering** — per-allowed-URL `transform` callback that can inject headers (auth tokens) at the fetch boundary so secrets never enter the sandbox environment. just-bash has `RequestTransform { headers: Record<string, string> }` per `AllowedUrl` entry. This enables secure API access without exposing credentials to scripts.
+- **Response size limits** — `max_response_size: usize` to prevent memory exhaustion from large HTTP responses.
+
+### M9.10 — VFS Fidelity Enhancements
+
+Add VFS trait methods for better compatibility with real-world shell scripts:
+
+- **`utimes(path, atime, mtime)`** — set file access and modification times. Required for `touch -t` and scripts that rely on file timestamps for logic (e.g., Makefiles, caching). just-bash's `IFileSystem` includes this.
+- **`/dev/stdin`, `/dev/stdout`, `/dev/stderr`** — special-case these paths in I/O handling. Currently only `/dev/null` is handled (M6.10 mentions these but they should also be part of the VFS layer).
 
 ---
 
@@ -452,18 +540,26 @@ M6.8 (special vars) ───── (independent except FUNCNAME arrays)
 M6.9 (set -x/-v/-n) ──── (independent)
 M6.10 (adv redirections)  (independent)
 M6.11 (param transforms)  (independent)
+M6.12 (diff tests) ────── (independent — start early for confidence)
 M7.1 (--help) ─────────── (independent — can start anytime)
 M7.2–M7.6 ─────────────── (independent — new command implementations)
 M7.7 (default fs layout) ─ (should happen early — affects M7.2+ command testing)
+M7.9 (AGENTS.md) ──────── (after M7.1–M7.6 — needs command list to document)
+M7.10 (agent tests) ───── (after M7.2+ — needs commands to test workflows)
 M8.1–M8.3 ─────────────── (depend on M1 command infrastructure)
 M8.4–M8.5 ─────────────── (require design exploration — feature-gated)
-M9.1–M9.6 ─────────────── (depend on M1–M5 for full platform)
+M8.7 (runtime hardening)   (alongside M8.4/M8.5 — design with runtimes)
+M9.1–M9.5 ─────────────── (depend on M1–M5 for full platform)
+M9.6 (security hardening)  (independent — can start threat model early)
 M9.7 (fuzz testing) ───── (depends on M7.8 comparison infra; can start early with interpreter-only targets)
+M9.8 (binary encoding) ── (before M7.3 compression — prerequisite for byte transparency)
+M9.9 (network enhancements) (extends M3.2 — independent)
+M9.10 (VFS fidelity) ──── (independent)
 ```
 
 **Recommended order (M1–M5)**: M1.1 → M1.2 → M1.3 → M1.4 → M1.5 → M1.6 → M1.7 → M1.8/M1.9/M1.10/M1.11 (parallel) → M1.12 → M1.13 → M1.14 → M1.15 → M3.1 → M2.1 → M2.2 → M2.3 → M2.4 → M4.1 → M5.1 → M5.2 → M5.3
 
-**Recommended order (M6–M9)**: M6.1 (arrays — critical path) → M6.8 ($LINENO/$SECONDS — quick wins) → M6.2/M6.3 (parallel) → M6.4/M6.5/M6.6 (parallel, unlocked by arrays) → M6.9/M6.10/M6.11 (parallel) → M6.7 → M7.7 (default fs layout — do before other M7 work) → M7.1 → M7.2/M7.3/M7.4/M7.5/M7.6/M7.8 (parallel) → M8.1 → M8.2 → M8.3 → M8.4/M8.5 (design exploration first) → M9.1 → M9.2 → M9.3 → M9.4 → M9.5 → M9.6 → M9.7
+**Recommended order (M6–M9)**: M6.12 (diff tests — start early for confidence) → M6.1 (arrays — critical path) → M6.8 ($LINENO/$SECONDS — quick wins) → M6.2/M6.3 (parallel) → M6.4/M6.5/M6.6 (parallel, unlocked by arrays) → M6.9/M6.10/M6.11 (parallel) → M6.7 → M9.8 (binary encoding — prerequisite for compression) → M7.7 (default fs layout — do before other M7 work) → M7.1 → M7.2/M7.3/M7.4/M7.5/M7.6/M7.8 (parallel) → M7.9/M7.10 (agent docs & tests) → M8.1 → M8.2 → M8.3 → M8.4/M8.5 (design exploration first) → M8.7 (runtime hardening, alongside M8.4/M8.5) → M9.1 → M9.2 → M9.3 → M9.4 → M9.5 → M9.6 (threat model can start earlier) → M9.7 → M9.9/M9.10 (parallel)
 
 ---
 
@@ -496,3 +592,7 @@ M9.7 (fuzz testing) ───── (depends on M7.8 comparison infra; can start
 | `set -a` assignment site coverage | Medium | Medium | Allexport must be wired into every assignment site (plain, declare, local, for, read). Missing one causes silent env leaks. Track with exhaustive tests. | Open |
 | Indirect expansion complexity | Medium | Medium | `${!ref}` when `ref` points to array elements, namerefs, or chained indirection — interactions are subtle. Budget extra testing time. | Open |
 | SSRF TOCTOU in DNS resolution | Low | High | DNS rebinding: hostname must be resolved and IP pinned before the HTTP connection to prevent time-of-check/time-of-use attacks. Use custom resolver + connect-time IP pinning. | Open |
+| ExecResult API design for binary output | Medium | Medium | If stdout is `String`, binary data from gzip/tar is lost. If `Vec<u8>`, ergonomics suffer for text-heavy AI agent use. Need careful design in M9.8 — possibly dual fields or encoding hint. | Open |
+| M9 scope creep | Medium | Medium | M9 now covers security, execution API, networking, VFS fidelity, and fuzz testing. Risk of becoming a dumping ground. Mitigate by explicitly splitting into subsections and prioritizing P0 items. | Open |
+| Runtime boundary capability leaks | Low | High | Embedded runtimes (M8.4/M8.5) could accidentally inherit host capabilities. Design capability-based isolation from the start (M8.7). | Open |
+| Missing threat model during early adoption | Medium | Medium | Sandbox providers may adopt rust-bash before M9.6 threat model is written. Ship a minimal threat model early as part of README/guidebook. | Open |
