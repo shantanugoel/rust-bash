@@ -70,8 +70,16 @@ async function boot() {
   const params = new URLSearchParams(window.location.search);
   const agentQuery = params.get('agent');
   if (agentQuery) {
-    const safe = agentQuery.replace(/"/g, '\\"');
-    await terminalUI.executeCommand(`agent "${safe}"`);
+    // Sanitize: limit length, strip control characters, and escape for shell quoting
+    const MAX_AGENT_QUERY_LENGTH = 500;
+    const sanitized = agentQuery
+      .slice(0, MAX_AGENT_QUERY_LENGTH)
+      .replace(/[\x00-\x1f\x7f]/g, '') // strip control chars (ANSI escapes, etc.)
+      .replace(/\\/g, '\\\\')           // escape backslashes first
+      .replace(/"/g, '\\"');             // then escape double quotes
+    if (sanitized.trim()) {
+      await terminalUI.executeCommand(`agent "${sanitized}"`);
+    }
   }
 }
 

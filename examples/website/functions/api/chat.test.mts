@@ -17,13 +17,34 @@ test('allows the deployed Pages origin', () => {
   );
 });
 
-test('allows localhost dev requests across ports', () => {
+test('allows localhost dev requests when allowLocalhost is true', () => {
   assert.equal(
     isAllowedOrigin(
       'http://localhost:5173',
       'http://localhost:8788/api/chat/completions',
+      true,
     ),
     true,
+  );
+});
+
+test('rejects localhost requests when allowLocalhost is false (default)', () => {
+  assert.equal(
+    isAllowedOrigin(
+      'http://localhost:5173',
+      'https://rustbash.dev/api/chat/completions',
+    ),
+    false,
+  );
+});
+
+test('rejects 127.0.0.1 requests when allowLocalhost is false', () => {
+  assert.equal(
+    isAllowedOrigin(
+      'http://127.0.0.1:8080',
+      'https://rustbash.dev/api/chat/completions',
+    ),
+    false,
   );
 });
 

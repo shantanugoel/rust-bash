@@ -12,6 +12,7 @@ interface Env {
   LLM_API_KEY?: string;
   LLM_BASE_URL?: string;
   LLM_MODEL?: string;
+  ALLOW_LOCALHOST?: string;
 }
 
 // Simple in-memory rate limiter (resets on Worker cold start)
@@ -39,6 +40,7 @@ function isRateLimited(ip: string): boolean {
 export function isAllowedOrigin(
   originHeader: string | null,
   requestUrl: string,
+  allowLocalhost = false,
 ): boolean {
   if (!originHeader) {
     return false;
@@ -53,7 +55,7 @@ export function isAllowedOrigin(
     return false;
   }
 
-  if (LOCALHOST_HOSTNAMES.has(origin.hostname)) {
+  if (allowLocalhost && LOCALHOST_HOSTNAMES.has(origin.hostname)) {
     return true;
   }
 
@@ -154,8 +156,9 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     );
   }
 
-  // Origin check: only allow requests from our site or localhost
-  if (!isAllowedOrigin(request.headers.get('Origin'), request.url)) {
+  // Origin check: only allow requests from our site (localhost only if ALLOW_LOCALHOST is set)
+  const allowLocalhost = env.ALLOW_LOCALHOST === 'true';
+  if (!isAllowedOrigin(request.headers.get('Origin'), request.url, allowLocalhost)) {
     return new Response(
       JSON.stringify({ error: 'Forbidden' }),
       { status: 403, headers: { 'Content-Type': 'application/json' } },
