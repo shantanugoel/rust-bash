@@ -82,7 +82,7 @@ test('resolves default Gemini settings when only GEMINI_API_KEY is set', () => {
       apiKey: 'gemini-secret',
       chatCompletionsUrl:
         'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
-      model: 'gemini-2.5-flash-lite',
+      model: 'gemini-2.5-flash',
     },
   );
 });
@@ -117,10 +117,10 @@ test('preserves non-streaming requests for SDK tool runners', () => {
         messages: [{ role: 'user', content: 'hello' }],
         stream: false,
       },
-      'gemini-2.5-flash-lite',
+      'gemini-2.5-flash',
     ),
     {
-      model: 'gemini-2.5-flash-lite',
+      model: 'gemini-2.5-flash',
       messages: [{ role: 'user', content: 'hello' }],
       tools: [
         {
@@ -153,7 +153,7 @@ test('allows explicitly streamed requests when requested', () => {
         messages: [],
         stream: true,
       },
-      'gemini-2.5-flash-lite',
+      'gemini-2.5-flash',
     ).stream,
     true,
   );

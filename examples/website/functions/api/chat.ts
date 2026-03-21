@@ -22,7 +22,7 @@ const RATE_WINDOW_MS = 60_000;
 const LOCALHOST_HOSTNAMES = new Set(['localhost', '127.0.0.1']);
 const DEFAULT_LLM_BASE_URL =
   'https://generativelanguage.googleapis.com/v1beta/openai/';
-const DEFAULT_LLM_MODEL = 'gemini-2.5-flash-lite';
+const DEFAULT_LLM_MODEL = 'gemini-2.5-flash';
 
 function isRateLimited(ip: string): boolean {
   const now = Date.now();

@@ -7,4 +7,4 @@ pages_build_output_dir = "dist"
 # Optional secrets / vars for other OpenAI-compatible providers:
 # - LLM_API_KEY: Overrides GEMINI_API_KEY when set
 # - LLM_BASE_URL: Defaults to https://generativelanguage.googleapis.com/v1beta/openai/
-# - LLM_MODEL: Defaults to gemini-2.5-flash
+# - LLM_MODEL: Defaults to gemini-2.5-flash (500 RPD free tier)
