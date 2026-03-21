@@ -116,6 +116,15 @@ html, body {
     /* subtle bevel around the glass edge */
     0 0 0 2px #555,
     0 0 0 3px #333;
+  /* CRT glass bulge */
+  perspective: 900px;
+  transform-style: preserve-3d;
+}
+
+/* Subtle barrel-like curvature on all screen contents */
+#crt-screen > * {
+  transform: perspective(900px) translateZ(4px);
+  transform-origin: center center;
 }
 
 /* ── CRT Overlay Effects (inside screen) ──────────────────────────── */
