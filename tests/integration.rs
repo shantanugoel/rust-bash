@@ -5246,3 +5246,398 @@ fn declare_print_nonexistent_returns_error() {
     assert_eq!(r.exit_code, 1);
     assert!(r.stderr.contains("not found"));
 }
+
+// ── Special variable tracking (M6.8) ────────────────────────────────
+
+#[test]
+fn lineno_tracks_statement_positions() {
+    let mut sh = shell();
+    let r = sh.exec("echo $LINENO\necho $LINENO\necho $LINENO").unwrap();
+    assert_eq!(r.stdout, "1\n2\n3\n");
+}
+
+#[test]
+fn lineno_inside_function() {
+    let mut sh = shell();
+    let r = sh.exec("f() { echo $LINENO; }; f").unwrap();
+    // The function body's echo is on line 1
+    assert_eq!(r.stdout, "1\n");
+}
+
+#[test]
+fn seconds_returns_elapsed_time() {
+    let mut sh = shell();
+    let r = sh.exec("echo $SECONDS").unwrap();
+    let secs: u64 = r.stdout.trim().parse().unwrap();
+    assert!(secs < 5, "SECONDS should be small, got {secs}");
+}
+
+#[test]
+fn seconds_assignment_resets_timer() {
+    let mut sh = shell();
+    let r = sh.exec("SECONDS=0; echo $SECONDS").unwrap();
+    assert_eq!(r.stdout, "0\n");
+}
+
+#[test]
+fn underscore_last_argument() {
+    let mut sh = shell();
+    let r = sh.exec("echo hello world; echo $_").unwrap();
+    assert_eq!(r.stdout, "hello world\nworld\n");
+}
+
+#[test]
+fn underscore_updates_per_command() {
+    let mut sh = shell();
+    let r = sh.exec("echo a b c; echo $_; echo x; echo $_").unwrap();
+    assert_eq!(r.stdout, "a b c\nc\nx\nx\n");
+}
+
+#[test]
+fn funcname_current_function() {
+    let mut sh = shell();
+    let r = sh
+        .exec("greet() { echo \"${FUNCNAME[0]}\"; }; greet")
+        .unwrap();
+    assert_eq!(r.stdout, "greet\n");
+}
+
+#[test]
+fn funcname_nested_calls() {
+    let mut sh = shell();
+    let r = sh
+        .exec("inner() { echo \"${FUNCNAME[0]} ${FUNCNAME[1]}\"; }; outer() { inner; }; outer")
+        .unwrap();
+    assert_eq!(r.stdout, "inner outer\n");
+}
+
+#[test]
+fn bash_lineno_callsite() {
+    let mut sh = shell();
+    let r = sh.exec("f() { echo \"${BASH_LINENO[0]}\"; }\nf").unwrap();
+    assert_eq!(r.stdout, "2\n");
+}
+
+#[test]
+fn bash_source_empty_at_toplevel() {
+    let mut sh = shell();
+    let r = sh.exec("echo \"${BASH_SOURCE[0]}\"").unwrap();
+    assert_eq!(r.stdout, "\n");
+}
+
+#[test]
+fn ppid_returns_numeric() {
+    let mut sh = shell();
+    let r = sh.exec("echo $PPID").unwrap();
+    assert!(r.stdout.trim().parse::<u32>().is_ok());
+}
+
+#[test]
+fn uid_returns_numeric() {
+    let mut sh = shell();
+    let r = sh.exec("echo $UID").unwrap();
+    assert_eq!(r.stdout, "1000\n");
+}
+
+#[test]
+fn euid_returns_numeric() {
+    let mut sh = shell();
+    let r = sh.exec("echo $EUID").unwrap();
+    assert_eq!(r.stdout, "1000\n");
+}
+
+#[test]
+fn bashpid_returns_numeric() {
+    let mut sh = shell();
+    let r = sh.exec("echo $BASHPID").unwrap();
+    assert!(r.stdout.trim().parse::<u32>().is_ok());
+}
+
+#[test]
+fn shellopts_reflects_set_flags() {
+    let mut sh = shell();
+    let r = sh.exec("set -e; echo $SHELLOPTS").unwrap();
+    assert!(r.stdout.contains("errexit"));
+}
+
+#[test]
+fn shellopts_empty_by_default() {
+    let mut sh = shell();
+    let r = sh.exec("echo \"$SHELLOPTS\"").unwrap();
+    // No options enabled by default
+    assert_eq!(r.stdout.trim(), "");
+}
+
+#[test]
+fn bashopts_reflects_shopt_flags() {
+    let mut sh = shell();
+    let r = sh.exec("shopt -s nullglob; echo $BASHOPTS").unwrap();
+    assert!(r.stdout.contains("nullglob"));
+}
+
+#[test]
+fn bashopts_contains_extglob_by_default() {
+    let mut sh = shell();
+    let r = sh.exec("echo $BASHOPTS").unwrap();
+    // extglob and globskipdots are on by default
+    assert!(r.stdout.contains("extglob"));
+}
+
+#[test]
+fn machtype_is_set() {
+    let mut sh = shell();
+    let r = sh.exec("echo $MACHTYPE").unwrap();
+    assert_eq!(r.stdout, "x86_64-pc-linux-gnu\n");
+}
+
+#[test]
+fn hosttype_is_set() {
+    let mut sh = shell();
+    let r = sh.exec("echo $HOSTTYPE").unwrap();
+    assert_eq!(r.stdout, "x86_64\n");
+}
+
+#[test]
+fn funcname_array_length() {
+    let mut sh = shell();
+    let r = sh
+        .exec("inner() { echo \"${#FUNCNAME[@]}\"; }; outer() { inner; }; outer")
+        .unwrap();
+    assert_eq!(r.stdout, "2\n");
+}
+
+#[test]
+fn funcname_all_elements() {
+    let mut sh = shell();
+    let r = sh
+        .exec("inner() { echo \"${FUNCNAME[@]}\"; }; outer() { inner; }; outer")
+        .unwrap();
+    assert_eq!(r.stdout, "inner outer\n");
+}
+
+#[test]
+fn funcname_array_keys() {
+    let mut sh = shell();
+    let r = sh
+        .exec("inner() { echo \"${!FUNCNAME[@]}\"; }; outer() { inner; }; outer")
+        .unwrap();
+    assert_eq!(r.stdout, "0 1\n");
+}
+
+#[test]
+fn lineno_in_arithmetic() {
+    let mut sh = shell();
+    let r = sh.exec("echo $((LINENO + 0))").unwrap();
+    assert_eq!(r.stdout, "1\n");
+}
+
+// ── Shell Option Enforcement (M6.9) ────────────────────────────────
+
+#[test]
+fn xtrace_emits_trace_on_stderr() {
+    let mut sh = shell();
+    let r = sh.exec("set -x; echo hello").unwrap();
+    assert_eq!(r.stdout, "hello\n");
+    assert!(
+        r.stderr.contains("+ echo hello"),
+        "stderr should contain xtrace: {}",
+        r.stderr
+    );
+}
+
+#[test]
+fn xtrace_uses_ps4_prefix() {
+    let mut sh = shell();
+    let r = sh.exec("PS4='>> '; set -x; echo hi").unwrap();
+    assert!(
+        r.stderr.contains(">> echo hi"),
+        "stderr should use PS4 prefix: {}",
+        r.stderr
+    );
+}
+
+#[test]
+fn xtrace_not_emitted_for_set_dash_x_itself() {
+    let mut sh = shell();
+    let r = sh.exec("set -x; echo done").unwrap();
+    // `set -x` was not yet traced (xtrace was off when it ran)
+    assert!(
+        !r.stderr.contains("+ set -x"),
+        "set -x itself should not be traced: {}",
+        r.stderr
+    );
+}
+
+#[test]
+fn xtrace_set_plus_x_is_traced() {
+    let mut sh = shell();
+    let r = sh.exec("set -x; set +x; echo done").unwrap();
+    assert!(
+        r.stderr.contains("+ set +x"),
+        "set +x should be traced: {}",
+        r.stderr
+    );
+    assert_eq!(r.stdout, "done\n");
+}
+
+#[test]
+fn noexec_suppresses_output() {
+    let mut sh = shell();
+    let r = sh.exec("set -n; echo hidden").unwrap();
+    assert_eq!(r.stdout, "");
+    assert_eq!(r.exit_code, 0);
+}
+
+#[test]
+fn noexec_allows_set_to_reenable() {
+    let mut sh = shell();
+    let r = sh.exec("set -n; set +n; echo visible").unwrap();
+    assert_eq!(r.stdout, "visible\n");
+}
+
+#[test]
+fn noclobber_prevents_overwrite() {
+    let mut sh = RustBashBuilder::new()
+        .files(HashMap::from([("/f.txt".into(), b"old\n".to_vec())]))
+        .build()
+        .unwrap();
+    let r = sh
+        .exec("set -C; echo new > /f.txt; echo $?; cat /f.txt")
+        .unwrap();
+    assert_eq!(r.stdout, "1\nold\n");
+}
+
+#[test]
+fn noclobber_allows_force_clobber() {
+    let mut sh = RustBashBuilder::new()
+        .files(HashMap::from([("/f.txt".into(), b"old\n".to_vec())]))
+        .build()
+        .unwrap();
+    let r = sh.exec("set -C; echo new >| /f.txt; cat /f.txt").unwrap();
+    assert_eq!(r.stdout, "new\n");
+}
+
+#[test]
+fn noclobber_allows_append() {
+    let mut sh = RustBashBuilder::new()
+        .files(HashMap::from([("/f.txt".into(), b"old\n".to_vec())]))
+        .build()
+        .unwrap();
+    let r = sh.exec("set -C; echo more >> /f.txt; cat /f.txt").unwrap();
+    assert_eq!(r.stdout, "old\nmore\n");
+}
+
+#[test]
+fn noclobber_allows_new_file() {
+    let mut sh = RustBashBuilder::new()
+        .files(HashMap::from([("/dir/.keep".into(), b"".to_vec())]))
+        .build()
+        .unwrap();
+    let r = sh
+        .exec("set -C; echo content > /dir/new.txt; cat /dir/new.txt")
+        .unwrap();
+    assert_eq!(r.stdout, "content\n");
+}
+
+#[test]
+fn allexport_marks_variable_exported() {
+    let mut sh = shell();
+    let r = sh.exec("set -a; MYVAR=hello; env | grep MYVAR").unwrap();
+    assert_eq!(r.stdout, "MYVAR=hello\n");
+}
+
+#[test]
+fn noglob_disables_glob_expansion() {
+    let mut sh = RustBashBuilder::new()
+        .files(HashMap::from([
+            ("/a.txt".into(), b"".to_vec()),
+            ("/b.txt".into(), b"".to_vec()),
+        ]))
+        .build()
+        .unwrap();
+    let r = sh.exec("set -f; echo *.txt").unwrap();
+    assert_eq!(r.stdout, "*.txt\n");
+}
+
+#[test]
+fn noglob_can_be_reenabled() {
+    let mut sh = RustBashBuilder::new()
+        .files(HashMap::from([
+            ("/a.txt".into(), b"".to_vec()),
+            ("/b.txt".into(), b"".to_vec()),
+        ]))
+        .build()
+        .unwrap();
+    let r = sh.exec("set -f; set +f; echo *.txt").unwrap();
+    assert!(r.stdout.contains("a.txt"), "glob should expand after +f");
+}
+
+#[test]
+fn posix_option_accepted() {
+    let mut sh = shell();
+    let r = sh.exec("set -o posix; echo ok").unwrap();
+    assert_eq!(r.stdout, "ok\n");
+    assert_eq!(r.exit_code, 0);
+}
+
+#[test]
+fn vi_emacs_options_accepted() {
+    let mut sh = shell();
+    let r = sh.exec("set -o vi; set -o emacs; echo ok").unwrap();
+    assert_eq!(r.stdout, "ok\n");
+    assert_eq!(r.exit_code, 0);
+}
+
+#[test]
+fn set_option_names_in_format_output() {
+    let mut sh = shell();
+    let r = sh.exec("set -o").unwrap();
+    assert!(r.stdout.contains("noclobber"));
+    assert!(r.stdout.contains("noglob"));
+    assert!(r.stdout.contains("allexport"));
+    assert!(r.stdout.contains("verbose"));
+    assert!(r.stdout.contains("noexec"));
+    assert!(r.stdout.contains("posix"));
+    assert!(r.stdout.contains("vi"));
+    assert!(r.stdout.contains("emacs"));
+}
+
+#[test]
+fn xtrace_bare_assignment() {
+    let mut sh = shell();
+    let r = sh.exec("set -x; X=hello; echo $X").unwrap();
+    assert_eq!(r.stdout, "hello\n");
+    assert!(r.stderr.contains("+ X=hello"));
+    assert!(r.stderr.contains("+ echo hello"));
+}
+
+#[test]
+fn noclobber_blocks_output_and_error_redirect() {
+    let mut sh = RustBashBuilder::new()
+        .files(HashMap::from([(
+            "/tmp/existing.txt".into(),
+            b"old\n".to_vec(),
+        )]))
+        .build()
+        .unwrap();
+    let r = sh
+        .exec("set -C; echo hi &> /tmp/existing.txt; echo $?; cat /tmp/existing.txt")
+        .unwrap();
+    assert_eq!(r.stdout, "1\nold\n");
+    assert!(r.stderr.contains("cannot overwrite existing file"));
+}
+
+#[test]
+fn noclobber_allows_append_output_and_error() {
+    let mut sh = RustBashBuilder::new()
+        .files(HashMap::from([(
+            "/tmp/existing.txt".into(),
+            b"old\n".to_vec(),
+        )]))
+        .build()
+        .unwrap();
+    let r = sh
+        .exec("set -C; echo hi &>> /tmp/existing.txt; cat /tmp/existing.txt")
+        .unwrap();
+    assert_eq!(r.stdout, "old\nhi\n");
+}

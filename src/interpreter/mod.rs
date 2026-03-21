@@ -90,6 +90,21 @@ pub struct Variable {
     pub attrs: VariableAttrs,
 }
 
+/// A persistent file descriptor redirection established by `exec`.
+#[derive(Debug, Clone)]
+pub(crate) enum PersistentFd {
+    /// FD writes to this VFS path.
+    OutputFile(String),
+    /// FD reads from this VFS path.
+    InputFile(String),
+    /// FD is open for both reading and writing on this VFS path.
+    ReadWriteFile(String),
+    /// FD points to /dev/null (reads empty, writes discarded).
+    DevNull,
+    /// FD is closed.
+    Closed,
+}
+
 impl Variable {
     /// Convenience: is this variable exported?
     pub fn exported(&self) -> bool {
@@ -121,7 +136,7 @@ pub struct ExecutionLimits {
 impl Default for ExecutionLimits {
     fn default() -> Self {
         Self {
-            max_call_depth: 100,
+            max_call_depth: 50,
             max_command_count: 10_000,
             max_loop_iterations: 10_000,
             max_execution_time: Duration::from_secs(30),
@@ -164,13 +179,21 @@ impl ExecutionCounters {
     }
 }
 
-/// Shell options (flags only, no enforcement in Phase 1A).
+/// Shell options controlled by `set -o` / `set +o` and single-letter flags.
 #[derive(Debug, Clone, Default)]
 pub struct ShellOpts {
     pub errexit: bool,
     pub nounset: bool,
     pub pipefail: bool,
     pub xtrace: bool,
+    pub verbose: bool,
+    pub noexec: bool,
+    pub noclobber: bool,
+    pub allexport: bool,
+    pub noglob: bool,
+    pub posix: bool,
+    pub vi_mode: bool,
+    pub emacs_mode: bool,
 }
 
 /// Shopt options (`shopt -s`/`-u` flags).
@@ -213,6 +236,15 @@ pub struct FunctionDef {
     pub body: ast::FunctionBody,
 }
 
+/// A single frame on the function call stack, used to expose
+/// `FUNCNAME`, `BASH_SOURCE`, and `BASH_LINENO` arrays.
+#[derive(Debug, Clone)]
+pub struct CallFrame {
+    pub func_name: String,
+    pub source: String,
+    pub lineno: usize,
+}
+
 /// The interpreter's mutable state, persistent across `exec()` calls.
 pub struct InterpreterState {
     pub fs: Arc<dyn VirtualFs>,
@@ -253,6 +285,29 @@ pub struct InterpreterState {
     pub(crate) command_hash: HashMap<String, String>,
     /// Alias name → expansion string for `alias`/`unalias`.
     pub(crate) aliases: HashMap<String, String>,
+    /// Current line number, updated per-statement from AST source positions.
+    pub(crate) current_lineno: usize,
+    /// Shell start time for `$SECONDS`.
+    pub(crate) shell_start_time: Instant,
+    /// Last argument of the previous simple command (`$_`).
+    pub(crate) last_argument: String,
+    /// Function call stack for `FUNCNAME`, `BASH_SOURCE`, `BASH_LINENO`.
+    pub(crate) call_stack: Vec<CallFrame>,
+    /// Configurable `$MACHTYPE` value.
+    pub(crate) machtype: String,
+    /// Configurable `$HOSTTYPE` value.
+    pub(crate) hosttype: String,
+    /// Persistent FD redirections set by `exec` (e.g. `exec > file`).
+    pub(crate) persistent_fds: HashMap<i32, PersistentFd>,
+    /// Next auto-allocated FD number for `{varname}>file` syntax.
+    pub(crate) next_auto_fd: i32,
+    /// Counter for generating unique process substitution temp file names.
+    pub(crate) proc_sub_counter: u64,
+    /// Pre-allocated temp file paths for redirect process substitutions, keyed by
+    /// the pointer address of the `IoFileRedirectTarget` AST node.  This ensures
+    /// each redirect resolves to its own pre-allocated path regardless of the order
+    /// in which `get_stdin_from_redirects` / `apply_output_redirects` visit them.
+    pub(crate) proc_sub_prealloc: HashMap<usize, String>,
 }
 
 // ── Parsing ──────────────────────────────────────────────────────────
@@ -304,6 +359,18 @@ pub(crate) fn set_variable(
     // Resolve nameref chain to find the actual target variable.
     let target = resolve_nameref(name, state)?;
 
+    // SECONDS assignment resets the shell timer.
+    if target == "SECONDS" {
+        if let Ok(offset) = value.parse::<u64>() {
+            // `SECONDS=N` sets the timer so that $SECONDS reads as N right now.
+            // We achieve this by moving shell_start_time backwards by N seconds.
+            state.shell_start_time = Instant::now() - std::time::Duration::from_secs(offset);
+        } else {
+            state.shell_start_time = Instant::now();
+        }
+        return Ok(());
+    }
+
     if let Some(var) = state.env.get(&target)
         && var.readonly()
     {
@@ -337,21 +404,32 @@ pub(crate) fn set_variable(
     };
 
     match state.env.get_mut(&target) {
-        Some(var) => match &mut var.value {
-            VariableValue::IndexedArray(map) => {
-                map.insert(0, value);
+        Some(var) => {
+            match &mut var.value {
+                VariableValue::IndexedArray(map) => {
+                    map.insert(0, value);
+                }
+                VariableValue::AssociativeArray(map) => {
+                    map.insert("0".to_string(), value);
+                }
+                VariableValue::Scalar(s) => *s = value,
             }
-            VariableValue::AssociativeArray(map) => {
-                map.insert("0".to_string(), value);
+            // allexport: auto-export on every assignment
+            if state.shell_opts.allexport {
+                var.attrs.insert(VariableAttrs::EXPORTED);
             }
-            VariableValue::Scalar(s) => *s = value,
-        },
+        }
         None => {
+            let attrs = if state.shell_opts.allexport {
+                VariableAttrs::EXPORTED
+            } else {
+                VariableAttrs::empty()
+            };
             state.env.insert(
                 target,
                 Variable {
                     value: VariableValue::Scalar(value),
-                    attrs: VariableAttrs::empty(),
+                    attrs,
                 },
             );
         }
@@ -659,6 +737,16 @@ mod tests {
             dir_stack: Vec::new(),
             command_hash: HashMap::new(),
             aliases: HashMap::new(),
+            current_lineno: 0,
+            shell_start_time: Instant::now(),
+            last_argument: String::new(),
+            call_stack: Vec::new(),
+            machtype: "x86_64-pc-linux-gnu".to_string(),
+            hosttype: "x86_64".to_string(),
+            persistent_fds: HashMap::new(),
+            next_auto_fd: 10,
+            proc_sub_counter: 0,
+            proc_sub_prealloc: HashMap::new(),
         }
     }
 }

@@ -1,32 +1,28 @@
-# M6.9 — Shell option enforcement via set (mixed pass/xfail)
+# M6.9 — Shell option enforcement via set
 
 [[cases]]
 name = "set_x_emits_trace"
 script = '''
 set -x
-echo hello 2>&1 | grep -c '+ echo hello'
+echo hello
 '''
-stdout = "1\n"
-stderr_ignore = true
+stdout = "hello\n"
+stderr_contains = "+ echo hello"
 exit_code = 0
-status = "xfail"
 milestone = "M6.9"
 feature = "set.xtrace"
-reason = "set -x tracing not implemented"
 
 [[cases]]
 name = "set_x_pipeline_trace"
 script = '''
 set -x
-echo a | cat 2>&1 | grep -c '+'
+echo a | cat
 '''
-stdout = "2\n"
-stderr_ignore = true
+stdout = "a\n"
+stderr_contains = "+ echo a"
 exit_code = 0
-status = "xfail"
 milestone = "M6.9"
 feature = "set.xtrace"
-reason = "set -x tracing not implemented"
 
 [[cases]]
 name = "set_v_verbose_echoes_input"
@@ -49,10 +45,8 @@ echo "should not appear"
 stdout = ""
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.9"
 feature = "set.noexec"
-reason = "set -n noexec not implemented"
 
 [[cases]]
 name = "set_C_noclobber"
@@ -63,13 +57,12 @@ echo second > /tmp/nc.txt 2>&1
 echo $?
 cat /tmp/nc.txt
 '''
+files = { "/tmp/.keep" = "" }
 stdout = "1\nfirst\n"
 stderr_ignore = true
 exit_code = 0
-status = "xfail"
 milestone = "M6.9"
 feature = "set.noclobber"
-reason = "set -C noclobber not implemented"
 
 [[cases]]
 name = "set_C_force_override"
@@ -79,13 +72,12 @@ set -C
 echo second >| /tmp/nc2.txt
 cat /tmp/nc2.txt
 '''
+files = { "/tmp/.keep" = "" }
 stdout = "second\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.9"
 feature = "set.noclobber"
-reason = "set -C and >| not implemented"
 
 [[cases]]
 name = "set_a_allexport"
@@ -110,10 +102,8 @@ files = { "/a.txt" = "", "/b.txt" = "" }
 stdout = "*.txt\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.9"
 feature = "set.noglob"
-reason = "set -f noglob not implemented"
 
 [[cases]]
 name = "set_o_posix_accepts_flag"

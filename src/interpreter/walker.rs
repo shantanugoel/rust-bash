@@ -5,11 +5,12 @@ use crate::error::RustBashError;
 use crate::interpreter::builtins::{self, resolve_path};
 use crate::interpreter::expansion::{expand_word_mut, expand_word_to_string_mut};
 use crate::interpreter::{
-    ExecResult, ExecutionCounters, FunctionDef, InterpreterState, Variable, VariableAttrs,
-    VariableValue, execute_trap, parse, set_array_element, set_variable,
+    CallFrame, ExecResult, ExecutionCounters, FunctionDef, InterpreterState, PersistentFd,
+    Variable, VariableAttrs, VariableValue, execute_trap, parse, set_array_element, set_variable,
 };
 
 use brush_parser::ast;
+use brush_parser::ast::SourceLocation;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -250,6 +251,16 @@ fn execute_command(
     state: &mut InterpreterState,
     stdin: &str,
 ) -> Result<ExecResult, RustBashError> {
+    // Update LINENO from the AST node's source position.
+    if let Some(loc) = command.location() {
+        state.current_lineno = loc.start.line;
+    }
+
+    // noexec: skip all commands except simple commands named "set"
+    if state.shell_opts.noexec && !matches!(command, ast::Command::Simple(_)) {
+        return Ok(ExecResult::default());
+    }
+
     let result = match command {
         ast::Command::Simple(simple_cmd) => execute_simple_command(simple_cmd, state, stdin),
         ast::Command::Compound(compound, redirects) => {
@@ -550,9 +561,21 @@ fn execute_simple_command(
     state: &mut InterpreterState,
     stdin: &str,
 ) -> Result<ExecResult, RustBashError> {
+    // noexec: skip all simple commands except "set"
+    if state.shell_opts.noexec {
+        let is_set = cmd.word_or_name.as_ref().is_some_and(|w| w.value == "set");
+        if !is_set {
+            return Ok(ExecResult::default());
+        }
+    }
+
     // 1. Collect redirections and assignments from prefix
     let mut assignments: Vec<Assignment> = Vec::new();
     let mut redirects: Vec<&ast::IoRedirect> = Vec::new();
+    // Track process substitution temp files for cleanup
+    let mut proc_sub_temps: Vec<String> = Vec::new();
+    // Track deferred write process substitutions: (inner command list, temp path)
+    let mut deferred_write_subs: Vec<(&ast::CompoundList, String)> = Vec::new();
 
     if let Some(prefix) = &cmd.prefix {
         for item in &prefix.0 {
@@ -563,6 +586,15 @@ fn execute_simple_command(
                 }
                 ast::CommandPrefixOrSuffixItem::IoRedirect(redir) => {
                     redirects.push(redir);
+                }
+                ast::CommandPrefixOrSuffixItem::ProcessSubstitution(kind, subshell) => {
+                    let path = expand_process_substitution(
+                        kind,
+                        &subshell.list,
+                        state,
+                        &mut deferred_write_subs,
+                    )?;
+                    proc_sub_temps.push(path);
                 }
                 _ => {}
             }
@@ -609,13 +641,52 @@ fn execute_simple_command(
                     };
                     args.push(format!("{name}={value}"));
                 }
-                _ => {}
+                ast::CommandPrefixOrSuffixItem::ProcessSubstitution(kind, subshell) => {
+                    let path = expand_process_substitution(
+                        kind,
+                        &subshell.list,
+                        state,
+                        &mut deferred_write_subs,
+                    )?;
+                    proc_sub_temps.push(path.clone());
+                    args.push(path);
+                }
             }
         }
     }
 
     // 4. No command name → persist assignments in environment
     let Some(cmd_name) = cmd_name else {
+        // xtrace for bare assignments (e.g. `X=1`)
+        if state.shell_opts.xtrace && !assignments.is_empty() {
+            let ps4 = state
+                .env
+                .get("PS4")
+                .map(|v| v.value.as_scalar().to_string())
+                .unwrap_or_else(|| "+ ".to_string());
+            let trace_parts: Vec<String> = assignments
+                .iter()
+                .map(|a| match a {
+                    Assignment::Scalar { name, value } => format!("{name}={value}"),
+                    Assignment::IndexedArray { name, .. } => format!("{name}=(...)"),
+                    Assignment::ArrayElement {
+                        name, index, value, ..
+                    } => format!("{name}[{index}]={value}"),
+                    Assignment::AppendArray { name, .. } => format!("{name}+=(...)"),
+                    Assignment::AppendScalar { name, value } => format!("{name}+={value}"),
+                })
+                .collect();
+            let trace_line = format!("{}{}\n", ps4, trace_parts.join(" "));
+            // Bare assignments produce no output, but emit xtrace to stderr
+            let result = ExecResult {
+                stderr: trace_line,
+                ..ExecResult::default()
+            };
+            for a in assignments {
+                apply_assignment(a, state)?;
+            }
+            return Ok(result);
+        }
         for a in assignments {
             apply_assignment(a, state)?;
         }
@@ -655,6 +726,15 @@ fn execute_simple_command(
         (cmd_name, args)
     };
 
+    // 4d. Handle `exec` builtin specially — it needs access to redirects.
+    //     Prefix assignments before `exec` are permanent (no subshell).
+    if cmd_name == "exec" {
+        for a in &assignments {
+            apply_assignment(a.clone(), state)?;
+        }
+        return execute_exec_builtin(&args, &redirects, state, stdin);
+    }
+
     // 5. Apply temporary pre-command assignments
     let mut saved: Vec<(String, Option<Variable>)> = Vec::new();
     for a in &assignments {
@@ -662,14 +742,119 @@ fn execute_simple_command(
         apply_assignment(a.clone(), state)?;
     }
 
-    // 6. Handle stdin redirection
-    let effective_stdin = get_stdin_from_redirects(&redirects, state, stdin)?;
+    // 5b–8c are wrapped in an immediately-invoked closure so cleanup (8d) and
+    // assignment restore (9) run on every exit path, including early `?` returns.
+    struct RedirProcSub<'a> {
+        temp_path: String,
+        kind: &'a ast::ProcessSubstitutionKind,
+        list: &'a ast::CompoundList,
+    }
+    let last_arg = args.last().cloned().unwrap_or_else(|| cmd_name.clone());
+    let should_trace = state.shell_opts.xtrace;
 
-    // 7. Dispatch command
-    let mut result = dispatch_command(&cmd_name, &args, state, &effective_stdin)?;
+    let inner_result = (|| -> Result<ExecResult, RustBashError> {
+        // 5b. Pre-allocate ALL redirect process substitution temp files in one pass.
+        //     This ensures allocation order matches redirect-list order, avoiding
+        //     counter mismatch when Read and Write proc-subs are mixed in the same
+        //     redirect list (stdin Reads are processed before output Writes).
+        let mut redir_proc_subs: Vec<RedirProcSub<'_>> = Vec::new();
+        for redir in &redirects {
+            if let ast::IoRedirect::File(
+                _,
+                _,
+                target @ ast::IoFileRedirectTarget::ProcessSubstitution(kind, subshell),
+            ) = redir
+            {
+                let temp_path = match kind {
+                    ast::ProcessSubstitutionKind::Read => {
+                        execute_read_process_substitution(&subshell.list, state)?
+                    }
+                    ast::ProcessSubstitutionKind::Write => allocate_proc_sub_temp_file(state, b"")?,
+                };
+                proc_sub_temps.push(temp_path.clone());
+                // Key by AST-node address so redirect_target_filename resolves the
+                // correct path regardless of the order redirects are visited.
+                let key = std::ptr::from_ref(target) as usize;
+                state.proc_sub_prealloc.insert(key, temp_path.clone());
+                redir_proc_subs.push(RedirProcSub {
+                    temp_path,
+                    kind,
+                    list: &subshell.list,
+                });
+            }
+        }
 
-    // 8. Apply output redirections
-    apply_output_redirects(&redirects, &mut result, state)?;
+        // 6. Handle stdin redirection
+        let effective_stdin = get_stdin_from_redirects(&redirects, state, stdin)?;
+
+        // Track last argument for $_ (last argument of the simple command).
+        state.last_argument = last_arg.clone();
+
+        // 7a. Capture xtrace state before dispatch (so `set +x` is still traced)
+        //     (captured outside closure as `should_trace`)
+
+        // 7. Dispatch command
+        let mut result = dispatch_command(&cmd_name, &args, state, &effective_stdin)?;
+
+        // 7b. Emit xtrace to stderr
+        if should_trace {
+            let ps4 = state
+                .env
+                .get("PS4")
+                .map(|v| v.value.as_scalar().to_string())
+                .unwrap_or_else(|| "+ ".to_string());
+            let mut trace_words = vec![cmd_name.clone()];
+            trace_words.extend(args.iter().cloned());
+            let trace_line = format!("{}{}\n", ps4, trace_words.join(" "));
+            // Prepend trace so it appears before the command's own stderr
+            result.stderr = format!("{trace_line}{}", result.stderr);
+        }
+
+        // 8. Apply output redirections
+        apply_output_redirects(&redirects, &mut result, state)?;
+
+        // 8b. Execute deferred write process substitutions from redirects.
+        for rps in &redir_proc_subs {
+            if matches!(rps.kind, ast::ProcessSubstitutionKind::Write) {
+                let content = state
+                    .fs
+                    .read_file(Path::new(&rps.temp_path))
+                    .map_err(|e| RustBashError::Execution(e.to_string()))?;
+                let stdin_data = String::from_utf8_lossy(&content).to_string();
+                let mut sub_state = make_proc_sub_state(state);
+                let inner_result = execute_compound_list(rps.list, &mut sub_state, &stdin_data)?;
+                state.counters.command_count = sub_state.counters.command_count;
+                state.counters.output_size = sub_state.counters.output_size;
+                state.proc_sub_counter = sub_state.proc_sub_counter;
+                result.stdout.push_str(&inner_result.stdout);
+                result.stderr.push_str(&inner_result.stderr);
+            }
+        }
+
+        // 8c. Execute deferred write process substitutions from prefix/suffix args
+        for (inner_list, temp_path) in &deferred_write_subs {
+            let content = state
+                .fs
+                .read_file(Path::new(temp_path))
+                .map_err(|e| RustBashError::Execution(e.to_string()))?;
+            let stdin_data = String::from_utf8_lossy(&content).to_string();
+            let mut sub_state = make_proc_sub_state(state);
+            let inner_result = execute_compound_list(inner_list, &mut sub_state, &stdin_data)?;
+            state.counters.command_count = sub_state.counters.command_count;
+            state.counters.output_size = sub_state.counters.output_size;
+            state.proc_sub_counter = sub_state.proc_sub_counter;
+            result.stdout.push_str(&inner_result.stdout);
+            result.stderr.push_str(&inner_result.stderr);
+        }
+
+        Ok(result)
+    })();
+
+    // 8d. Always clean up process substitution temp files (even on error)
+    for temp_path in &proc_sub_temps {
+        let _ = state.fs.remove_file(Path::new(temp_path));
+    }
+    state.proc_sub_prealloc.clear();
 
     // 9. Restore pre-command assignments
     for (name, old_value) in saved {
@@ -683,7 +868,7 @@ fn execute_simple_command(
         }
     }
 
-    Ok(result)
+    inner_result
 }
 
 // ── Compound commands ───────────────────────────────────────────────
@@ -1041,6 +1226,16 @@ fn execute_subshell(
         dir_stack: state.dir_stack.clone(),
         command_hash: state.command_hash.clone(),
         aliases: state.aliases.clone(),
+        current_lineno: state.current_lineno,
+        shell_start_time: state.shell_start_time,
+        last_argument: state.last_argument.clone(),
+        call_stack: state.call_stack.clone(),
+        machtype: state.machtype.clone(),
+        hosttype: state.hosttype.clone(),
+        persistent_fds: state.persistent_fds.clone(),
+        next_auto_fd: state.next_auto_fd,
+        proc_sub_counter: state.proc_sub_counter,
+        proc_sub_prealloc: HashMap::new(),
     };
 
     let result = execute_compound_list(list, &mut sub_state, stdin);
@@ -1154,6 +1349,11 @@ fn make_exec_callback(
     let shell_name = state.shell_name.clone();
     let random_seed = state.random_seed;
     let start_time = state.counters.start_time;
+    let shell_start_time = state.shell_start_time;
+    let last_argument = state.last_argument.clone();
+    let call_stack = state.call_stack.clone();
+    let machtype = state.machtype.clone();
+    let hosttype = state.hosttype.clone();
 
     move |cmd_str: &str| {
         let program = parse(cmd_str)?;
@@ -1193,6 +1393,16 @@ fn make_exec_callback(
             dir_stack: Vec::new(),
             command_hash: HashMap::new(),
             aliases: HashMap::new(),
+            current_lineno: 0,
+            shell_start_time,
+            last_argument: last_argument.clone(),
+            call_stack: call_stack.clone(),
+            machtype: machtype.clone(),
+            hosttype: hosttype.clone(),
+            persistent_fds: HashMap::new(),
+            next_auto_fd: 10,
+            proc_sub_counter: 0,
+            proc_sub_prealloc: HashMap::new(),
         };
 
         let result = execute_program(&program, &mut sub_state)?;
@@ -1231,6 +1441,14 @@ fn execute_function_call(
     // Save and replace positional parameters
     let saved_params = std::mem::replace(&mut state.positional_params, args.to_vec());
 
+    // Push call stack frame for FUNCNAME/BASH_SOURCE/BASH_LINENO.
+    // BASH_LINENO records the line where the call was made (current LINENO).
+    state.call_stack.push(CallFrame {
+        func_name: name.to_string(),
+        source: String::new(),
+        lineno: state.current_lineno,
+    });
+
     // Push a new local scope for this function call
     state.local_scopes.push(HashMap::new());
     state.in_function_depth += 1;
@@ -1248,6 +1466,9 @@ fn execute_function_call(
         }
         None => result.as_ref().map(|r| r.exit_code).unwrap_or(1),
     };
+
+    // Pop the call stack frame.
+    state.call_stack.pop();
 
     // Restore local variables
     state.in_function_depth -= 1;
@@ -1344,7 +1565,311 @@ fn dispatch_command(
     })
 }
 
-// ── Redirections ────────────────────────────────────────────────────
+// ── exec builtin ────────────────────────────────────────────────────
+
+/// Extract a `{varname}` FD allocation prefix from command args.
+/// Returns `Some(varname)` if the first arg matches `{identifier}`.
+fn extract_fd_varname(arg: &str) -> Option<&str> {
+    let trimmed = arg.strip_prefix('{')?.strip_suffix('}')?;
+    if !trimmed.is_empty()
+        && trimmed
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        Some(trimmed)
+    } else {
+        None
+    }
+}
+
+/// Handle the `exec` builtin which has three modes:
+/// 1. `exec` with only redirects → persistent FD redirections
+/// 2. `exec {varname}>file` → FD variable allocation (persistent)
+/// 3. `exec cmd args` → replace shell with command
+fn execute_exec_builtin(
+    args: &[String],
+    redirects: &[&ast::IoRedirect],
+    state: &mut InterpreterState,
+    stdin: &str,
+) -> Result<ExecResult, RustBashError> {
+    // Check for {varname} FD allocation syntax: first arg is {name}, rest is empty
+    if let Some(first_arg) = args.first()
+        && let Some(varname) = extract_fd_varname(first_arg)
+    {
+        return exec_fd_variable_alloc(varname, args.get(1..), redirects, state);
+    }
+
+    // No real args → persistent FD redirections
+    if args.is_empty() {
+        return exec_persistent_redirects(redirects, state);
+    }
+
+    // Has command args → execute and exit
+    let effective_stdin = get_stdin_from_redirects(redirects, state, stdin)?;
+    let mut result = dispatch_command(&args[0], &args[1..], state, &effective_stdin)?;
+    apply_output_redirects(redirects, &mut result, state)?;
+    state.last_exit_code = result.exit_code;
+    state.should_exit = true;
+    Ok(result)
+}
+
+/// Apply persistent FD redirections from `exec > file`, `exec 3< file`, etc.
+fn exec_persistent_redirects(
+    redirects: &[&ast::IoRedirect],
+    state: &mut InterpreterState,
+) -> Result<ExecResult, RustBashError> {
+    for redir in redirects {
+        match redir {
+            ast::IoRedirect::File(fd, kind, target) => {
+                let filename = redirect_target_filename(target, state)?;
+                let path = resolve_path(&state.cwd, &filename);
+                match kind {
+                    ast::IoFileRedirectKind::Write | ast::IoFileRedirectKind::Clobber => {
+                        let fd_num = fd.unwrap_or(1);
+                        if is_dev_null(&path) {
+                            state.persistent_fds.insert(fd_num, PersistentFd::DevNull);
+                        } else if is_dev_stdout(&path) {
+                            // exec > /dev/stdout restores normal stdout
+                            state.persistent_fds.remove(&fd_num);
+                        } else if is_dev_stderr(&path) {
+                            // exec > /dev/stderr is unusual but valid
+                            state.persistent_fds.remove(&fd_num);
+                        } else {
+                            // Create/truncate the file
+                            state
+                                .fs
+                                .write_file(Path::new(&path), b"")
+                                .map_err(|e| RustBashError::Execution(e.to_string()))?;
+                            state
+                                .persistent_fds
+                                .insert(fd_num, PersistentFd::OutputFile(path));
+                        }
+                    }
+                    ast::IoFileRedirectKind::Append => {
+                        let fd_num = fd.unwrap_or(1);
+                        if is_dev_null(&path) {
+                            state.persistent_fds.insert(fd_num, PersistentFd::DevNull);
+                        } else if is_dev_stdout(&path) || is_dev_stderr(&path) {
+                            state.persistent_fds.remove(&fd_num);
+                        } else {
+                            state
+                                .persistent_fds
+                                .insert(fd_num, PersistentFd::OutputFile(path));
+                        }
+                    }
+                    ast::IoFileRedirectKind::Read => {
+                        let fd_num = fd.unwrap_or(0);
+                        if is_dev_null(&path) {
+                            state.persistent_fds.insert(fd_num, PersistentFd::DevNull);
+                        } else {
+                            state
+                                .persistent_fds
+                                .insert(fd_num, PersistentFd::InputFile(path));
+                        }
+                    }
+                    ast::IoFileRedirectKind::ReadAndWrite => {
+                        let fd_num = fd.unwrap_or(0);
+                        if !state.fs.exists(Path::new(&path)) {
+                            state
+                                .fs
+                                .write_file(Path::new(&path), b"")
+                                .map_err(|e| RustBashError::Execution(e.to_string()))?;
+                        }
+                        state
+                            .persistent_fds
+                            .insert(fd_num, PersistentFd::ReadWriteFile(path));
+                    }
+                    ast::IoFileRedirectKind::DuplicateOutput => {
+                        let fd_num = fd.unwrap_or(1);
+                        let dup_target = redirect_target_filename(target, state)?;
+                        // Handle close: >&-
+                        if dup_target == "-" {
+                            state.persistent_fds.insert(fd_num, PersistentFd::Closed);
+                        } else if let Some(stripped) = dup_target.strip_suffix('-') {
+                            // FD move: N>&M-
+                            if let Ok(source_fd) = stripped.parse::<i32>() {
+                                if let Some(entry) = state.persistent_fds.get(&source_fd).cloned() {
+                                    state.persistent_fds.insert(fd_num, entry);
+                                }
+                                state.persistent_fds.insert(source_fd, PersistentFd::Closed);
+                            }
+                        } else if let Ok(target_fd) = dup_target.parse::<i32>() {
+                            // Dup: N>&M — copy M's destination to N
+                            if let Some(entry) = state.persistent_fds.get(&target_fd).cloned() {
+                                state.persistent_fds.insert(fd_num, entry);
+                            } else {
+                                // Target is a standard FD without persistent redirect — clear
+                                state.persistent_fds.remove(&fd_num);
+                            }
+                        }
+                    }
+                    ast::IoFileRedirectKind::DuplicateInput => {
+                        let fd_num = fd.unwrap_or(0);
+                        let dup_target = redirect_target_filename(target, state)?;
+                        if dup_target == "-" {
+                            state.persistent_fds.insert(fd_num, PersistentFd::Closed);
+                        }
+                    }
+                }
+            }
+            ast::IoRedirect::OutputAndError(word, _append) => {
+                let filename = expand_word_to_string_mut(word, state)?;
+                let path = resolve_path(&state.cwd, &filename);
+                if is_dev_null(&path) {
+                    state.persistent_fds.insert(1, PersistentFd::DevNull);
+                    state.persistent_fds.insert(2, PersistentFd::DevNull);
+                } else {
+                    let pfd = PersistentFd::OutputFile(path);
+                    state.persistent_fds.insert(1, pfd.clone());
+                    state.persistent_fds.insert(2, pfd);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(ExecResult::default())
+}
+
+/// Handle `exec {varname}>file` — allocate an FD number and store in variable.
+fn exec_fd_variable_alloc(
+    varname: &str,
+    extra_args: Option<&[String]>,
+    redirects: &[&ast::IoRedirect],
+    state: &mut InterpreterState,
+) -> Result<ExecResult, RustBashError> {
+    // Check for close syntax: `exec {fd}>&-`
+    let is_close = redirects.iter().any(|r| {
+        matches!(
+            r,
+            ast::IoRedirect::File(_, ast::IoFileRedirectKind::DuplicateOutput, ast::IoFileRedirectTarget::Duplicate(w)) if w.value == "-"
+        )
+    });
+
+    if is_close {
+        // Close the FD stored in the variable
+        if let Some(var) = state.env.get(varname)
+            && let Ok(fd_num) = var.value.as_scalar().parse::<i32>()
+        {
+            state.persistent_fds.insert(fd_num, PersistentFd::Closed);
+        }
+        return Ok(ExecResult::default());
+    }
+
+    // Check for extra args after {varname} — not supported, but handle gracefully
+    if extra_args.is_some_and(|a| !a.is_empty()) {
+        return Ok(ExecResult {
+            stderr: "rust-bash: exec: too many arguments\n".to_string(),
+            exit_code: 1,
+            ..Default::default()
+        });
+    }
+
+    // Allocate a new FD number
+    let fd_num = state.next_auto_fd;
+    state.next_auto_fd += 1;
+
+    // Store the allocated FD number in the named variable
+    set_variable(state, varname, fd_num.to_string())?;
+
+    // Apply the redirect to the allocated FD
+    for redir in redirects {
+        if let ast::IoRedirect::File(_fd, kind, target) = redir {
+            let filename = redirect_target_filename(target, state)?;
+            let path = resolve_path(&state.cwd, &filename);
+            match kind {
+                ast::IoFileRedirectKind::Write | ast::IoFileRedirectKind::Clobber => {
+                    if is_dev_null(&path) {
+                        state.persistent_fds.insert(fd_num, PersistentFd::DevNull);
+                    } else if is_dev_stdout(&path) || is_dev_stderr(&path) {
+                        state.persistent_fds.remove(&fd_num);
+                    } else {
+                        state
+                            .fs
+                            .write_file(Path::new(&path), b"")
+                            .map_err(|e| RustBashError::Execution(e.to_string()))?;
+                        state
+                            .persistent_fds
+                            .insert(fd_num, PersistentFd::OutputFile(path));
+                    }
+                }
+                ast::IoFileRedirectKind::Append => {
+                    if is_dev_null(&path) {
+                        state.persistent_fds.insert(fd_num, PersistentFd::DevNull);
+                    } else if is_dev_stdout(&path) || is_dev_stderr(&path) {
+                        state.persistent_fds.remove(&fd_num);
+                    } else {
+                        state
+                            .persistent_fds
+                            .insert(fd_num, PersistentFd::OutputFile(path));
+                    }
+                }
+                ast::IoFileRedirectKind::Read => {
+                    if is_dev_null(&path) {
+                        state.persistent_fds.insert(fd_num, PersistentFd::DevNull);
+                    } else {
+                        state
+                            .persistent_fds
+                            .insert(fd_num, PersistentFd::InputFile(path));
+                    }
+                }
+                ast::IoFileRedirectKind::ReadAndWrite => {
+                    if is_dev_null(&path) {
+                        state.persistent_fds.insert(fd_num, PersistentFd::DevNull);
+                    } else {
+                        if !state.fs.exists(Path::new(&path)) {
+                            state
+                                .fs
+                                .write_file(Path::new(&path), b"")
+                                .map_err(|e| RustBashError::Execution(e.to_string()))?;
+                        }
+                        state
+                            .persistent_fds
+                            .insert(fd_num, PersistentFd::ReadWriteFile(path));
+                    }
+                }
+                _ => {}
+            }
+            break; // Only process the first file redirect
+        }
+    }
+
+    Ok(ExecResult::default())
+}
+
+// ── Special device paths ────────────────────────────────────────────
+
+fn is_dev_stdout(path: &str) -> bool {
+    path == "/dev/stdout"
+}
+
+fn is_dev_stderr(path: &str) -> bool {
+    path == "/dev/stderr"
+}
+
+fn is_dev_stdin(path: &str) -> bool {
+    path == "/dev/stdin"
+}
+
+fn is_dev_zero(path: &str) -> bool {
+    path == "/dev/zero"
+}
+
+fn is_dev_full(path: &str) -> bool {
+    path == "/dev/full"
+}
+
+fn is_special_dev_path(path: &str) -> bool {
+    is_dev_null(path)
+        || is_dev_stdout(path)
+        || is_dev_stderr(path)
+        || is_dev_stdin(path)
+        || is_dev_zero(path)
+        || is_dev_full(path)
+}
 
 fn get_stdin_from_redirects(
     redirects: &[&ast::IoRedirect],
@@ -1356,15 +1881,45 @@ fn get_stdin_from_redirects(
             ast::IoRedirect::File(fd, kind, target) => {
                 let fd_num = fd.unwrap_or(0);
                 if fd_num == 0
-                    && let ast::IoFileRedirectKind::Read = kind
+                    && matches!(
+                        kind,
+                        ast::IoFileRedirectKind::Read | ast::IoFileRedirectKind::ReadAndWrite
+                    )
                 {
                     let filename = redirect_target_filename(target, state)?;
                     let path = resolve_path(&state.cwd, &filename);
+                    if is_dev_stdin(&path) {
+                        return Ok(default_stdin.to_string());
+                    }
+                    if is_dev_null(&path) || is_dev_zero(&path) || is_dev_full(&path) {
+                        return Ok(String::new());
+                    }
                     let content = state
                         .fs
                         .read_file(Path::new(&path))
                         .map_err(|e| RustBashError::Execution(e.to_string()))?;
                     return Ok(String::from_utf8_lossy(&content).to_string());
+                }
+                // Handle <&N (DuplicateInput) for reading from persistent FDs
+                if fd_num == 0 && matches!(kind, ast::IoFileRedirectKind::DuplicateInput) {
+                    let dup_target = redirect_target_filename(target, state)?;
+                    if let Ok(source_fd) = dup_target.parse::<i32>()
+                        && let Some(pfd) = state.persistent_fds.get(&source_fd)
+                    {
+                        match pfd {
+                            PersistentFd::InputFile(path) | PersistentFd::ReadWriteFile(path) => {
+                                let content = state
+                                    .fs
+                                    .read_file(Path::new(path))
+                                    .map_err(|e| RustBashError::Execution(e.to_string()))?;
+                                return Ok(String::from_utf8_lossy(&content).to_string());
+                            }
+                            PersistentFd::DevNull | PersistentFd::Closed => {
+                                return Ok(String::new());
+                            }
+                            PersistentFd::OutputFile(_) => {}
+                        }
+                    }
                 }
             }
             ast::IoRedirect::HereString(fd, word) => {
@@ -1418,14 +1973,48 @@ fn apply_output_redirects(
     result: &mut ExecResult,
     state: &mut InterpreterState,
 ) -> Result<(), RustBashError> {
+    // Track which FDs have explicit per-command redirects
+    let mut redirected_fds = std::collections::HashSet::new();
+    // Redirect errors (e.g. /dev/full) bypass the redirect chain — they go to
+    // the shell's own stderr, not to the command's possibly-redirected stderr.
+    let mut deferred_errors: Vec<String> = Vec::new();
+
     for redir in redirects {
         match redir {
             ast::IoRedirect::File(fd, kind, target) => {
-                apply_file_redirect(*fd, kind, target, result, state)?;
+                let fd_num = match kind {
+                    ast::IoFileRedirectKind::Read
+                    | ast::IoFileRedirectKind::ReadAndWrite
+                    | ast::IoFileRedirectKind::DuplicateInput => fd.unwrap_or(0),
+                    _ => fd.unwrap_or(1),
+                };
+                redirected_fds.insert(fd_num);
+                let cont =
+                    apply_file_redirect(*fd, kind, target, result, state, &mut deferred_errors)?;
+                if !cont {
+                    break;
+                }
             }
             ast::IoRedirect::OutputAndError(word, append) => {
+                redirected_fds.insert(1);
+                redirected_fds.insert(2);
                 let filename = expand_word_to_string_mut(word, state)?;
                 let path = resolve_path(&state.cwd, &filename);
+
+                // noclobber: block &> on existing file (append &>> is fine)
+                if state.shell_opts.noclobber
+                    && !*append
+                    && !is_dev_null(&path)
+                    && state.fs.exists(Path::new(&path))
+                {
+                    result.stderr.push_str(&format!(
+                        "rust-bash: {filename}: cannot overwrite existing file\n"
+                    ));
+                    result.stdout.clear();
+                    result.exit_code = 1;
+                    break;
+                }
+
                 let combined = format!("{}{}", result.stdout, result.stderr);
 
                 if is_dev_null(&path) {
@@ -1444,103 +2033,318 @@ fn apply_output_redirects(
             _ => {} // HereString/HereDocument handled in stdin
         }
     }
+
+    // Apply persistent FD redirections for FDs that don't have per-command redirects
+    apply_persistent_fd_fallback(result, state, &redirected_fds)?;
+
+    // Append deferred redirect errors to stderr — these bypass the redirect
+    // chain, mirroring how bash reports redirect failures on the shell's own
+    // stderr (saved before redirect setup).
+    for err in deferred_errors {
+        result.stderr.push_str(&err);
+    }
+
     Ok(())
 }
 
+/// Apply persistent FD redirections as fallback for FDs without per-command redirects.
+fn apply_persistent_fd_fallback(
+    result: &mut ExecResult,
+    state: &InterpreterState,
+    redirected_fds: &std::collections::HashSet<i32>,
+) -> Result<(), RustBashError> {
+    // Check persistent FD for stdout (FD 1)
+    if !redirected_fds.contains(&1)
+        && let Some(pfd) = state.persistent_fds.get(&1)
+    {
+        match pfd {
+            PersistentFd::OutputFile(path) => {
+                if !result.stdout.is_empty() {
+                    write_or_append(state, path, &result.stdout, true)?;
+                    result.stdout.clear();
+                }
+            }
+            PersistentFd::DevNull | PersistentFd::Closed => {
+                result.stdout.clear();
+            }
+            _ => {}
+        }
+    }
+
+    // Check persistent FD for stderr (FD 2)
+    if !redirected_fds.contains(&2)
+        && let Some(pfd) = state.persistent_fds.get(&2)
+    {
+        match pfd {
+            PersistentFd::OutputFile(path) => {
+                if !result.stderr.is_empty() {
+                    write_or_append(state, path, &result.stderr, true)?;
+                    result.stderr.clear();
+                }
+            }
+            PersistentFd::DevNull | PersistentFd::Closed => {
+                result.stderr.clear();
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+/// Apply a single file redirect. Returns `Ok(true)` to continue processing
+/// more redirects, or `Ok(false)` to stop (e.g., noclobber failure).
 fn apply_file_redirect(
     fd: Option<i32>,
     kind: &ast::IoFileRedirectKind,
     target: &ast::IoFileRedirectTarget,
     result: &mut ExecResult,
     state: &mut InterpreterState,
-) -> Result<(), RustBashError> {
+    deferred_errors: &mut Vec<String>,
+) -> Result<bool, RustBashError> {
     match kind {
         ast::IoFileRedirectKind::Write | ast::IoFileRedirectKind::Clobber => {
             let fd_num = fd.unwrap_or(1);
             let filename = redirect_target_filename(target, state)?;
             let path = resolve_path(&state.cwd, &filename);
 
-            if is_dev_null(&path) {
+            // noclobber: `>` on existing file is an error; `>|` (Clobber) bypasses
+            if state.shell_opts.noclobber
+                && matches!(kind, ast::IoFileRedirectKind::Write)
+                && !is_dev_null(&path)
+                && !is_special_dev_path(&path)
+                && state.fs.exists(Path::new(&path))
+            {
+                result.stderr.push_str(&format!(
+                    "rust-bash: {filename}: cannot overwrite existing file\n"
+                ));
                 if fd_num == 1 {
                     result.stdout.clear();
-                } else if fd_num == 2 {
-                    result.stderr.clear();
                 }
-            } else {
-                let content = if fd_num == 1 {
-                    result.stdout.clone()
-                } else if fd_num == 2 {
-                    result.stderr.clone()
-                } else {
-                    return Ok(());
-                };
-                write_or_append(state, &path, &content, false)?;
-                if fd_num == 1 {
-                    result.stdout.clear();
-                } else if fd_num == 2 {
-                    result.stderr.clear();
-                }
+                result.exit_code = 1;
+                return Ok(false);
             }
+
+            apply_write_redirect(fd_num, &path, result, state, false, deferred_errors)?;
         }
         ast::IoFileRedirectKind::Append => {
             let fd_num = fd.unwrap_or(1);
             let filename = redirect_target_filename(target, state)?;
             let path = resolve_path(&state.cwd, &filename);
-
-            if is_dev_null(&path) {
-                if fd_num == 1 {
-                    result.stdout.clear();
-                } else if fd_num == 2 {
-                    result.stderr.clear();
-                }
-            } else {
-                let content = if fd_num == 1 {
-                    result.stdout.clone()
-                } else if fd_num == 2 {
-                    result.stderr.clone()
-                } else {
-                    return Ok(());
-                };
-                write_or_append(state, &path, &content, true)?;
-                if fd_num == 1 {
-                    result.stdout.clear();
-                } else if fd_num == 2 {
-                    result.stderr.clear();
-                }
-            }
+            apply_write_redirect(fd_num, &path, result, state, true, deferred_errors)?;
         }
         ast::IoFileRedirectKind::DuplicateOutput => {
             let fd_num = fd.unwrap_or(1);
-            // Handle >&1, >&2, 2>&1, etc.
-            if let ast::IoFileRedirectTarget::Duplicate(word) = target {
-                let dup_target = expand_word_to_string_mut(word, state)?;
-                if dup_target == "1" && fd_num == 2 {
-                    // 2>&1: merge stderr into stdout
-                    result.stdout.push_str(&result.stderr);
-                    result.stderr.clear();
-                } else if dup_target == "2" && fd_num == 1 {
-                    // 1>&2: merge stdout into stderr
-                    result.stderr.push_str(&result.stdout);
-                    result.stdout.clear();
-                }
-            } else if let ast::IoFileRedirectTarget::Fd(target_fd) = target {
-                if *target_fd == 1 && fd_num == 2 {
-                    result.stdout.push_str(&result.stderr);
-                    result.stderr.clear();
-                } else if *target_fd == 2 && fd_num == 1 {
-                    result.stderr.push_str(&result.stdout);
-                    result.stdout.clear();
-                }
-            }
+            apply_duplicate_output(fd_num, target, result, state)?;
+        }
+        ast::IoFileRedirectKind::DuplicateInput => {
+            // <&N — handled in get_stdin_from_redirects for FD 0
         }
         ast::IoFileRedirectKind::Read => {
             // Handled in get_stdin_from_redirects
         }
-        ast::IoFileRedirectKind::ReadAndWrite | ast::IoFileRedirectKind::DuplicateInput => {
-            // Not commonly used; skip for now
+        ast::IoFileRedirectKind::ReadAndWrite => {
+            let fd_num = fd.unwrap_or(0);
+            let filename = redirect_target_filename(target, state)?;
+            let path = resolve_path(&state.cwd, &filename);
+            if !state.fs.exists(Path::new(&path)) {
+                state
+                    .fs
+                    .write_file(Path::new(&path), b"")
+                    .map_err(|e| RustBashError::Execution(e.to_string()))?;
+            }
+            // For FD 0, input is handled in get_stdin_from_redirects.
+            // For output FDs, write content to the file.
+            if fd_num == 1 {
+                write_or_append(state, &path, &result.stdout, false)?;
+                result.stdout.clear();
+            } else if fd_num == 2 {
+                write_or_append(state, &path, &result.stderr, false)?;
+                result.stderr.clear();
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Apply a write/append redirect for a given FD to a path, handling special devices.
+fn apply_write_redirect(
+    fd_num: i32,
+    path: &str,
+    result: &mut ExecResult,
+    state: &InterpreterState,
+    append: bool,
+    deferred_errors: &mut Vec<String>,
+) -> Result<(), RustBashError> {
+    if is_dev_null(path) || is_dev_zero(path) {
+        if fd_num == 1 {
+            result.stdout.clear();
+        } else if fd_num == 2 {
+            result.stderr.clear();
+        }
+    } else if is_dev_stdout(path) {
+        // > /dev/stdout → output stays on stdout (no-op for fd 1)
+        if fd_num == 2 {
+            result.stdout.push_str(&result.stderr);
+            result.stderr.clear();
+        }
+    } else if is_dev_stderr(path) {
+        // > /dev/stderr → output goes to stderr
+        if fd_num == 1 {
+            result.stderr.push_str(&result.stdout);
+            result.stdout.clear();
+        }
+    } else if is_dev_full(path) {
+        // Writing to /dev/full always fails with ENOSPC.
+        // The error goes to the shell's own stderr (deferred), mirroring how
+        // bash reports redirect failures on the pre-redirect stderr.
+        deferred_errors
+            .push("rust-bash: write error: /dev/full: No space left on device\n".to_string());
+        if fd_num == 1 {
+            result.stdout.clear();
+        } else if fd_num == 2 {
+            result.stderr.clear();
+        }
+        result.exit_code = 1;
+    } else {
+        let content = if fd_num == 1 {
+            result.stdout.clone()
+        } else if fd_num == 2 {
+            result.stderr.clone()
+        } else {
+            return write_to_persistent_fd(fd_num, result, state);
+        };
+        write_or_append(state, path, &content, append)?;
+        if fd_num == 1 {
+            result.stdout.clear();
+        } else if fd_num == 2 {
+            result.stderr.clear();
         }
     }
     Ok(())
+}
+
+/// Write to a persistent FD's target file (for higher-numbered FDs like >&10).
+fn write_to_persistent_fd(
+    _fd_num: i32,
+    _result: &mut ExecResult,
+    _state: &InterpreterState,
+) -> Result<(), RustBashError> {
+    // Higher FDs with no persistent mapping are silently ignored
+    Ok(())
+}
+
+/// Handle DuplicateOutput redirect (>&N, 2>&1, N>&M-, etc.)
+fn apply_duplicate_output(
+    fd_num: i32,
+    target: &ast::IoFileRedirectTarget,
+    result: &mut ExecResult,
+    state: &mut InterpreterState,
+) -> Result<(), RustBashError> {
+    let dup_target_str = match target {
+        ast::IoFileRedirectTarget::Duplicate(word) => expand_word_to_string_mut(word, state)?,
+        ast::IoFileRedirectTarget::Fd(target_fd) => target_fd.to_string(),
+        _ => return Ok(()),
+    };
+
+    // Handle close: >&-
+    if dup_target_str == "-" {
+        if fd_num == 1 {
+            result.stdout.clear();
+        } else if fd_num == 2 {
+            result.stderr.clear();
+        }
+        return Ok(());
+    }
+
+    // Handle FD move: N>&M-
+    if let Some(source_str) = dup_target_str.strip_suffix('-') {
+        if let Ok(source_fd) = source_str.parse::<i32>() {
+            // Duplicate: copy source to dest
+            apply_dup_fd(fd_num, source_fd, result, state)?;
+            // Close source
+            if source_fd == 1 {
+                result.stdout.clear();
+            } else if source_fd == 2 {
+                result.stderr.clear();
+            } else {
+                state.persistent_fds.insert(source_fd, PersistentFd::Closed);
+            }
+        }
+        return Ok(());
+    }
+
+    // Standard duplication: N>&M
+    if let Ok(target_fd) = dup_target_str.parse::<i32>() {
+        apply_dup_fd(fd_num, target_fd, result, state)?;
+    }
+    Ok(())
+}
+
+/// Duplicate target_fd to fd_num in the result streams.
+fn apply_dup_fd(
+    fd_num: i32,
+    target_fd: i32,
+    result: &mut ExecResult,
+    state: &InterpreterState,
+) -> Result<(), RustBashError> {
+    // Standard FD duplication
+    if target_fd == 1 && fd_num == 2 {
+        // 2>&1: merge stderr into stdout
+        result.stdout.push_str(&result.stderr);
+        result.stderr.clear();
+    } else if target_fd == 2 && fd_num == 1 {
+        // 1>&2: merge stdout into stderr
+        result.stderr.push_str(&result.stdout);
+        result.stdout.clear();
+    } else if fd_num == 1 || fd_num == 2 {
+        // Redirect stdout/stderr to a persistent FD target
+        if let Some(pfd) = state.persistent_fds.get(&target_fd) {
+            match pfd {
+                PersistentFd::OutputFile(path) => {
+                    let content = if fd_num == 1 {
+                        let c = result.stdout.clone();
+                        result.stdout.clear();
+                        c
+                    } else {
+                        let c = result.stderr.clone();
+                        result.stderr.clear();
+                        c
+                    };
+                    write_or_append(state, path, &content, true)?;
+                }
+                PersistentFd::DevNull | PersistentFd::Closed => {
+                    if fd_num == 1 {
+                        result.stdout.clear();
+                    } else {
+                        result.stderr.clear();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Handle a process substitution in a command prefix or suffix.
+/// For `<(cmd)`: execute inner command and write stdout to a temp file.
+/// For `>(cmd)`: create empty temp file and record inner command for deferred execution.
+/// Returns the temp file path to use as a command argument.
+fn expand_process_substitution<'a>(
+    kind: &ast::ProcessSubstitutionKind,
+    list: &'a ast::CompoundList,
+    state: &mut InterpreterState,
+    deferred_write_subs: &mut Vec<(&'a ast::CompoundList, String)>,
+) -> Result<String, RustBashError> {
+    match kind {
+        ast::ProcessSubstitutionKind::Read => execute_read_process_substitution(list, state),
+        ast::ProcessSubstitutionKind::Write => {
+            let path = allocate_proc_sub_temp_file(state, b"")?;
+            deferred_write_subs.push((list, path.clone()));
+            Ok(path)
+        }
+    }
 }
 
 fn redirect_target_filename(
@@ -1551,9 +2355,109 @@ fn redirect_target_filename(
         ast::IoFileRedirectTarget::Filename(word) => expand_word_to_string_mut(word, state),
         ast::IoFileRedirectTarget::Fd(fd) => Ok(fd.to_string()),
         ast::IoFileRedirectTarget::Duplicate(word) => expand_word_to_string_mut(word, state),
-        ast::IoFileRedirectTarget::ProcessSubstitution(_, _) => Err(RustBashError::Execution(
-            "process substitution not yet implemented".into(),
-        )),
+        // Only valid when called from within execute_simple_command's closure,
+        // where proc_sub_prealloc has been populated in step 5b.
+        ast::IoFileRedirectTarget::ProcessSubstitution(_, _) => {
+            // Look up pre-allocated path by AST-node address (populated in execute_simple_command).
+            let key = std::ptr::from_ref(target) as usize;
+            state.proc_sub_prealloc.remove(&key).ok_or_else(|| {
+                RustBashError::Execution(
+                    "process substitution: no pre-allocated path available".into(),
+                )
+            })
+        }
+    }
+}
+
+/// Execute a `<(cmd)` process substitution: run the inner command, capture stdout,
+/// write to a temp VFS file, and return the temp file path.
+fn execute_read_process_substitution(
+    list: &ast::CompoundList,
+    state: &mut InterpreterState,
+) -> Result<String, RustBashError> {
+    let mut sub_state = make_proc_sub_state(state);
+    let result = execute_compound_list(list, &mut sub_state, "")?;
+
+    // Fold shared counters back
+    state.counters.command_count = sub_state.counters.command_count;
+    state.counters.output_size = sub_state.counters.output_size;
+    state.proc_sub_counter = sub_state.proc_sub_counter;
+
+    allocate_proc_sub_temp_file(state, result.stdout.as_bytes())
+}
+
+/// Allocate a unique temp VFS file with the given content and return its path.
+fn allocate_proc_sub_temp_file(
+    state: &mut InterpreterState,
+    content: &[u8],
+) -> Result<String, RustBashError> {
+    let path = format!("/tmp/.proc_sub_{}", state.proc_sub_counter);
+    state.proc_sub_counter += 1;
+
+    // Ensure /tmp exists
+    let tmp = Path::new("/tmp");
+    if !state.fs.exists(tmp) {
+        state
+            .fs
+            .mkdir_p(tmp)
+            .map_err(|e| RustBashError::Execution(e.to_string()))?;
+    }
+
+    state
+        .fs
+        .write_file(Path::new(&path), content)
+        .map_err(|e| RustBashError::Execution(e.to_string()))?;
+
+    Ok(path)
+}
+
+/// Create a subshell `InterpreterState` that shares the parent's filesystem.
+/// Unlike command substitution which deep-clones the fs, process substitution
+/// needs the temp file to be visible to the outer command.
+fn make_proc_sub_state(state: &mut InterpreterState) -> InterpreterState {
+    InterpreterState {
+        fs: Arc::clone(&state.fs),
+        env: state.env.clone(),
+        cwd: state.cwd.clone(),
+        functions: state.functions.clone(),
+        last_exit_code: state.last_exit_code,
+        commands: clone_commands(&state.commands),
+        shell_opts: state.shell_opts.clone(),
+        shopt_opts: state.shopt_opts.clone(),
+        limits: state.limits.clone(),
+        counters: ExecutionCounters {
+            command_count: state.counters.command_count,
+            output_size: state.counters.output_size,
+            start_time: state.counters.start_time,
+            substitution_depth: state.counters.substitution_depth,
+            call_depth: 0,
+        },
+        network_policy: state.network_policy.clone(),
+        should_exit: false,
+        loop_depth: 0,
+        control_flow: None,
+        positional_params: state.positional_params.clone(),
+        shell_name: state.shell_name.clone(),
+        random_seed: state.random_seed,
+        local_scopes: Vec::new(),
+        in_function_depth: 0,
+        traps: HashMap::new(),
+        in_trap: false,
+        errexit_suppressed: 0,
+        stdin_offset: 0,
+        dir_stack: state.dir_stack.clone(),
+        command_hash: state.command_hash.clone(),
+        aliases: state.aliases.clone(),
+        current_lineno: state.current_lineno,
+        shell_start_time: state.shell_start_time,
+        last_argument: state.last_argument.clone(),
+        call_stack: state.call_stack.clone(),
+        machtype: state.machtype.clone(),
+        hosttype: state.hosttype.clone(),
+        persistent_fds: HashMap::new(),
+        next_auto_fd: 10,
+        proc_sub_counter: state.proc_sub_counter,
+        proc_sub_prealloc: HashMap::new(),
     }
 }
 

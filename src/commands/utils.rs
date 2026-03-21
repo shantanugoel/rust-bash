@@ -656,6 +656,7 @@ const REGISTERED_COMMANDS: &[&str] = &[
     "nl",
     "printf",
     "paste",
+    "od",
     "realpath",
     "basename",
     "dirname",

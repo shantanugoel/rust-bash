@@ -131,9 +131,8 @@ impl WasmBash {
                             self.inner.state.env.insert(
                                 key,
                                 crate::interpreter::Variable {
-                                    value,
-                                    exported: true,
-                                    readonly: false,
+                                    value: crate::interpreter::VariableValue::Scalar(value),
+                                    attrs: crate::interpreter::VariableAttrs::EXPORTED,
                                 },
                             );
                         }

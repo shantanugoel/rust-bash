@@ -177,7 +177,7 @@ Implemented `VariableValue` enum (`Scalar`/`IndexedArray(BTreeMap<usize, String>
 
 **Why first in M6**: Arrays are the critical path — `$PIPESTATUS`, `BASH_REMATCH`, `mapfile`, `read -a`, and `declare -A` all depend on this.
 
-### M6.2 — `$PIPESTATUS` and `BASH_REMATCH` as Arrays
+### M6.2 — `$PIPESTATUS` and `BASH_REMATCH` as Arrays ✅
 
 Expose the `exit_codes` vector already collected in `execute_pipeline` as the `$PIPESTATUS` indexed array variable. Migrate `BASH_REMATCH_N` flat variables (from `=~` regex matching) to a proper `BASH_REMATCH` indexed array with capture group support.
 
@@ -185,7 +185,7 @@ Expose the `exit_codes` vector already collected in `execute_pipeline` as the `$
 
 Add `ShoptOpts` struct to interpreter state and `shopt` builtin. Implement behavioral wiring for: `nullglob` (non-matching globs expand to nothing), `globstar` (`**` matches recursively), `dotglob` (globs include dot-files), `extglob` (extended patterns `+(...)` etc. — parser already enables this), `failglob` (error on no match), `nocaseglob` (case-insensitive glob), `nocasematch` (case-insensitive `[[ =~ ]]` and `case`), `lastpipe` (last pipeline command runs in current shell — requires changing pipeline execution to avoid subshell for the final command when enabled), `expand_aliases` (enable alias expansion), `xpg_echo` (make `echo` interpret backslash escapes by default, like `echo -e`), `globskipdots` (don't match `.` and `..` with glob patterns — bash 5.2+ default).
 
-### M6.4 — Additional Builtins
+### M6.4 — Additional Builtins ✅
 
 Implement missing builtins that AI-generated scripts commonly use:
 
@@ -200,19 +200,19 @@ Implement missing builtins that AI-generated scripts commonly use:
 - ✅ `hash [-r] [name]` — command path caching with real hash table. Maintain `HashMap<String, PathBuf>` in interpreter state. `hash name` resolves and caches the PATH lookup; subsequent invocations skip PATH search. `hash -r` clears the table. `hash` with no args lists cached entries. just-bash implements this with a real `hashTable: Map`; matching that behavior avoids silent divergence in scripts that use `hash -r` to force re-resolution after PATH changes.
 - ✅ `wait [pid|jobspec]` — no-op stub that returns 0 immediately. Prevents scripts from failing when they include `wait`.
 
-### M6.5 — Full `read` Flags
+### M6.5 — Full `read` Flags ✅
 
 Extend `builtin_read` beyond basic line reading. Add: `-r` (no backslash escaping — already works), `-a arrayname` (read into indexed array — requires M6.1), `-d delim` (read until delimiter instead of newline), `-n count` (read at most N characters), `-N count` (read exactly N characters), `-p prompt` (no-op in sandbox — stdin is pre-provided), `-t timeout` (return failure if stdin empty — sandbox stdin is always fully provided, so this returns immediately).
 
-### M6.6 — Full `declare` Attributes
+### M6.6 — Full `declare` Attributes ✅
 
 Extend `builtin_declare` and `Variable` to support all attribute flags: `-i` (integer — arithmetic eval on every assignment), `-l` (lowercase — transform value to lowercase on assignment), `-u` (uppercase — transform to uppercase), `-n` (nameref — variable holds name of another variable, dereference on read/write with depth cap of 10 to prevent loops), `-a` (indexed array), `-A` (associative array). Add attribute bitflags to `Variable` struct to avoid per-variable memory bloat.
 
-### M6.7 — Process Substitution
+### M6.7 — Process Substitution ✅
 
-Implement `<(cmd)` and `>(cmd)`. brush-parser already produces `ProcessSubstitution` AST nodes (interpreter currently returns an error). For `<(cmd)`: execute command, capture stdout, write to temp VFS file (`/tmp/.proc_sub_XXXX`), substitute the temp path into the argument list. For `>(cmd)`: create temp file, after outer command completes read it and pipe to inner command. Clean up temp files with RAII guard. Enables `diff <(sort file1) <(sort file2)` pattern.
+Implemented `<(cmd)` and `>(cmd)`. brush-parser already produces `ProcessSubstitution` AST nodes. For `<(cmd)`: execute command, capture stdout, write to temp VFS file (`/tmp/.proc_sub_N`), substitute the temp path into the argument list. For `>(cmd)`: create temp file, after outer command completes read it and pipe to inner command. Temp files cleaned up after enclosing command completes. Enables `diff <(sort file1) <(sort file2)` pattern.
 
-### M6.8 — Special Variable Tracking
+### M6.8 — Special Variable Tracking ✅
 
 Several special variables are missing or broken:
 
@@ -228,31 +228,31 @@ Several special variables are missing or broken:
 - **`SHELLOPTS` / `BASHOPTS`** — readonly colon-separated lists of currently enabled `set` and `shopt` options respectively. Dynamically maintained — scripts check `[[ $SHELLOPTS =~ errexit ]]`. Must update on every `set -o`/`shopt -s` change.
 - **`$MACHTYPE` / `$HOSTTYPE`** — machine description strings. Can be set to static values (e.g., `x86_64-pc-linux-gnu`, `x86_64`).
 
-### M6.9 — Shell Option Enforcement
+### M6.9 — Shell Option Enforcement ✅
 
-Several `set`/`shopt` options are parsed but produce no effect:
+The following `set`/`shopt` options are now enforced:
 
-- **`set -x` (xtrace)** — print each command to stderr before execution, prefixed with `$PS4` (default `"+ "`). Show expanded words, not raw source. Currently the flag is stored but no trace output is generated.
-- **`set -v` (verbose)** — print each source line to stderr before parsing/expansion.
-- **`set -n` (noexec)** — parse but do not execute commands. Useful for syntax checking.
-- **`set -o noclobber`** — prevent `>` from overwriting existing files. Require `>|` to force overwrite.
-- **`set -a` (allexport)** — auto-export every variable on assignment. Must be checked at every assignment site: plain assignment, `declare`, `local`, `for` loop variable, `read`. AI scripts commonly use `set -a; source .env; set +a`.
-- **`set -f` (noglob)** — disable filename expansion (globbing). Without this, scripts that manipulate literal glob characters break silently.
-- **`set -o posix`** — POSIX mode. Changes special builtin error semantics (fatal on error), prevents function overrides of special builtins, and affects prefix assignment persistence. Implement as a stub initially; wire in `PosixFatalError` behavior for special builtins (`break`, `continue`, `return`, `export`, `unset`, `eval`, `set`, `shift`, `source`, `.`).
-- **`set -o vi` / `set -o emacs`** — accept as no-ops (tracked in options) to avoid errors. Not meaningful in a sandbox.
+- **`set -x` (xtrace)** — traces simple commands and bare assignments to stderr, prefixed with `$PS4` (default `"+ "`). Shows expanded words. Trace state is captured before dispatch so `set +x` is traced but `set -x` is not.
+- **`set -v` (verbose)** — accepted and stored; behavioral effect (echoing source lines) not yet implemented (requires line-by-line parse-execute loop).
+- **`set -n` (noexec)** — skips all commands except `set` itself, enabling syntax checking.
+- **`set -C` / `set -o noclobber`** — prevents `>` and `&>` from overwriting existing files; `>|` forces overwrite; `>>` and `&>>` are unaffected. `/dev/null` is always allowed.
+- **`set -a` (allexport)** — marks variables as EXPORTED on assignment in `set_variable()`. Other assignment sites (`declare X` without value, `read -a`) are not yet wired.
+- **`set -f` (noglob)** — disables glob expansion entirely in `glob_expand_words()`.
+- **`set -o posix`** — accepted and stored as a no-op stub.
+- **`set -o vi` / `set -o emacs`** — accepted as no-ops (tracked in options). Not meaningful in a sandbox.
 
-### M6.10 — Advanced Redirections
+### M6.10 — Advanced Redirections ✅
 
-Several redirection features that just-bash supports are missing:
+All six redirection features are now implemented:
 
-- **`exec` builtin** — when invoked with only redirections (`exec > file`, `exec 3< file`), permanently redirect file descriptors for the rest of the shell session. Without redirections, `exec cmd` replaces the shell (in sandbox: just run the command).
-- **`/dev/stdin`, `/dev/stdout`, `/dev/stderr`** — special-case these paths in redirection handling (currently only `/dev/null` is handled). `/dev/zero` (reads return empty) and `/dev/full` (writes return ENOSPC) are also useful.
-- **FD variable allocation `{varname}>file`** — automatically allocate a file descriptor number, store it in the named variable. Used for advanced I/O multiplexing.
-- **Read-write file descriptors `N<>file`** — open file for both reading and writing on FD N.
-- **FD movement `N>&M-`** — duplicate FD M to N, then close M.
-- **Pipe stderr `|&`** — shorthand for `2>&1 |`, piping both stdout and stderr to next command.
+- ✅ **`exec` builtin** — when invoked with only redirections (`exec > file`, `exec 3< file`), permanently redirect file descriptors for the rest of the shell session. Without redirections, `exec cmd` replaces the shell (in sandbox: just run the command).
+- ✅ **`/dev/stdin`, `/dev/stdout`, `/dev/stderr`** — special-cased in redirection handling alongside `/dev/null`. `/dev/zero` (reads return null bytes) and `/dev/full` (writes return ENOSPC) are also supported.
+- ✅ **FD variable allocation `{varname}>file`** — automatically allocate a file descriptor number (starting at 10), store it in the named variable. `exec {fd}>&-` closes it.
+- ✅ **Read-write file descriptors `N<>file`** — open file for both reading and writing on FD N.
+- ✅ **FD movement `N>&M-`** — duplicate FD M to N, then close M.
+- ✅ **Pipe stderr `|&`** — shorthand for `2>&1 |`, piping both stdout and stderr to next command.
 
-### M6.11 — Parameter Transformation Operators
+### M6.11 — Parameter Transformation Operators ✅
 
 Implement `${var@operator}` syntax for variable transformations:
 
@@ -339,6 +339,7 @@ Currently `RustBashBuilder::build()` creates an empty VFS with only the cwd. `wh
 Add infrastructure for systematic command correctness:
 
 - **Unknown-flag error handling**: Add a consistent `unknown_option(cmd, flag)` helper that all commands use when encountering unrecognized flags. Return non-zero exit code with a message matching bash format (`cmd: invalid option -- 'x'` / `cmd: unrecognized option '--foo'`).
+- **Path-argument fidelity for file-oriented commands**: Add shared conformance tests (and helper utilities where useful) for commands that receive shell-expanded path operands. Mixed file/directory operand sets must follow bash/GNU tool behavior per command instead of failing uniformly on the first directory or treating every operand as the same kind of path. Examples: `ls *` should list regular files directly while also listing directory operands correctly, and `grep pattern *` should still process file operands while reporting directory operands in non-recursive mode.
 - **Comparison test suite**: Fixture-based tests that run scripts against real bash and assert matching stdout/stderr/exit code. Record expected output in fixture files for offline replay. Enables differential testing without requiring bash at every `cargo test`.
 - **Per-command flag metadata**: Each command exports a declarative flag list (name, type, implemented vs stubbed). Enables coverage tracking and systematic fuzzing of flag combinations.
 
@@ -349,20 +350,6 @@ Ship a purpose-built `AGENTS.md` in the npm package and alongside the CLI binary
 - **Content**: Quick-start examples, available commands grouped by category, tools-by-file-format recipes (JSON with `jq`, YAML with `yq`, CSV with `xan`), key behavioral notes (isolation model, no real filesystem, no network by default).
 - **Distribution**: Include in npm package (`@rust-bash/core`), embed in CLI `--help`, and publish to docs site.
 - **Validation**: Add a test that verifies all documented commands actually exist in the registry and all code examples parse successfully.
-
-### M7.10 — Agent Workflow Integration Tests
-
-Build a test suite simulating realistic AI agent workflows, inspired by just-bash's 13 `agent-examples/*.test.ts` files. Each test represents a real-world agent task:
-
-- **Bug investigation**: grep through logs, analyze stack traces, identify root causes.
-- **Code review**: diff files, check for patterns, analyze dependencies.
-- **Codebase exploration**: find files, read configs, navigate directory structures.
-- **Log analysis**: parse structured logs with awk/jq, aggregate statistics.
-- **Text processing workflows**: multi-stage pipelines combining sed, awk, sort, uniq.
-- **Config analysis**: read JSON/YAML configs, extract values, validate structure.
-- **Security audit**: grep for secrets, check file permissions, analyze network configs.
-
-These tests validate the command surface against realistic agent patterns, not just shell correctness. They also serve as living documentation of expected usage.
 
 ---
 
@@ -497,6 +484,20 @@ Add VFS trait methods for better compatibility with real-world shell scripts:
 
 - **`utimes(path, atime, mtime)`** — set file access and modification times. Required for `touch -t` and scripts that rely on file timestamps for logic (e.g., Makefiles, caching). just-bash's `IFileSystem` includes this.
 - **`/dev/stdin`, `/dev/stdout`, `/dev/stderr`** — special-case these paths in I/O handling. Currently only `/dev/null` is handled (M6.10 mentions these but they should also be part of the VFS layer).
+
+### M9.11 — Agent Workflow Integration Tests
+
+Build a test suite simulating realistic AI agent workflows, inspired by just-bash's 13 `agent-examples/*.test.ts` files. Each test represents a real-world agent task:
+
+- **Bug investigation**: grep through logs, analyze stack traces, identify root causes.
+- **Code review**: diff files, check for patterns, analyze dependencies.
+- **Codebase exploration**: find files, read configs, navigate directory structures.
+- **Log analysis**: parse structured logs with awk/jq, aggregate statistics.
+- **Text processing workflows**: multi-stage pipelines combining sed, awk, sort, uniq.
+- **Config analysis**: read JSON/YAML configs, extract values, validate structure.
+- **Security audit**: grep for secrets, check file permissions, analyze network configs.
+
+These tests validate the command surface against realistic agent patterns, not just shell correctness. They also serve as living documentation of expected usage.
 
 ---
 

@@ -1,20 +1,18 @@
-# M6.10 — Advanced redirections (mostly xfail)
+# M6.10 — Advanced redirections
 
 [[cases]]
 name = "exec_persistent_stdout_redirect"
 script = '''
-exec > /tmp/out.txt
+exec > /out.txt
 echo hello
 exec > /dev/stdout
-cat /tmp/out.txt
+cat /out.txt
 '''
 stdout = "hello\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.10"
 feature = "exec_redirect"
-reason = "exec persistent redirection not implemented"
 
 [[cases]]
 name = "dev_stdin_passthrough"
@@ -22,10 +20,8 @@ script = 'echo "via stdin" | cat /dev/stdin'
 stdout = "via stdin\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.10"
 feature = "dev_stdin"
-reason = "/dev/stdin passthrough not implemented"
 
 [[cases]]
 name = "dev_stdout_passthrough"
@@ -33,10 +29,8 @@ script = 'echo hello > /dev/stdout'
 stdout = "hello\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.10"
 feature = "dev_stdout"
-reason = "/dev/stdout not available in VFS"
 
 [[cases]]
 name = "dev_stderr_passthrough"
@@ -44,10 +38,8 @@ script = 'echo err > /dev/stderr'
 stdout = ""
 stderr = "err\n"
 exit_code = 0
-status = "xfail"
 milestone = "M6.10"
 feature = "dev_stderr"
-reason = "/dev/stderr not available in VFS"
 
 [[cases]]
 name = "dev_zero_read"
@@ -55,10 +47,8 @@ script = 'head -c 4 /dev/zero | od -An -tx1 | tr -d " "'
 stdout = "00000000\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.10"
 feature = "dev_zero"
-reason = "/dev/zero read not implemented"
 
 [[cases]]
 name = "dev_full_write_error"
@@ -66,27 +56,23 @@ script = 'echo data > /dev/full 2>&1; echo $?'
 stdout = "1\n"
 stderr_ignore = true
 exit_code = 0
-status = "xfail"
 milestone = "M6.10"
 feature = "dev_full"
-reason = "/dev/full write error not implemented"
 
 [[cases]]
 name = "fd_variable_allocation"
-script = 'exec {fd}>/tmp/dynfd.txt; echo "test" >&$fd; exec {fd}>&-; cat /tmp/dynfd.txt'
+script = 'exec {fd}>/dynfd.txt; echo "test" >&$fd; exec {fd}>&-; cat /dynfd.txt'
 stdout = "test\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.10"
 feature = "fd_allocation"
-reason = "dynamic FD allocation not implemented"
 
 [[cases]]
 name = "read_write_fd"
 script = '''
-echo "initial" > /tmp/rw.txt
-exec 3<>/tmp/rw.txt
+echo "initial" > /rw.txt
+exec 3<>/rw.txt
 read -r line <&3
 echo "$line"
 exec 3>&-
@@ -94,28 +80,24 @@ exec 3>&-
 stdout = "initial\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.10"
 feature = "read_write_fd"
-reason = "<> read-write FD not implemented"
 
 [[cases]]
 name = "fd_move_close"
 script = '''
-exec 3>/tmp/move.txt
+exec 3>/move.txt
 echo hello >&3
 exec 4>&3-
 echo world >&4
 exec 4>&-
-cat /tmp/move.txt
+cat /move.txt
 '''
 stdout = "hello\nworld\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.10"
 feature = "fd_move"
-reason = "FD move (N>&M-) not implemented"
 
 [[cases]]
 name = "pipe_stderr_with_bar_and"

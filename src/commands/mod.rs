@@ -214,8 +214,10 @@ impl VirtualCommand for CatCommand {
         let mut exit_code = 0;
 
         for file in &files {
-            let content = if *file == "-" {
+            let content = if *file == "-" || *file == "/dev/stdin" {
                 ctx.stdin.to_string()
+            } else if *file == "/dev/null" || *file == "/dev/zero" || *file == "/dev/full" {
+                String::new()
             } else {
                 let path = if file.starts_with('/') {
                     std::path::PathBuf::from(file)
@@ -644,6 +646,7 @@ pub fn register_default_commands() -> HashMap<String, Box<dyn VirtualCommand>> {
         Box::new(text::NlCommand),
         Box::new(text::PrintfCommand),
         Box::new(text::PasteCommand),
+        Box::new(text::OdCommand),
         // M2.6: remaining text commands
         Box::new(text::TacCommand),
         Box::new(text::CommCommand),

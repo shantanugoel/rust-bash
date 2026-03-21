@@ -10,10 +10,8 @@ echo $LINENO
 stdout = "1\n2\n3\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.8"
 feature = "LINENO"
-reason = "LINENO is hardcoded to 0"
 
 [[cases]]
 name = "seconds_increments"
@@ -36,10 +34,8 @@ echo "$_"
 stdout = "hello world\nworld\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.8"
 feature = "underscore"
-reason = "$_ not implemented"
 
 [[cases]]
 name = "ppid_default"
@@ -65,10 +61,8 @@ script = 'test -n "$MACHTYPE" && echo set || echo empty'
 stdout = "set\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.8"
 feature = "MACHTYPE"
-reason = "MACHTYPE not implemented"
 
 [[cases]]
 name = "hosttype_default"
@@ -76,7 +70,5 @@ script = 'test -n "$HOSTTYPE" && echo set || echo empty'
 stdout = "set\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.8"
 feature = "HOSTTYPE"
-reason = "HOSTTYPE not implemented"

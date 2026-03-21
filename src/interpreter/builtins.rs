@@ -50,6 +50,7 @@ pub(crate) fn execute_builtin(
         "wait" => Ok(Some(ExecResult::default())),
         "alias" => builtin_alias(args, state).map(Some),
         "unalias" => builtin_unalias(args, state).map(Some),
+        "printf" => builtin_printf(args, state).map(Some),
         _ => Ok(None),
     }
 }
@@ -92,6 +93,8 @@ pub(crate) fn is_builtin(name: &str) -> bool {
             | "wait"
             | "alias"
             | "unalias"
+            | "printf"
+            | "exec"
     )
 }
 
@@ -508,6 +511,11 @@ fn apply_option_char(c: char, enable: bool, state: &mut InterpreterState) {
         'e' => state.shell_opts.errexit = enable,
         'u' => state.shell_opts.nounset = enable,
         'x' => state.shell_opts.xtrace = enable,
+        'v' => state.shell_opts.verbose = enable,
+        'n' => state.shell_opts.noexec = enable,
+        'C' => state.shell_opts.noclobber = enable,
+        'a' => state.shell_opts.allexport = enable,
+        'f' => state.shell_opts.noglob = enable,
         _ => {}
     }
 }
@@ -518,6 +526,14 @@ fn apply_option_name(name: &str, enable: bool, state: &mut InterpreterState) {
         "nounset" => state.shell_opts.nounset = enable,
         "pipefail" => state.shell_opts.pipefail = enable,
         "xtrace" => state.shell_opts.xtrace = enable,
+        "verbose" => state.shell_opts.verbose = enable,
+        "noexec" => state.shell_opts.noexec = enable,
+        "noclobber" => state.shell_opts.noclobber = enable,
+        "allexport" => state.shell_opts.allexport = enable,
+        "noglob" => state.shell_opts.noglob = enable,
+        "posix" => state.shell_opts.posix = enable,
+        "vi" => state.shell_opts.vi_mode = enable,
+        "emacs" => state.shell_opts.emacs_mode = enable,
         _ => {}
     }
 }
@@ -525,10 +541,18 @@ fn apply_option_name(name: &str, enable: bool, state: &mut InterpreterState) {
 fn format_options(state: &InterpreterState) -> String {
     let on_off = |b: bool| if b { "on" } else { "off" };
     format!(
-        "errexit        {}\nnounset        {}\npipefail       {}\nxtrace         {}\n",
+        "allexport      {}\nemacs          {}\nerrexit        {}\nnoclobber      {}\nnoexec         {}\nnoglob         {}\nnounset        {}\npipefail       {}\nposix          {}\nverbose        {}\nvi             {}\nxtrace         {}\n",
+        on_off(state.shell_opts.allexport),
+        on_off(state.shell_opts.emacs_mode),
         on_off(state.shell_opts.errexit),
+        on_off(state.shell_opts.noclobber),
+        on_off(state.shell_opts.noexec),
+        on_off(state.shell_opts.noglob),
         on_off(state.shell_opts.nounset),
         on_off(state.shell_opts.pipefail),
+        on_off(state.shell_opts.posix),
+        on_off(state.shell_opts.verbose),
+        on_off(state.shell_opts.vi_mode),
         on_off(state.shell_opts.xtrace),
     )
 }
@@ -2899,11 +2923,58 @@ fn builtin_unalias(
     })
 }
 
+// ── printf ───────────────────────────────────────────────────────────
+
+fn builtin_printf(
+    args: &[String],
+    state: &mut InterpreterState,
+) -> Result<ExecResult, RustBashError> {
+    if args.is_empty() {
+        return Ok(ExecResult {
+            stderr: "printf: usage: printf [-v var] format [arguments]\n".into(),
+            exit_code: 1,
+            ..ExecResult::default()
+        });
+    }
+
+    let mut var_name: Option<String> = None;
+    let mut remaining_args = args;
+
+    // Parse -v varname
+    if remaining_args.len() >= 2 && remaining_args[0] == "-v" {
+        var_name = Some(remaining_args[1].clone());
+        remaining_args = &remaining_args[2..];
+    }
+
+    if remaining_args.is_empty() {
+        return Ok(ExecResult {
+            stderr: "printf: usage: printf [-v var] format [arguments]\n".into(),
+            exit_code: 1,
+            ..ExecResult::default()
+        });
+    }
+
+    let format_str = &remaining_args[0];
+    let arguments = &remaining_args[1..];
+    let output = crate::commands::text::run_printf_format(format_str, arguments);
+
+    if let Some(name) = var_name {
+        set_variable(state, &name, output)?;
+        Ok(ExecResult::default())
+    } else {
+        Ok(ExecResult {
+            stdout: output,
+            ..ExecResult::default()
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::interpreter::{ExecutionCounters, ExecutionLimits, ShellOpts, ShoptOpts};
     use crate::network::NetworkPolicy;
+    use crate::platform::Instant;
     use crate::vfs::{InMemoryFs, VirtualFs};
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -2939,6 +3010,16 @@ mod tests {
             dir_stack: Vec::new(),
             command_hash: HashMap::new(),
             aliases: HashMap::new(),
+            current_lineno: 0,
+            shell_start_time: Instant::now(),
+            last_argument: String::new(),
+            call_stack: Vec::new(),
+            machtype: "x86_64-pc-linux-gnu".to_string(),
+            hosttype: "x86_64".to_string(),
+            persistent_fds: HashMap::new(),
+            next_auto_fd: 10,
+            proc_sub_counter: 0,
+            proc_sub_prealloc: HashMap::new(),
         }
     }
 

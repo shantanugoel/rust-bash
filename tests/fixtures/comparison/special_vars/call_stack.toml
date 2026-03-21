@@ -9,10 +9,8 @@ greet
 stdout = "greet\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.8"
 feature = "FUNCNAME"
-reason = "FUNCNAME not implemented"
 
 [[cases]]
 name = "bash_source_current_source"
@@ -34,10 +32,8 @@ f
 stdout = "2\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.8"
 feature = "BASH_LINENO"
-reason = "BASH_LINENO not implemented"
 
 [[cases]]
 name = "shellopts_reflect_errexit"
@@ -48,10 +44,8 @@ echo "$SHELLOPTS" | tr ':' '\n' | grep errexit
 stdout = "errexit\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.8"
 feature = "SHELLOPTS"
-reason = "SHELLOPTS not implemented"
 
 [[cases]]
 name = "bashopts_reflect_shopt"
@@ -62,7 +56,5 @@ echo "$BASHOPTS" | tr ':' '\n' | grep nullglob
 stdout = "nullglob\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.8"
 feature = "BASHOPTS"
-reason = "BASHOPTS not implemented"

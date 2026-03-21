@@ -1042,6 +1042,8 @@ fn read_var(state: &InterpreterState, name: &str) -> i64 {
     match name {
         "#" => return state.positional_params.len() as i64,
         "?" => return state.last_exit_code as i64,
+        "LINENO" => return state.current_lineno as i64,
+        "SECONDS" => return state.shell_start_time.elapsed().as_secs() as i64,
         _ => {}
     }
     // Handle positional parameters ($0, $1, $2, ...)
@@ -1189,6 +1191,16 @@ mod tests {
             dir_stack: Vec::new(),
             command_hash: HashMap::new(),
             aliases: HashMap::new(),
+            current_lineno: 0,
+            shell_start_time: crate::platform::Instant::now(),
+            last_argument: String::new(),
+            call_stack: Vec::new(),
+            machtype: "x86_64-pc-linux-gnu".to_string(),
+            hosttype: "x86_64".to_string(),
+            persistent_fds: HashMap::new(),
+            next_auto_fd: 10,
+            proc_sub_counter: 0,
+            proc_sub_prealloc: HashMap::new(),
         }
     }
 

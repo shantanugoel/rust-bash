@@ -21,10 +21,8 @@ echo "${x@E}"
 stdout = "hello\nworld\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.11"
 feature = "param_transform.E"
-reason = "parameter transforms not implemented"
 
 [[cases]]
 name = "transform_A"
@@ -35,10 +33,8 @@ echo "${num@A}"
 stdout = "declare -i num='42'\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.11"
 feature = "param_transform.A"
-reason = "parameter transforms not implemented"
 
 [[cases]]
 name = "transform_a"
@@ -49,10 +45,8 @@ echo "${num@a}"
 stdout = "i\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.11"
 feature = "param_transform.a"
-reason = "parameter transforms not implemented"
 
 [[cases]]
 name = "indirect_expansion_basic"
@@ -90,10 +84,8 @@ echo "$result"
 stdout = "hello world\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.11"
 feature = "printf_v"
-reason = "printf -v not implemented"
 
 [[cases]]
 name = "printf_percent_b"
@@ -101,10 +93,8 @@ script = 'printf "%b\n" "hello\tworld"'
 stdout = "hello\tworld\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.11"
 feature = "printf_b"
-reason = "printf %b not implemented"
 
 [[cases]]
 name = "printf_percent_q"
@@ -112,7 +102,5 @@ script = "printf '%q\\n' 'hello world'"
 stdout = "hello\\ world\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
 milestone = "M6.11"
 feature = "printf_q"
-reason = "printf %q not implemented"

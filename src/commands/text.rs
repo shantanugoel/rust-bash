@@ -23,8 +23,15 @@ fn read_input(
         return Ok(result);
     }
     for file in files {
-        if *file == "-" {
+        if *file == "-" || *file == "/dev/stdin" {
             result.push(("(standard input)".to_string(), ctx.stdin.to_string()));
+        } else if *file == "/dev/null"
+            || *file == "/dev/zero"
+            || *file == "/dev/full"
+            || *file == "/dev/stdout"
+            || *file == "/dev/stderr"
+        {
+            result.push((file.to_string(), String::new()));
         } else {
             let path = resolve_path(file, ctx.cwd);
             match ctx.fs.read_file(&path) {
@@ -57,8 +64,12 @@ fn read_all_input(files: &[&str], ctx: &CommandContext) -> (String, String, i32)
         content.push_str(ctx.stdin);
     } else {
         for file in files {
-            if *file == "-" {
+            if *file == "-" || *file == "/dev/stdin" {
                 content.push_str(ctx.stdin);
+            } else if *file == "/dev/null" || *file == "/dev/zero" || *file == "/dev/full" {
+                // Empty content for these special devices
+            } else if *file == "/dev/stdout" || *file == "/dev/stderr" {
+                // Reading from stdout/stderr produces empty content
             } else {
                 let path = resolve_path(file, ctx.cwd);
                 match ctx.fs.read_file(&path) {
@@ -1206,6 +1217,7 @@ impl super::VirtualCommand for HeadCommand {
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
         let mut num_lines: usize = 10;
+        let mut num_bytes: Option<usize> = None;
         let mut opts_done = false;
         let mut files: Vec<&str> = Vec::new();
         let mut i = 0;
@@ -1224,6 +1236,13 @@ impl super::VirtualCommand for HeadCommand {
                 }
             } else if !opts_done && arg.starts_with("-n") {
                 num_lines = arg[2..].parse().unwrap_or(10);
+            } else if !opts_done && arg == "-c" {
+                i += 1;
+                if i < args.len() {
+                    num_bytes = Some(args[i].parse().unwrap_or(0));
+                }
+            } else if !opts_done && arg.starts_with("-c") {
+                num_bytes = Some(arg[2..].parse().unwrap_or(0));
             } else if !opts_done
                 && arg.starts_with('-')
                 && arg.len() > 1
@@ -1234,6 +1253,17 @@ impl super::VirtualCommand for HeadCommand {
                 files.push(arg);
             }
             i += 1;
+        }
+
+        // Special handling for /dev/zero with -c (produces null bytes)
+        if let Some(count) = num_bytes
+            && files.contains(&"/dev/zero")
+        {
+            let bytes = vec![0u8; count];
+            return CommandResult {
+                stdout: String::from_utf8_lossy(&bytes).to_string(),
+                ..Default::default()
+            };
         }
 
         let inputs = match read_input(&files, ctx) {
@@ -1250,9 +1280,15 @@ impl super::VirtualCommand for HeadCommand {
                 }
                 stdout.push_str(&format!("==> {} <==\n", filename));
             }
-            for line in content.lines().take(num_lines) {
-                stdout.push_str(line);
-                stdout.push('\n');
+            if let Some(count) = num_bytes {
+                // Byte count mode
+                let bytes: String = content.chars().take(count).collect();
+                stdout.push_str(&bytes);
+            } else {
+                for line in content.lines().take(num_lines) {
+                    stdout.push_str(line);
+                    stdout.push('\n');
+                }
             }
         }
 
@@ -1331,6 +1367,123 @@ impl super::VirtualCommand for TailCommand {
             for line in &lines[start..] {
                 stdout.push_str(line);
                 stdout.push('\n');
+            }
+        }
+
+        CommandResult {
+            stdout,
+            ..Default::default()
+        }
+    }
+}
+
+// ── od ──────────────────────────────────────────────────────────────
+
+pub struct OdCommand;
+
+impl super::VirtualCommand for OdCommand {
+    fn name(&self) -> &str {
+        "od"
+    }
+
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
+        let mut no_address = false;
+        let mut format = "o2".to_string(); // default: octal 2-byte
+        let mut files: Vec<&str> = Vec::new();
+        let mut i = 0;
+
+        while i < args.len() {
+            let arg = &args[i];
+            if arg == "-An" || arg == "-A" && args.get(i + 1).map(|s| s.as_str()) == Some("n") {
+                no_address = true;
+                if arg == "-A" {
+                    i += 1; // skip "n"
+                }
+            } else if arg.starts_with("-A") {
+                // -Ax, -Ad, -Ao — we only handle -An (suppress address)
+                if arg == "-An" {
+                    no_address = true;
+                }
+            } else if let Some(suffix) = arg.strip_prefix("-t") {
+                if !suffix.is_empty() {
+                    format = suffix.to_string();
+                } else {
+                    i += 1;
+                    if i < args.len() {
+                        format = args[i].clone();
+                    }
+                }
+            } else if !arg.starts_with('-') {
+                files.push(arg);
+            }
+            i += 1;
+        }
+
+        // Read input bytes
+        let input_str = if files.is_empty() {
+            ctx.stdin.to_string()
+        } else {
+            let mut s = String::new();
+            for file in &files {
+                if *file == "-" || *file == "/dev/stdin" {
+                    s.push_str(ctx.stdin);
+                } else if *file == "/dev/zero" {
+                    // /dev/zero content should come via pipe
+                    s.push_str(ctx.stdin);
+                } else {
+                    let path = resolve_path(file, ctx.cwd);
+                    match ctx.fs.read_file(&path) {
+                        Ok(bytes) => s.push_str(&String::from_utf8_lossy(&bytes)),
+                        Err(e) => {
+                            return CommandResult {
+                                stderr: format!("od: {file}: {e}\n"),
+                                exit_code: 1,
+                                ..Default::default()
+                            };
+                        }
+                    }
+                }
+            }
+            s
+        };
+
+        let bytes = input_str.as_bytes();
+        let mut stdout = String::new();
+
+        // Format bytes according to type specifier
+        if format == "x1" {
+            // Hex, 1-byte units
+            let mut offset = 0;
+            while offset < bytes.len() {
+                if !no_address {
+                    stdout.push_str(&format!("{:07o}", offset));
+                }
+                let end = std::cmp::min(offset + 16, bytes.len());
+                for b in &bytes[offset..end] {
+                    stdout.push_str(&format!(" {:02x}", b));
+                }
+                stdout.push('\n');
+                offset += 16;
+            }
+            if !no_address && !bytes.is_empty() {
+                stdout.push_str(&format!("{:07o}\n", bytes.len()));
+            }
+        } else {
+            // Default: octal dump (simplified)
+            let mut offset = 0;
+            while offset < bytes.len() {
+                if !no_address {
+                    stdout.push_str(&format!("{:07o}", offset));
+                }
+                let end = std::cmp::min(offset + 16, bytes.len());
+                for b in &bytes[offset..end] {
+                    stdout.push_str(&format!(" {:03o}", b));
+                }
+                stdout.push('\n');
+                offset += 16;
+            }
+            if !no_address && !bytes.is_empty() {
+                stdout.push_str(&format!("{:07o}\n", bytes.len()));
             }
         }
 
@@ -1823,28 +1976,7 @@ impl super::VirtualCommand for PrintfCommand {
 
         let format_str = &args[0];
         let arguments = &args[1..];
-        let mut stdout = String::new();
-        let mut arg_idx = 0;
-        let arg_count = arguments.len();
-
-        // If there are arguments, we need to cycle through the format at least once
-        // If there are no arguments, we process the format once
-        let need_cycle = arg_count > 0;
-        let mut first_pass = true;
-
-        loop {
-            let start_arg_idx = arg_idx;
-            let result = format_printf(format_str, arguments, &mut arg_idx);
-            stdout.push_str(&result);
-
-            if !need_cycle || arg_idx >= arg_count {
-                break;
-            }
-            if !first_pass && arg_idx == start_arg_idx {
-                break; // no progress, avoid infinite loop
-            }
-            first_pass = false;
-        }
+        let stdout = run_printf_format(format_str, arguments);
 
         CommandResult {
             stdout,
@@ -1853,8 +1985,34 @@ impl super::VirtualCommand for PrintfCommand {
     }
 }
 
-fn format_printf(fmt: &str, args: &[String], arg_idx: &mut usize) -> String {
+/// Run printf formatting with argument cycling (shared between command and builtin).
+pub(crate) fn run_printf_format(format_str: &str, arguments: &[String]) -> String {
+    let mut stdout = String::new();
+    let mut arg_idx = 0;
+    let arg_count = arguments.len();
+
+    let need_cycle = arg_count > 0;
+    let mut first_pass = true;
+
+    loop {
+        let start_arg_idx = arg_idx;
+        let (result, terminate) = format_printf(format_str, arguments, &mut arg_idx);
+        stdout.push_str(&result);
+
+        if terminate || !need_cycle || arg_idx >= arg_count {
+            break;
+        }
+        if !first_pass && arg_idx == start_arg_idx {
+            break;
+        }
+        first_pass = false;
+    }
+    stdout
+}
+
+pub(crate) fn format_printf(fmt: &str, args: &[String], arg_idx: &mut usize) -> (String, bool) {
     let mut result = String::new();
+    let mut terminate = false;
     let chars: Vec<char> = fmt.chars().collect();
     let mut i = 0;
 
@@ -2144,6 +2302,31 @@ fn format_printf(fmt: &str, args: &[String], arg_idx: &mut usize) -> String {
                         result.push(arg);
                     }
                 }
+                'b' => {
+                    let arg = if *arg_idx < args.len() {
+                        let a = &args[*arg_idx];
+                        *arg_idx += 1;
+                        a.clone()
+                    } else {
+                        String::new()
+                    };
+                    let (expanded, should_terminate) = expand_printf_backslash_escapes(&arg);
+                    result.push_str(&expanded);
+                    if should_terminate {
+                        terminate = true;
+                        break;
+                    }
+                }
+                'q' => {
+                    let arg = if *arg_idx < args.len() {
+                        let a = &args[*arg_idx];
+                        *arg_idx += 1;
+                        a.clone()
+                    } else {
+                        String::new()
+                    };
+                    result.push_str(&printf_shell_quote(&arg));
+                }
                 _ => {
                     result.push('%');
                     result.push_str(&flags);
@@ -2162,7 +2345,7 @@ fn format_printf(fmt: &str, args: &[String], arg_idx: &mut usize) -> String {
         }
         i += 1;
     }
-    result
+    (result, terminate)
 }
 
 struct IntFmtOpts<'a> {
@@ -2207,6 +2390,106 @@ fn format_int_padded(opts: &IntFmtOpts) -> String {
             full
         }
     }
+}
+
+/// Expand backslash escapes for printf %b format specifier.
+/// Returns `(expanded_text, should_terminate)`. `should_terminate` is true if `\c` was encountered.
+fn expand_printf_backslash_escapes(s: &str) -> (String, bool) {
+    let mut result = String::new();
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\\' && i + 1 < chars.len() {
+            i += 1;
+            match chars[i] {
+                'c' => return (result, true),
+                'n' => result.push('\n'),
+                't' => result.push('\t'),
+                'r' => result.push('\r'),
+                '\\' => result.push('\\'),
+                'a' => result.push('\x07'),
+                'b' => result.push('\x08'),
+                'f' => result.push('\x0C'),
+                'v' => result.push('\x0B'),
+                '0' => {
+                    let mut val = 0u32;
+                    let mut count = 0;
+                    while count < 3
+                        && i + 1 < chars.len()
+                        && chars[i + 1] >= '0'
+                        && chars[i + 1] <= '7'
+                    {
+                        i += 1;
+                        val = val * 8 + chars[i].to_digit(8).unwrap_or(0);
+                        count += 1;
+                    }
+                    if count == 0 {
+                        result.push('\0');
+                    } else if let Some(c) = char::from_u32(val) {
+                        result.push(c);
+                    }
+                }
+                other => {
+                    result.push('\\');
+                    result.push(other);
+                }
+            }
+        } else {
+            result.push(chars[i]);
+        }
+        i += 1;
+    }
+    (result, false)
+}
+
+/// Shell-quote a string for printf %q.
+fn printf_shell_quote(s: &str) -> String {
+    if s.is_empty() {
+        return "''".to_string();
+    }
+    // If string contains control characters, use $'...' notation
+    let has_control = s.chars().any(|c| c.is_ascii_control());
+    if has_control {
+        let mut out = String::from("$'");
+        for ch in s.chars() {
+            match ch {
+                '\'' => out.push_str("\\'"),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\t' => out.push_str("\\t"),
+                '\r' => out.push_str("\\r"),
+                '\x07' => out.push_str("\\a"),
+                '\x08' => out.push_str("\\b"),
+                '\x0C' => out.push_str("\\f"),
+                '\x0B' => out.push_str("\\v"),
+                '\x1B' => out.push_str("\\E"),
+                c if c.is_ascii_control() => {
+                    out.push_str(&format!("\\x{:02x}", c as u32));
+                }
+                c => out.push(c),
+            }
+        }
+        out.push('\'');
+        return out;
+    }
+    // Check if the string needs quoting at all
+    let needs_quoting = s
+        .chars()
+        .any(|c| !c.is_ascii_alphanumeric() && !"@%_+:,./=-".contains(c));
+    if !needs_quoting {
+        return s.to_string();
+    }
+    // Use backslash escaping (bash's default %q behavior)
+    let mut result = String::new();
+    for ch in s.chars() {
+        if ch.is_ascii_alphanumeric() || "@%_+:,./=-".contains(ch) {
+            result.push(ch);
+        } else {
+            result.push('\\');
+            result.push(ch);
+        }
+    }
+    result
 }
 
 // ── paste ────────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-# M6.7 — Process substitution (all xfail)
+# M6.7 — Process substitution
 
 [[cases]]
 name = "cat_input_process_substitution"
@@ -6,10 +6,9 @@ script = 'cat <(echo hello)'
 stdout = "hello\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
+status = "pass"
 milestone = "M6.7"
 feature = "process_sub_input"
-reason = "process substitution not implemented"
 
 [[cases]]
 name = "diff_two_process_substitutions"
@@ -17,10 +16,9 @@ script = 'diff <(echo a) <(echo a) && echo same || echo diff'
 stdout = "same\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
+status = "pass"
 milestone = "M6.7"
 feature = "process_sub_input"
-reason = "process substitution not implemented"
 
 [[cases]]
 name = "output_process_substitution_cat"
@@ -28,10 +26,9 @@ script = 'echo hello > >(cat)'
 stdout = "hello\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
+status = "pass"
 milestone = "M6.7"
 feature = "process_sub_output"
-reason = "process substitution not implemented"
 
 [[cases]]
 name = "paste_two_process_substitutions"
@@ -39,10 +36,9 @@ script = 'paste <(echo a) <(echo b)'
 stdout = "a\tb\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
+status = "pass"
 milestone = "M6.7"
 feature = "process_sub_input"
-reason = "process substitution not implemented"
 
 [[cases]]
 name = "nested_process_substitution"
@@ -50,7 +46,6 @@ script = 'cat <(cat <(echo nested))'
 stdout = "nested\n"
 stderr = ""
 exit_code = 0
-status = "xfail"
+status = "pass"
 milestone = "M6.7"
 feature = "process_sub_nested"
-reason = "process substitution not implemented"

@@ -251,6 +251,16 @@ fn execute_command_substitution(
         dir_stack: state.dir_stack.clone(),
         command_hash: state.command_hash.clone(),
         aliases: state.aliases.clone(),
+        current_lineno: state.current_lineno,
+        shell_start_time: state.shell_start_time,
+        last_argument: state.last_argument.clone(),
+        call_stack: state.call_stack.clone(),
+        machtype: state.machtype.clone(),
+        hosttype: state.hosttype.clone(),
+        persistent_fds: state.persistent_fds.clone(),
+        next_auto_fd: state.next_auto_fd,
+        proc_sub_counter: state.proc_sub_counter,
+        proc_sub_prealloc: HashMap::new(),
     };
 
     let result = execute_program(&program, &mut sub_state);
@@ -689,7 +699,8 @@ fn expand_parameter(
             op,
         } => {
             let val = resolve_parameter(parameter, state, *indirect);
-            let result = apply_transform(&val, op);
+            let var_name = parameter_name(parameter);
+            let result = apply_transform(&val, op, &var_name, state);
             push_segment(words, &result, in_dq, in_dq);
         }
         ParameterExpr::VariableNames { prefix, .. } => {
@@ -1032,11 +1043,17 @@ use std::path::PathBuf;
 ///
 /// For each word marked `may_glob`, attempt filesystem glob expansion.
 /// Behavior depends on shopt options: nullglob, failglob, dotglob,
-/// nocaseglob, and globstar.
+/// nocaseglob, and globstar. When `set -f` (noglob) is active, all
+/// glob expansion is skipped and patterns pass through as literals.
 fn glob_expand_words(
     words: Vec<SplitWord>,
     state: &InterpreterState,
 ) -> Result<Vec<String>, RustBashError> {
+    // noglob: skip all filename expansion
+    if state.shell_opts.noglob {
+        return Ok(words.into_iter().map(|w| w.text).collect());
+    }
+
     let cwd = PathBuf::from(&state.cwd);
     let max = state.limits.max_glob_results;
     let opts = GlobOptions {
@@ -1088,18 +1105,344 @@ fn glob_expand_words(
 
 use brush_parser::word::ParameterTransformOp;
 
-fn apply_transform(val: &str, op: &ParameterTransformOp) -> String {
+fn apply_transform(
+    val: &str,
+    op: &ParameterTransformOp,
+    var_name: &str,
+    state: &InterpreterState,
+) -> String {
     match op {
         ParameterTransformOp::ToUpperCase => val.to_uppercase(),
         ParameterTransformOp::ToLowerCase => val.to_lowercase(),
         ParameterTransformOp::CapitalizeInitial => uppercase_first(val),
-        ParameterTransformOp::Quoted => format!("'{val}'"),
-        ParameterTransformOp::ExpandEscapeSequences => val.to_string(),
-        ParameterTransformOp::PromptExpand => val.to_string(),
-        ParameterTransformOp::PossiblyQuoteWithArraysExpanded { .. } => val.to_string(),
-        ParameterTransformOp::ToAssignmentLogic => val.to_string(),
-        ParameterTransformOp::ToAttributeFlags => String::new(),
+        ParameterTransformOp::Quoted => shell_quote(val),
+        ParameterTransformOp::ExpandEscapeSequences => expand_escape_sequences(val),
+        ParameterTransformOp::PromptExpand => expand_prompt_sequences(val, state),
+        ParameterTransformOp::PossiblyQuoteWithArraysExpanded { .. } => shell_quote(val),
+        ParameterTransformOp::ToAssignmentLogic => format_assignment(var_name, state),
+        ParameterTransformOp::ToAttributeFlags => format_attribute_flags(var_name, state),
     }
+}
+
+/// Shell-quote a value so it can be safely reused as input (@Q).
+/// Empty strings → `''`. Strings without single quotes → `'val'`.
+/// Strings with single quotes → `$'...'` with escaping.
+fn shell_quote(val: &str) -> String {
+    if val.is_empty() {
+        return "''".to_string();
+    }
+    // Use $'...' if the string contains single quotes or non-printable chars
+    let needs_dollar_quote = val.chars().any(|c| c == '\'' || c.is_ascii_control());
+    if !needs_dollar_quote {
+        return format!("'{val}'");
+    }
+    // Use $'...' notation for strings with single quotes
+    let mut out = String::from("$'");
+    for ch in val.chars() {
+        match ch {
+            '\'' => out.push_str("\\'"),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '\x07' => out.push_str("\\a"),
+            '\x08' => out.push_str("\\b"),
+            '\x0C' => out.push_str("\\f"),
+            '\x0B' => out.push_str("\\v"),
+            '\x1B' => out.push_str("\\E"),
+            c if c.is_ascii_control() => {
+                out.push_str(&format!("\\x{:02x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// Expand backslash escape sequences in a string (@E).
+fn expand_escape_sequences(val: &str) -> String {
+    let mut result = String::new();
+    let chars: Vec<char> = val.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\\' && i + 1 < chars.len() {
+            i += 1;
+            match chars[i] {
+                'n' => result.push('\n'),
+                't' => result.push('\t'),
+                'r' => result.push('\r'),
+                'a' => result.push('\x07'),
+                'b' => result.push('\x08'),
+                'f' => result.push('\x0C'),
+                'v' => result.push('\x0B'),
+                'e' | 'E' => result.push('\x1B'),
+                '\\' => result.push('\\'),
+                '\'' => result.push('\''),
+                '"' => result.push('"'),
+                'x' => {
+                    // \xHH — hex escape
+                    let mut hex = String::new();
+                    while hex.len() < 2 && i + 1 < chars.len() && chars[i + 1].is_ascii_hexdigit() {
+                        i += 1;
+                        hex.push(chars[i]);
+                    }
+                    if let Ok(n) = u32::from_str_radix(&hex, 16)
+                        && let Some(c) = char::from_u32(n)
+                    {
+                        result.push(c);
+                    }
+                }
+                'u' => {
+                    // \uHHHH — unicode escape (up to 4 hex digits)
+                    let mut hex = String::new();
+                    while hex.len() < 4 && i + 1 < chars.len() && chars[i + 1].is_ascii_hexdigit() {
+                        i += 1;
+                        hex.push(chars[i]);
+                    }
+                    if let Ok(n) = u32::from_str_radix(&hex, 16)
+                        && let Some(c) = char::from_u32(n)
+                    {
+                        result.push(c);
+                    }
+                }
+                'U' => {
+                    // \UHHHHHHHH — unicode escape (up to 8 hex digits)
+                    let mut hex = String::new();
+                    while hex.len() < 8 && i + 1 < chars.len() && chars[i + 1].is_ascii_hexdigit() {
+                        i += 1;
+                        hex.push(chars[i]);
+                    }
+                    if let Ok(n) = u32::from_str_radix(&hex, 16)
+                        && let Some(c) = char::from_u32(n)
+                    {
+                        result.push(c);
+                    }
+                }
+                '0'..='7' => {
+                    // Octal escape: \0NNN (leading zero, up to 3 more digits)
+                    // or \NNN (1-7, up to 2 more digits)
+                    let first_digit = chars[i].to_digit(8).unwrap_or(0);
+                    let max_extra = if chars[i] == '0' { 3 } else { 2 };
+                    let mut val_octal = first_digit;
+                    let mut count = 0;
+                    while count < max_extra
+                        && i + 1 < chars.len()
+                        && chars[i + 1] >= '0'
+                        && chars[i + 1] <= '7'
+                    {
+                        i += 1;
+                        val_octal = val_octal * 8 + chars[i].to_digit(8).unwrap_or(0);
+                        count += 1;
+                    }
+                    if let Some(c) = char::from_u32(val_octal) {
+                        result.push(c);
+                    }
+                }
+                other => {
+                    result.push('\\');
+                    result.push(other);
+                }
+            }
+        } else {
+            result.push(chars[i]);
+        }
+        i += 1;
+    }
+    result
+}
+
+/// Expand prompt escape sequences (@P).
+fn expand_prompt_sequences(val: &str, state: &InterpreterState) -> String {
+    let mut result = String::new();
+    let chars: Vec<char> = val.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\\' && i + 1 < chars.len() {
+            i += 1;
+            match chars[i] {
+                'u' => {
+                    result.push_str(&get_var(state, "USER").unwrap_or_else(|| "user".to_string()));
+                }
+                'h' => {
+                    let hostname =
+                        get_var(state, "HOSTNAME").unwrap_or_else(|| "localhost".to_string());
+                    // \h is short hostname (up to first dot)
+                    result.push_str(hostname.split('.').next().unwrap_or(&hostname));
+                }
+                'H' => {
+                    result.push_str(
+                        &get_var(state, "HOSTNAME").unwrap_or_else(|| "localhost".to_string()),
+                    );
+                }
+                'w' => {
+                    let cwd = &state.cwd;
+                    let home = get_var(state, "HOME").unwrap_or_default();
+                    if !home.is_empty() && cwd.starts_with(&home) {
+                        result.push('~');
+                        result.push_str(&cwd[home.len()..]);
+                    } else {
+                        result.push_str(cwd);
+                    }
+                }
+                'W' => {
+                    let cwd = &state.cwd;
+                    if cwd == "/" {
+                        result.push('/');
+                    } else {
+                        result.push_str(cwd.rsplit('/').next().unwrap_or(cwd));
+                    }
+                }
+                'd' => {
+                    // \d — "Weekday Month Day" in current locale
+                    result.push_str("Mon Jan 01");
+                }
+                't' => {
+                    // \t — HH:MM:SS (24-hour)
+                    result.push_str("00:00:00");
+                }
+                'T' => {
+                    // \T — HH:MM:SS (12-hour)
+                    result.push_str("12:00:00");
+                }
+                '@' => {
+                    // \@ — HH:MM AM/PM
+                    result.push_str("12:00 AM");
+                }
+                'A' => {
+                    // \A — HH:MM (24-hour)
+                    result.push_str("00:00");
+                }
+                'n' => result.push('\n'),
+                'r' => result.push('\r'),
+                'a' => result.push('\x07'),
+                'e' => result.push('\x1B'),
+                's' => {
+                    result.push_str(&state.shell_name);
+                }
+                'v' | 'V' => {
+                    result.push_str("5.0");
+                }
+                '#' => {
+                    result.push_str(&state.counters.command_count.to_string());
+                }
+                '$' => {
+                    // \$ — '#' if uid is 0, else '$'
+                    result.push('$');
+                }
+                '[' | ']' => {
+                    // Non-printing character delimiters — empty in output
+                }
+                '\\' => result.push('\\'),
+                other => {
+                    result.push('\\');
+                    result.push(other);
+                }
+            }
+        } else {
+            result.push(chars[i]);
+        }
+        i += 1;
+    }
+    result
+}
+
+/// Format a variable as an assignment statement (@A).
+fn format_assignment(name: &str, state: &InterpreterState) -> String {
+    use crate::interpreter::{VariableAttrs, VariableValue};
+    let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
+    let var = match state.env.get(&resolved) {
+        Some(v) => v,
+        None => return String::new(),
+    };
+
+    let mut flags = String::from("declare ");
+    let mut flag_chars = String::new();
+    match &var.value {
+        VariableValue::IndexedArray(_) => flag_chars.push('a'),
+        VariableValue::AssociativeArray(_) => flag_chars.push('A'),
+        VariableValue::Scalar(_) => {}
+    }
+    if var.attrs.contains(VariableAttrs::INTEGER) {
+        flag_chars.push('i');
+    }
+    if var.attrs.contains(VariableAttrs::LOWERCASE) {
+        flag_chars.push('l');
+    }
+    if var.attrs.contains(VariableAttrs::NAMEREF) {
+        flag_chars.push('n');
+    }
+    if var.attrs.contains(VariableAttrs::READONLY) {
+        flag_chars.push('r');
+    }
+    if var.attrs.contains(VariableAttrs::UPPERCASE) {
+        flag_chars.push('u');
+    }
+    if var.attrs.contains(VariableAttrs::EXPORTED) {
+        flag_chars.push('x');
+    }
+
+    if flag_chars.is_empty() {
+        flags.push_str("-- ");
+    } else {
+        flags.push('-');
+        flags.push_str(&flag_chars);
+        flags.push(' ');
+    }
+
+    match &var.value {
+        VariableValue::Scalar(s) => {
+            format!("{flags}{resolved}='{s}'")
+        }
+        VariableValue::IndexedArray(map) => {
+            let elements: Vec<String> = map.iter().map(|(k, v)| format!("[{k}]=\"{v}\"")).collect();
+            format!("{flags}{resolved}=({})", elements.join(" "))
+        }
+        VariableValue::AssociativeArray(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let elements: Vec<String> = keys
+                .iter()
+                .map(|k| format!("[{k}]=\"{}\"", map[*k]))
+                .collect();
+            format!("{flags}{resolved}=({})", elements.join(" "))
+        }
+    }
+}
+
+/// Return attribute flags as a string (@a).
+fn format_attribute_flags(name: &str, state: &InterpreterState) -> String {
+    use crate::interpreter::{VariableAttrs, VariableValue};
+    let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
+    let var = match state.env.get(&resolved) {
+        Some(v) => v,
+        None => return String::new(),
+    };
+    let mut flags = String::new();
+    match &var.value {
+        VariableValue::IndexedArray(_) => flags.push('a'),
+        VariableValue::AssociativeArray(_) => flags.push('A'),
+        VariableValue::Scalar(_) => {}
+    }
+    if var.attrs.contains(VariableAttrs::INTEGER) {
+        flags.push('i');
+    }
+    if var.attrs.contains(VariableAttrs::LOWERCASE) {
+        flags.push('l');
+    }
+    if var.attrs.contains(VariableAttrs::NAMEREF) {
+        flags.push('n');
+    }
+    if var.attrs.contains(VariableAttrs::READONLY) {
+        flags.push('r');
+    }
+    if var.attrs.contains(VariableAttrs::UPPERCASE) {
+        flags.push('u');
+    }
+    if var.attrs.contains(VariableAttrs::EXPORTED) {
+        flags.push('x');
+    }
+    flags
 }
 
 fn uppercase_first(s: &str) -> String {
@@ -1183,6 +1526,10 @@ fn resolve_parameter_direct(parameter: &Parameter, state: &InterpreterState) -> 
 
 /// Resolve `${arr[index]}` — look up a specific element of an array variable.
 fn resolve_array_element(name: &str, index: &str, state: &InterpreterState) -> String {
+    // Handle call-stack pseudo-arrays before checking env.
+    if let Some(val) = resolve_call_stack_element(name, index, state) {
+        return val;
+    }
     use crate::interpreter::VariableValue;
     let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
     let Some(var) = state.env.get(&resolved) else {
@@ -1199,6 +1546,30 @@ fn resolve_array_element(name: &str, index: &str, state: &InterpreterState) -> S
             if idx == 0 { s.clone() } else { String::new() }
         }
     }
+}
+
+/// Resolve `${FUNCNAME[i]}`, `${BASH_SOURCE[i]}`, `${BASH_LINENO[i]}` from the call stack.
+/// Returns `None` if `name` is not a call-stack array, so the caller falls through to env.
+fn resolve_call_stack_element(name: &str, index: &str, state: &InterpreterState) -> Option<String> {
+    match name {
+        "FUNCNAME" | "BASH_SOURCE" | "BASH_LINENO" => {}
+        _ => return None,
+    }
+    let idx = simple_arith_eval(index, state) as usize;
+    // The call stack is ordered innermost-last; bash indexes 0 = current (innermost).
+    // Build a reversed view: index 0 = top of stack, last = bottom ("main").
+    let len = state.call_stack.len();
+    if idx >= len {
+        return Some(String::new());
+    }
+    let frame_idx = len - 1 - idx;
+    let frame = &state.call_stack[frame_idx];
+    Some(match name {
+        "FUNCNAME" => frame.func_name.clone(),
+        "BASH_SOURCE" => frame.source.clone(),
+        "BASH_LINENO" => frame.lineno.to_string(),
+        _ => String::new(),
+    })
 }
 
 /// Simple arithmetic evaluation for array indices in immutable contexts.
@@ -1233,6 +1604,18 @@ fn read_var_immutable(state: &InterpreterState, name: &str) -> i64 {
 /// Resolve all elements of an array, joined into a single string.
 /// `concatenate=true` → `[*]` (join with IFS[0]), `concatenate=false` → `[@]` (join with space).
 fn resolve_all_elements(name: &str, concatenate: bool, state: &InterpreterState) -> String {
+    // Handle call-stack pseudo-arrays.
+    if let Some(vals) = get_call_stack_values(name, state) {
+        let sep = if concatenate {
+            match get_var(state, "IFS") {
+                Some(s) => s.chars().next().map(|c| c.to_string()).unwrap_or_default(),
+                None => " ".to_string(),
+            }
+        } else {
+            " ".to_string()
+        };
+        return vals.join(&sep);
+    }
     use crate::interpreter::VariableValue;
     let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
     let Some(var) = state.env.get(&resolved) else {
@@ -1260,8 +1643,44 @@ fn resolve_all_elements(name: &str, concatenate: bool, state: &InterpreterState)
     }
 }
 
+/// Get all values of call-stack pseudo-arrays as a Vec of owned Strings.
+/// Returns `None` if `name` is not a call-stack array.
+fn get_call_stack_values(name: &str, state: &InterpreterState) -> Option<Vec<String>> {
+    match name {
+        "FUNCNAME" => Some(
+            state
+                .call_stack
+                .iter()
+                .rev()
+                .map(|f| f.func_name.clone())
+                .collect(),
+        ),
+        "BASH_SOURCE" => Some(
+            state
+                .call_stack
+                .iter()
+                .rev()
+                .map(|f| f.source.clone())
+                .collect(),
+        ),
+        "BASH_LINENO" => Some(
+            state
+                .call_stack
+                .iter()
+                .rev()
+                .map(|f| f.lineno.to_string())
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
 /// Get all values of an array variable as a Vec.
 fn get_array_values(name: &str, state: &InterpreterState) -> Vec<String> {
+    // Handle call-stack pseudo-arrays first.
+    if let Some(vals) = get_call_stack_values(name, state) {
+        return vals;
+    }
     use crate::interpreter::VariableValue;
     let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
     let Some(var) = state.env.get(&resolved) else {
@@ -1282,6 +1701,10 @@ fn get_array_values(name: &str, state: &InterpreterState) -> Vec<String> {
 
 /// Get keys/indices of an array variable.
 fn get_array_keys(name: &str, state: &InterpreterState) -> Vec<String> {
+    // Handle call-stack pseudo-arrays first.
+    if let Some(vals) = get_call_stack_values(name, state) {
+        return (0..vals.len()).map(|i| i.to_string()).collect();
+    }
     use crate::interpreter::VariableValue;
     let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
     let Some(var) = state.env.get(&resolved) else {
@@ -1303,10 +1726,105 @@ fn get_array_keys(name: &str, state: &InterpreterState) -> Vec<String> {
 fn resolve_named_var(name: &str, state: &InterpreterState) -> String {
     // $RANDOM is handled exclusively via the mutable path
     // (resolve_parameter_maybe_mut → next_random) to use a single PRNG.
-    if name == "LINENO" {
-        return "0".to_string();
+    match name {
+        "LINENO" => return state.current_lineno.to_string(),
+        "SECONDS" => return state.shell_start_time.elapsed().as_secs().to_string(),
+        "_" => return state.last_argument.clone(),
+        "PPID" => {
+            return get_var(state, "PPID").unwrap_or_else(|| "1".to_string());
+        }
+        "UID" => {
+            return get_var(state, "UID").unwrap_or_else(|| "1000".to_string());
+        }
+        "EUID" => {
+            return get_var(state, "EUID").unwrap_or_else(|| "1000".to_string());
+        }
+        "BASHPID" => {
+            return get_var(state, "BASHPID").unwrap_or_else(|| "1".to_string());
+        }
+        "SHELLOPTS" => return compute_shellopts(state),
+        "BASHOPTS" => return compute_bashopts(state),
+        "MACHTYPE" => return state.machtype.clone(),
+        "HOSTTYPE" => return state.hosttype.clone(),
+        "FUNCNAME" | "BASH_SOURCE" | "BASH_LINENO" => {
+            return resolve_call_stack_scalar(name, state);
+        }
+        _ => {}
     }
     get_var(state, name).unwrap_or_default()
+}
+
+/// Compute `SHELLOPTS` — colon-separated list of enabled `set -o` options.
+fn compute_shellopts(state: &InterpreterState) -> String {
+    let mut opts = Vec::new();
+    if state.shell_opts.errexit {
+        opts.push("errexit");
+    }
+    if state.shell_opts.nounset {
+        opts.push("nounset");
+    }
+    if state.shell_opts.pipefail {
+        opts.push("pipefail");
+    }
+    if state.shell_opts.xtrace {
+        opts.push("xtrace");
+    }
+    opts.sort_unstable();
+    opts.join(":")
+}
+
+/// Compute `BASHOPTS` — colon-separated list of enabled `shopt` options.
+fn compute_bashopts(state: &InterpreterState) -> String {
+    let mut opts = Vec::new();
+    if state.shopt_opts.dotglob {
+        opts.push("dotglob");
+    }
+    if state.shopt_opts.expand_aliases {
+        opts.push("expand_aliases");
+    }
+    if state.shopt_opts.extglob {
+        opts.push("extglob");
+    }
+    if state.shopt_opts.failglob {
+        opts.push("failglob");
+    }
+    if state.shopt_opts.globskipdots {
+        opts.push("globskipdots");
+    }
+    if state.shopt_opts.globstar {
+        opts.push("globstar");
+    }
+    if state.shopt_opts.lastpipe {
+        opts.push("lastpipe");
+    }
+    if state.shopt_opts.nocaseglob {
+        opts.push("nocaseglob");
+    }
+    if state.shopt_opts.nocasematch {
+        opts.push("nocasematch");
+    }
+    if state.shopt_opts.nullglob {
+        opts.push("nullglob");
+    }
+    if state.shopt_opts.xpg_echo {
+        opts.push("xpg_echo");
+    }
+    opts.join(":")
+}
+
+/// Resolve `FUNCNAME`, `BASH_SOURCE`, or `BASH_LINENO` as a scalar
+/// (returns value at index 0, i.e. current/innermost frame).
+fn resolve_call_stack_scalar(name: &str, state: &InterpreterState) -> String {
+    if state.call_stack.is_empty() {
+        return String::new();
+    }
+    let frame = &state.call_stack[state.call_stack.len() - 1];
+    match name {
+        "FUNCNAME" => frame.func_name.clone(),
+        "BASH_SOURCE" => frame.source.clone(),
+        "BASH_LINENO" => frame.lineno.to_string(),
+        _ => String::new(),
+    }
 }
 
 fn resolve_special(sp: &SpecialParameter, state: &InterpreterState) -> String {
@@ -1364,9 +1882,33 @@ fn should_use_default(
     }
 }
 
+/// Names that are always "set" because they are dynamically computed.
+fn is_dynamic_special(name: &str) -> bool {
+    matches!(
+        name,
+        "LINENO"
+            | "SECONDS"
+            | "_"
+            | "PPID"
+            | "UID"
+            | "EUID"
+            | "BASHPID"
+            | "SHELLOPTS"
+            | "BASHOPTS"
+            | "MACHTYPE"
+            | "HOSTTYPE"
+            | "FUNCNAME"
+            | "BASH_SOURCE"
+            | "BASH_LINENO"
+    )
+}
+
 fn is_unset(state: &InterpreterState, parameter: &Parameter) -> bool {
     match parameter {
         Parameter::Named(name) => {
+            if is_dynamic_special(name) {
+                return false;
+            }
             let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
             !state.env.contains_key(&resolved)
         }
@@ -1379,10 +1921,16 @@ fn is_unset(state: &InterpreterState, parameter: &Parameter) -> bool {
         }
         Parameter::Special(_) => false,
         Parameter::NamedWithIndex { name, .. } => {
+            if is_dynamic_special(name) {
+                return false;
+            }
             let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
             !state.env.contains_key(&resolved)
         }
         Parameter::NamedWithAllIndices { name, .. } => {
+            if is_dynamic_special(name) {
+                return false;
+            }
             let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
             !state.env.contains_key(&resolved)
         }
