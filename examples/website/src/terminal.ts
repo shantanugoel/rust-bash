@@ -22,11 +22,20 @@ const PROMPT = '\x1b[32m🦀  rust-bash\x1b[0m:\x1b[36m~\x1b[0m$ ';
 const GITHUB_REPO_URL = 'https://github.com/shantanugoel/rust-bash';
 const INITIAL_AGENT_COMMAND = 'agent "is this the matrix?"';
 
+// Font size breakpoints (match the CSS @media (max-width: 480px) query)
+const NARROW_VIEWPORT_THRESHOLD = 480;
+const EXTRA_NARROW_THRESHOLD = 360;
+const FONT_SIZE_DEFAULT = 14;
+const FONT_SIZE_NARROW = 12;
+const FONT_SIZE_EXTRA_NARROW = 11;
+// Minimum terminal column count before the wide ASCII art wraps on mobile
+const MIN_COLS_FOR_WIDE_WELCOME = 55;
+
 function hyperlink(label: string, url: string): string {
   return `\x1b]8;;${url}\x1b\\${label}\x1b]8;;\x1b\\`;
 }
 
-const WELCOME = `\x1b[38;2;247;76;0m
+const WELCOME_WIDE = `\x1b[38;2;247;76;0m
                     __  __               __
    _______  _______/ /_/ /_  ____ ______/ /_
   / ___/ / / / ___/ __/ __ \\/ __ \`/ ___/ __ \\
@@ -46,6 +55,18 @@ ${hyperlink(
 
 `;
 
+function buildWelcomeNarrow(): string {
+  return `
+\x1b[38;2;247;76;0m🦀 rust-bash\x1b[0m  ${hyperlink('github', GITHUB_REPO_URL)}
+
+\x1b[33m80+ cmds\x1b[0m · \x1b[33mVirtual FS\x1b[0m · \x1b[33mSandboxed\x1b[0m
+
+ Try: \x1b[36mls\x1b[0m  \x1b[36mcat README.md\x1b[0m
+      \x1b[36magent "is this the matrix?"\x1b[0m
+
+`;
+}
+
 export class TerminalUI {
   private term: Terminal;
   private fitAddon: FitAddon;
@@ -59,11 +80,15 @@ export class TerminalUI {
 
   constructor(container: HTMLElement) {
     const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const isNarrowViewport = window.innerWidth <= NARROW_VIEWPORT_THRESHOLD;
+    const fontSize = isNarrowViewport
+      ? (window.innerWidth <= EXTRA_NARROW_THRESHOLD ? FONT_SIZE_EXTRA_NARROW : FONT_SIZE_NARROW)
+      : FONT_SIZE_DEFAULT;
 
     this.term = new Terminal({
       fontFamily:
         "'Fira Mono', 'JetBrains Mono', 'Cascadia Code', monospace",
-      fontSize: 14,
+      fontSize,
       theme: isDark
         ? {
             background: '#0a0a0a',
@@ -122,8 +147,9 @@ export class TerminalUI {
       return;
     }
 
-    // Write welcome screen
-    this.term.write(WELCOME);
+    // Write welcome screen — use compact version on narrow terminals
+    const welcome = this.term.cols < MIN_COLS_FOR_WIDE_WELCOME ? buildWelcomeNarrow() : WELCOME_WIDE;
+    this.term.write(welcome);
     this.showPrompt();
 
     // Auto-type the initial command
