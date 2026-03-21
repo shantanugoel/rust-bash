@@ -1,0 +1,16 @@
+# Provenance
+
+The `.test.sh` files in this directory were imported from the
+[Oils](https://github.com/oils-for-unix/oils) project's spec test corpus.
+
+- **Upstream repository**: https://github.com/oils-for-unix/oils
+- **Upstream path**: `spec/*.test.sh` (non-YSH files only)
+- **Pinned commit**: `7789e21d81537a5b47bacbd4267edf7c659a9366`
+- **Import date**: 2026-03-21
+- **License**: Apache License 2.0 (see LICENSE in this directory)
+
+Only non-YSH `.test.sh` files were imported. YSH-specific files (`ysh-*.test.sh`)
+were excluded as they test the Oils-specific YSH language, not bash compatibility.
+
+The Oils spec test format is documented at:
+https://www.oilshell.org/cross-ref.html#spec-test

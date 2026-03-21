@@ -52,11 +52,12 @@ Key format elements:
 |---|---|---|---|
 | Comparison fixture files | 32 | 34 | rust-bash slightly broader |
 | Comparison fixture cases | 532 | 269 | −263 (depth gap) |
-| Oils spec files | 136 | 0 | −136 |
-| Oils spec cases | 2,728 | 0 | −2,728 |
-| **Total test surface** | **~3,260** | **269** | **−2,991** |
+| Spec test cases (grep/sed/awk/jq) | — | 188 | rust-bash only |
+| Oils spec files | 136 | 142 | rust-bash imported 142 from upstream |
+| Oils spec cases | 2,728 | 2,274 | −454 (42 files skipped) |
+| **Total test surface** | **~3,260** | **2,731** | **−529** |
 
-After importing the Oils corpus, rust-bash would have **~2,997 cases** — near parity.
+The Oils corpus is imported and running. Of the 2,274 Oils cases, **802 pass**, **1,393 are xfail**, and **79 are skip**. Upstream provenance: Oils commit `7789e21d81537a5b47bacbd4267edf7c659a9366`.
 
 ---
 
@@ -284,8 +285,9 @@ test runner that powers `comparison.rs` and `spec_tests.rs`.
 
 ## Projected pass rates after import
 
-These are rough planning estimates, not measured results. The actual baseline should be established
-by the first import run and then written back into the guidebook.
+These were rough planning estimates. The actual measured baseline (from the import run) is:
+**802 pass / 1,393 xfail / 79 skip** across 100 tested files (2,274 cases). The per-category
+estimates below are superseded by the measured totals in the "Combined test surface" table.
 
 | Category | Files | Cases | Est. pass | Est. xfail | Est. skip |
 |---|---|---|---|---|---|
@@ -302,18 +304,18 @@ by the first import run and then written back into the guidebook.
 | Non-applicable | 22 | 165 | — | — | 165 |
 | **Total** | **136** | **2,728** | **~1,239** | **~1,026** | **463** |
 
-**Initial overall pass rate: ~55% of runnable cases (1,239 / 2,265)**
+**Measured overall pass rate: ~35% of runnable cases (802 / 2,274)**
 
-### Combined test surface after import
+### Combined test surface (measured)
 
-| Metric | just-bash | rust-bash | Delta |
-|---|---|---|---|
-| Comparison fixtures | 532 cases | 269 cases | −263 |
-| Oils spec tests | 2,728 cases | 2,728 cases | 0 |
-| **Total** | **~3,260** | **~2,997** | **−263** |
+| Suite | Files | Cases | Pass | Xfail | Skip |
+|---|---|---|---|---|---|
+| Comparison fixtures | 34 | 269 | 263 | 5 | 1 |
+| Spec tests (grep/sed/awk/jq) | 14 | 188 | 188 | 0 | 0 |
+| Oils spec tests | 142 (100 tested) | 2,274 | 802 | 1,393 | 79 |
+| **Total** | **190** | **2,731** | **1,250** | **1,401** | **80** |
 
-The depth gap in comparison fixtures (−263) is minor. The real gap is **implementation coverage**
-— as features land, Oils cases flip from xfail to pass automatically.
+The depth gap in comparison fixtures (−263 vs just-bash) is minor. The real gap is **implementation coverage** — as features land, Oils cases flip from xfail to pass automatically.
 
 > [!NOTE]
 > This comparison is intentionally "like-for-like" shell-conformance surface area. It excludes
@@ -490,15 +492,15 @@ M6**, and only indirectly helps the rest of the roadmap.
 
 ## Acceptance criteria
 
-- [ ] Oils parser correctly handles all format variants (single-line stdout, multiline STDOUT/END,
+- [x] Oils parser correctly handles all format variants (single-line stdout, multiline STDOUT/END,
       multiline STDERR/END, status, bash-specific overrides, stderr-json)
-- [ ] All 136 `.test.sh` files are imported under `tests/fixtures/oils/`
-- [ ] Apache 2.0 LICENSE attribution present
-- [ ] `Cargo.toml` registers the new `oils_spec` test target with `harness = false`
-- [ ] File-level skip list excludes CLI-only, non-applicable, and explicit non-goal files
-- [ ] Pass-list generated from initial run
-- [ ] `cargo test --test oils_spec` runs cleanly (no unexpected failures)
-- [ ] Per-file and per-milestone summary printed (reuse M6.12 summary format)
-- [ ] Initial run establishes and documents a baseline pass/xfail/skip distribution
-- [ ] Unexpected passes force promotion (same unexpected-pass discipline as comparison fixtures)
-- [ ] Documentation updated (guidebook chapters 9 and 10)
+- [x] All 142 `.test.sh` files imported under `tests/fixtures/oils/` (from upstream Oils commit `7789e21d81537a5b47bacbd4267edf7c659a9366`)
+- [x] Apache 2.0 LICENSE attribution present
+- [x] `Cargo.toml` registers the new `oils_spec` test target with `harness = false`
+- [x] File-level skip list excludes CLI-only, non-applicable, and explicit non-goal files (42 files)
+- [x] Pass-list generated from initial run (802 entries in `pass-list.txt`)
+- [x] `cargo test --test oils_spec` runs cleanly (0 unexpected failures)
+- [x] Per-file summary printed (pass/xfail/skip/unexpected-pass/fail per file)
+- [x] Initial baseline established: 802 pass / 1,393 xfail / 79 skip across 100 tested files
+- [x] Unexpected passes force promotion (same unexpected-pass discipline as comparison fixtures)
+- [x] Documentation updated (guidebook chapters 9 and 10)

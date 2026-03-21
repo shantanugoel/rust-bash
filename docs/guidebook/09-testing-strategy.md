@@ -109,6 +109,64 @@ Spec tests verify command implementations (`grep`, `sed`, `awk`, `jq`) against m
 - **awk**: field splitting, patterns, built-in functions, arithmetic, associative arrays
 - **jq**: basic filters, pipe operator, types, comparison, built-in functions (`map`, `select`, `keys`, `sort`, `reduce`, `length`, `split`, `join`, `test`, etc.), string interpolation, alternative operator, output flags (`-r`, `-c`, `-s`, `-S`, `-n`, `-j`), `--arg`/`--argjson`
 
+### Differential Testing — Oils Spec Tests
+
+The [Oils project](https://github.com/oils-for-unix/oils) (formerly Oil Shell) maintains the most comprehensive open-source bash conformance test suite: **2,274 test cases across 142 `.test.sh` files**. These tests are licensed under Apache 2.0 and imported from upstream Oils commit `7789e21d81537a5b47bacbd4267edf7c659a9366`.
+
+**File location**: `tests/fixtures/oils/` — the `.test.sh` files plus a `LICENSE` attribution and `pass-list.txt`.
+
+**Runner**: `tests/oils_spec.rs` uses `datatest-stable` to discover all `.test.sh` files and generate one `#[test]` per file. Within each file, all cases run sequentially with per-file summaries.
+
+**Format**: Oils tests use a plain-text format different from the TOML format used by comparison and spec tests:
+
+```bash
+#### test name
+echo hello
+## stdout: hello
+
+#### multiline output
+echo line1
+echo line2
+## STDOUT:
+line1
+line2
+## END
+
+#### expected failure
+false
+## status: 1
+```
+
+Key format elements:
+- `#### name` — test case delimiter and name
+- `## stdout: value` — single-line expected stdout
+- `## STDOUT:\n...\n## END` — multiline expected stdout
+- `## status: N` — expected exit code (default 0)
+- `## OK bash ...` / `## BUG bash ...` / `## N-I bash ...` — shell-specific expected output overrides
+
+**Pass-list approach**: The Oils suite inverts the xfail model used by comparison and spec tests. Instead of marking known failures, it maintains a **pass-list** (`tests/fixtures/oils/pass-list.txt`) of known-passing case names. Everything else defaults to xfail. This is a better fit because the imported corpus has far more expected failures than passes.
+
+**Current coverage** (142 files, 2,274 cases):
+- 100 files tested, 42 files skipped
+- **802 pass** / **1,393 xfail** / **79 skip** / **0 unexpected-pass** / **0 fail**
+
+**File-level skip categories** (42 files):
+- Non-applicable (zsh-specific, ble.sh, nix, toysh, etc.)
+- CLI/REPL-only (interactive, completion, history, prompt)
+- Process/trap features outside the `exec()` harness (background, kill, trap)
+- Oils-specific (parser exploration, deferred assignment, etc.)
+
+**Adding cases to the pass-list**: When implementing a feature causes new Oils cases to pass, regenerate the pass-list:
+
+```bash
+OILS_GENERATE_PASS_LIST=1 cargo test --test oils_spec 2>&1 \
+  | grep '^PASS_LIST:' | sed 's/^PASS_LIST://' | sort > tests/fixtures/oils/pass-list.txt
+```
+
+Review the diff and commit the updated `pass-list.txt`.
+
+**Unexpected-pass enforcement**: If a case passes that is not in the pass-list, it is reported as an unexpected pass. The runner treats unexpected passes as test failures, forcing promotion — the same discipline used by the comparison and spec suites.
+
 ### Fuzzing
 
 Use `cargo fuzz` to feed arbitrary strings through the full pipeline:
@@ -146,6 +204,7 @@ rust-bash/
     ├── integration.rs         # End-to-end tests through RustBash::exec()
     ├── comparison.rs          # Comparison test runner (rust-bash vs recorded bash output)
     ├── spec_tests.rs          # Spec test runner (awk, grep, sed, jq)
+    ├── oils_spec.rs           # Oils spec test runner (upstream bash conformance tests)
     ├── common/
     │   └── mod.rs             # Shared data model and test execution logic
     ├── filesystem_backends.rs # VFS backend integration tests
@@ -163,12 +222,16 @@ rust-bash/
     │   │   ├── control_flow/
     │   │   ├── functions/
     │   │   └── here_documents/
-    │   └── spec/              # Manually written spec tests
-    │       ├── basic_commands.toml
-    │       ├── grep/
-    │       ├── sed/
-    │       ├── awk/
-    │       └── jq/
+    │   ├── spec/              # Manually written spec tests
+    │   │   ├── basic_commands.toml
+    │   │   ├── grep/
+    │   │   ├── sed/
+    │   │   ├── awk/
+    │   │   └── jq/
+    │   └── oils/              # Upstream Oils bash conformance tests (Apache 2.0)
+    │       ├── LICENSE
+    │       ├── pass-list.txt
+    │       └── *.test.sh      # 142 test files
     └── snapshots/             # insta snapshot files
 ```
 
@@ -264,18 +327,34 @@ Spec tests have no recording mode — expected output is always hand-written.
 
 ## Marking Known Failures
 
-If rust-bash doesn't yet match bash for a particular case, mark it with `skip` and a reason:
+All three test suites (comparison, spec, and Oils) use a **three-state model** for each test case:
+
+| State | Meaning |
+|-------|---------|
+| **pass** | Case must match expected output. A mismatch is a test failure. |
+| **xfail** | Known product gap — the case is expected to fail. A mismatch is silently counted. If it unexpectedly passes, that is treated as a failure to force promotion. |
+| **skip** | Case is excluded entirely (harness limitation, platform blocker, or non-applicable). |
+
+### TOML suites (comparison and spec)
+
+The preferred way to mark a known failure is with the `status` field:
 
 ```toml
 [[cases]]
 name = "ansi_c_quoting"
 script = "echo $'hello\\tworld'"
-skip = "rust-bash does not implement ANSI-C quoting ($'...')"
+status = "xfail"
 stdout = "hello\tworld\n"
 exit_code = 0
 ```
 
-Skipped cases are printed during test runs (e.g., `SKIP ansi_c_quoting: rust-bash does not implement ANSI-C quoting`) but do not cause failures. Remove the `skip` field once the feature is implemented.
+Xfail cases run normally but their mismatch does not cause a test failure. When the underlying feature is implemented and the case starts passing, the runner reports an **unexpected pass** and fails the test — you must then change `status` back to `"pass"` (or remove it, since pass is the default) to promote the case.
+
+The `skip` field is still supported as a legacy mechanism (setting `skip = "reason"` excludes the case entirely), but `status = "xfail"` is preferred for product gaps because xfail cases still execute and will automatically surface when they start passing.
+
+### Oils suite
+
+The Oils suite uses an **inverted model**: a pass-list (`tests/fixtures/oils/pass-list.txt`) tracks known-passing case names. Everything not in the pass-list defaults to xfail. Cases whose code contains constructs the harness cannot support (e.g., here-documents with `cat <<`) are marked skip. See the "Oils Spec Tests" section above for details.
 
 ## Re-Recording Fixtures
 

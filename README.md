@@ -563,6 +563,7 @@ The following milestones track the project's progress:
 - ✅ **Milestone 5.2**: C FFI — shared library, generated C header, JSON config, 6 exported functions
 - ✅ **Milestone 5.3**: WASM target — `wasm32-unknown-unknown`, npm package `@rust-bash/core` with TypeScript types
 - ✅ **Milestone 5.4**: AI SDK integration — framework-agnostic tool definitions, MCP server, documented adapters
+- ✅ **Milestone 6.12**: Differential testing — 2,731 test cases across three suites (comparison fixtures, command spec tests, upstream Oils bash conformance tests)
 - Planned: Shell language completeness — arrays, shopt, process substitution (M6)
 - Planned: Command coverage — `--help` for all commands, missing utilities (M7)
 - Planned: Embedded runtimes — SQLite, yq, Python, JavaScript (M8)

@@ -1,3 +1,9 @@
+// Shared test module items are used by different test binaries (comparison, spec_tests,
+// oils_spec) — not every binary uses every item, so dead_code warnings are false positives.
+#![allow(dead_code)]
+
+pub mod oils_format;
+
 use std::collections::HashMap;
 use std::path::Path;
 

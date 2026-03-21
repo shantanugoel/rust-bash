@@ -71,6 +71,10 @@ harness = false
 name = "spec_tests"
 harness = false
 
+[[test]]
+name = "oils_spec"
+harness = false
+
 [profile.release-wasm]
 inherits = "release"
 opt-level = "z"
