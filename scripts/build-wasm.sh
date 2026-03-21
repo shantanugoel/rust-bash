@@ -40,7 +40,9 @@ wasm-bindgen \
 # Optional: wasm-opt for size optimization
 if command -v wasm-opt &>/dev/null; then
     echo "Running wasm-opt..."
-    wasm-opt "$OUT_DIR/rust_bash_bg.wasm" -Oz -o "$OUT_DIR/rust_bash_bg.wasm"
+    wasm-opt "$OUT_DIR/rust_bash_bg.wasm" -Oz \
+        --enable-bulk-memory --enable-nontrapping-float-to-int \
+        -o "$OUT_DIR/rust_bash_bg.wasm"
 fi
 
 # Copy WASM binary to website public/ for dev mode serving
