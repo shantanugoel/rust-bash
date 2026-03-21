@@ -17,7 +17,7 @@ A sandboxed bash interpreter, built in Rust.
 - **Full bash syntax** — pipes, redirects, subshells, functions, globs, arithmetic
 - **Execution limits** — 10 configurable safety bounds
 - **Network sandboxing** — URL allow-lists for curl
-- **Embeddable** — use as a crate, CLI, WASM, or C FFI
+- **Embeddable** — use as a crate, CLI, WASM, or any language (Python, Go, Typescript, etc) via native bridges or C FFI
 
 ## Quick Start
 
