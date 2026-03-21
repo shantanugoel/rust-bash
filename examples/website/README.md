@@ -56,18 +56,56 @@ Interactive demo of rust-bash running in the browser via WASM.
 ```bash
 cd examples/website
 npm install
+npm run build
 npm run dev
 ```
 
-The dev server runs on `http://localhost:5173`. The agent proxy requires
-a Cloudflare Worker running locally:
+Use a second terminal to run the Pages Functions locally:
 
 ```bash
-npx wrangler pages dev dist/ --binding GEMINI_API_KEY=your-key-here
+bunx wrangler pages dev dist --binding GEMINI_API_KEY=your-key-here
 ```
 
 To test another provider locally, add `LLM_API_KEY` and optionally `LLM_BASE_URL`
 and `LLM_MODEL` bindings to the same command.
+
+### Local Testing
+
+The local setup uses both Vite and Wrangler:
+
+- `npm run dev` serves the frontend on `http://localhost:5173`
+- `wrangler pages dev dist` serves the built Pages site and Functions, usually on `http://localhost:8788`
+- Vite proxies `/api` requests to Wrangler, so the browser can talk to the local Pages Function while still using the Vite dev server
+
+Recommended workflow:
+
+```bash
+# terminal 1
+cd examples/website
+npm run dev
+
+# terminal 2
+cd examples/website
+bunx wrangler pages dev dist --binding GEMINI_API_KEY=your-key-here
+```
+
+Then open `http://localhost:5173`.
+
+Use Wrangler by itself when you want a more production-like local check:
+
+```bash
+cd examples/website
+npm run build
+bunx wrangler pages dev dist --binding GEMINI_API_KEY=your-key-here
+```
+
+Then open the Wrangler URL directly, typically `http://localhost:8788`.
+
+Notes:
+
+- `wrangler pages dev dist` serves the built `dist/` output, not Vite's live bundle
+- rerun `npm run build` before testing through Wrangler alone after frontend changes
+- if you are using the Vite dev server plus Wrangler together, Vite handles the frontend and proxies `/api` to the Wrangler server configured in `vite.config.ts`
 
 ## Build
 

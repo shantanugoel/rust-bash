@@ -72,26 +72,165 @@ const tools: OpenAI.ChatCompletionTool[] = [
 const MAX_TURNS = 8;
 const MAX_STDOUT = 5000;
 const MAX_STDERR = 2000;
+const MODEL = 'gemini-2.5-flash';
+
+type PendingToolCall = {
+  id: string;
+  function: { name: string; arguments: string };
+};
+
+type TurnData = {
+  content: string;
+  textChunks: string[];
+  toolCalls: PendingToolCall[];
+};
+
+type AgentClient = {
+  createStreamingCompletion(
+    params: Omit<OpenAI.ChatCompletionCreateParamsStreaming, 'stream'>,
+  ): Promise<AsyncIterable<OpenAI.ChatCompletionChunk>>;
+  createCompletion(
+    params: OpenAI.ChatCompletionCreateParamsNonStreaming,
+  ): Promise<OpenAI.ChatCompletion>;
+};
+
+function createAgentApi(client: OpenAI): AgentClient {
+  return {
+    createStreamingCompletion(params) {
+      return client.chat.completions.create({
+        ...params,
+        stream: true,
+      });
+    },
+    createCompletion(params) {
+      return client.chat.completions.create({
+        ...params,
+        stream: false,
+      });
+    },
+  };
+}
+
+function appendToolCallDelta(
+  toolCalls: PendingToolCall[],
+  deltaToolCalls: OpenAI.ChatCompletionChunk.Choice.Delta.ToolCall[],
+): void {
+  for (const tc of deltaToolCalls) {
+    toolCalls[tc.index] = toolCalls[tc.index] ?? {
+      id: '',
+      function: { name: '', arguments: '' },
+    };
+    if (tc.id) toolCalls[tc.index]!.id = tc.id;
+    if (tc.function?.name) {
+      toolCalls[tc.index]!.function.name = tc.function.name;
+    }
+    if (tc.function?.arguments) {
+      toolCalls[tc.index]!.function.arguments += tc.function.arguments;
+    }
+  }
+}
+
+function collectMessageContent(
+  content: unknown,
+): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+
+  if (!Array.isArray(content)) {
+    return '';
+  }
+
+  return content
+    .map((part) => {
+      if (
+        part &&
+        typeof part === 'object' &&
+        'type' in part &&
+        part.type === 'text' &&
+        'text' in part &&
+        typeof part.text === 'string'
+      ) {
+        return part.text;
+      }
+
+      return '';
+    })
+    .join('');
+}
+
+function collectMessageToolCalls(
+  toolCalls: OpenAI.ChatCompletionMessage['tool_calls'],
+): PendingToolCall[] {
+  if (!toolCalls) {
+    return [];
+  }
+
+  return toolCalls
+    .filter((toolCall) => toolCall.type === 'function')
+    .map((toolCall) => ({
+      id: toolCall.id,
+      function: {
+        name: toolCall.function.name,
+        arguments: toolCall.function.arguments,
+      },
+    }));
+}
+
+async function collectStreamedTurn(
+  stream: AsyncIterable<OpenAI.ChatCompletionChunk>,
+): Promise<TurnData> {
+  let content = '';
+  const textChunks: string[] = [];
+  const toolCalls: PendingToolCall[] = [];
+
+  for await (const chunk of stream) {
+    const delta = chunk.choices[0]?.delta;
+    if (delta?.content) {
+      content += delta.content;
+      textChunks.push(delta.content);
+    }
+    if (delta?.tool_calls) {
+      appendToolCallDelta(toolCalls, delta.tool_calls);
+    }
+  }
+
+  return { content, textChunks, toolCalls };
+}
+
+function collectCompletionTurn(
+  completion: OpenAI.ChatCompletion,
+): TurnData {
+  const message = completion.choices[0]?.message;
+
+  return {
+    content: collectMessageContent(message?.content ?? null),
+    textChunks: [],
+    toolCalls: collectMessageToolCalls(message?.tool_calls),
+  };
+}
 
 export async function* runAgentLoop(
   userMessage: string,
   bash: BashInstance,
+  agentClient = createAgentApi(createClient()),
 ): AsyncGenerator<AgentEvent> {
-  const client = createClient();
   const messages: OpenAI.ChatCompletionMessageParam[] = [
     { role: 'system', content: SYSTEM_INSTRUCTIONS },
     { role: 'user', content: userMessage },
   ];
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
-    let stream: AsyncIterable<OpenAI.ChatCompletionChunk>;
+    const request = {
+      model: MODEL,
+      messages,
+      tools,
+    } satisfies Omit<OpenAI.ChatCompletionCreateParamsStreaming, 'stream'>;
+
+    let turnData: TurnData;
     try {
-      stream = await client.chat.completions.create({
-        model: 'gemini-2.5-flash',
-        messages,
-        tools,
-        stream: true,
-      });
+      const stream = await agentClient.createStreamingCompletion(request);
+      turnData = await collectStreamedTurn(stream);
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : 'Unknown error';
@@ -110,48 +249,41 @@ export async function* runAgentLoop(
       return;
     }
 
-    let fullResponse = '';
-    const toolCalls: {
-      id: string;
-      function: { name: string; arguments: string };
-    }[] = [];
+    for (const chunk of turnData.textChunks) {
+      yield { type: 'text', content: chunk };
+    }
 
-    for await (const chunk of stream) {
-      const delta = chunk.choices[0]?.delta;
-      if (delta?.content) {
-        fullResponse += delta.content;
-        yield { type: 'text', content: delta.content };
+    if (!turnData.content && turnData.toolCalls.length === 0) {
+      try {
+        const completion = await agentClient.createCompletion(request);
+        turnData = collectCompletionTurn(completion);
+      } catch (err: unknown) {
+        const message =
+          err instanceof Error ? err.message : 'Unknown error';
+        yield {
+          type: 'text',
+          content: `\n⚠️ Agent error: ${message}\n`,
+        };
+        return;
       }
-      if (delta?.tool_calls) {
-        for (const tc of delta.tool_calls) {
-          toolCalls[tc.index] = toolCalls[tc.index] ?? {
-            id: '',
-            function: { name: '', arguments: '' },
-          };
-          if (tc.id) toolCalls[tc.index]!.id = tc.id;
-          if (tc.function?.name)
-            toolCalls[tc.index]!.function.name = tc.function.name;
-          if (tc.function?.arguments)
-            toolCalls[tc.index]!.function.arguments +=
-              tc.function.arguments;
-        }
+
+      if (turnData.content) {
+        yield { type: 'text', content: turnData.content };
       }
     }
 
-    if (toolCalls.length > 0) {
-      // Add assistant message with tool calls
+    if (turnData.toolCalls.length > 0) {
       messages.push({
         role: 'assistant',
-        content: fullResponse || null,
-        tool_calls: toolCalls.map((tc) => ({
+        content: turnData.content || null,
+        tool_calls: turnData.toolCalls.map((tc) => ({
           id: tc.id,
           type: 'function' as const,
           function: tc.function,
         })),
       });
 
-      // Execute each tool call locally
-      for (const tc of toolCalls) {
+      for (const tc of turnData.toolCalls) {
         let args: { command: string };
         try {
           args = JSON.parse(tc.function.arguments) as {
@@ -174,9 +306,7 @@ export async function* runAgentLoop(
           }),
         });
       }
-      // Loop continues — send results back to LLM
     } else {
-      // No tool calls — final text response
       break;
     }
   }
