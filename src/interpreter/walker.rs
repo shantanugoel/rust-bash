@@ -174,21 +174,34 @@ fn execute_pipeline(
     let mut combined_stderr = String::new();
     let mut exit_code = 0;
     let mut exit_codes: Vec<i32> = Vec::new();
+    let is_actual_pipe = pipeline.seq.len() > 1;
+    let saved_stdin_offset = state.stdin_offset;
 
     // Negated pipelines (`! cmd`) suppress errexit for the inner commands
     if pipeline.bang {
         state.errexit_suppressed += 1;
     }
 
-    for command in &pipeline.seq {
+    for (idx, command) in pipeline.seq.iter().enumerate() {
         if state.should_exit || state.control_flow.is_some() {
             break;
+        }
+        // Reset stdin offset when entering a new pipe stage with fresh data
+        if idx > 0 {
+            state.stdin_offset = 0;
         }
         let r = execute_command(command, state, &pipe_data)?;
         pipe_data = r.stdout;
         combined_stderr.push_str(&r.stderr);
         exit_code = r.exit_code;
         exit_codes.push(r.exit_code);
+    }
+
+    // Multi-stage pipelines operate on ephemeral pipe data — restore the
+    // caller's stdin offset so enclosing loops (e.g. `while read`) are not
+    // corrupted by inner pipe stages resetting the offset.
+    if is_actual_pipe {
+        state.stdin_offset = saved_stdin_offset;
     }
 
     if pipeline.bang {
@@ -223,22 +236,39 @@ fn execute_command(
     state: &mut InterpreterState,
     stdin: &str,
 ) -> Result<ExecResult, RustBashError> {
-    match command {
+    let result = match command {
         ast::Command::Simple(simple_cmd) => execute_simple_command(simple_cmd, state, stdin),
         ast::Command::Compound(compound, redirects) => {
             execute_compound_command(compound, redirects.as_ref(), state, stdin)
         }
         ast::Command::Function(func_def) => {
-            let name = expand_word_to_string_mut(&func_def.fname, state)?;
-            state.functions.insert(
-                name,
-                FunctionDef {
-                    body: func_def.body.clone(),
-                },
-            );
-            Ok(ExecResult::default())
+            match expand_word_to_string_mut(&func_def.fname, state) {
+                Ok(name) => {
+                    state.functions.insert(
+                        name,
+                        FunctionDef {
+                            body: func_def.body.clone(),
+                        },
+                    );
+                    Ok(ExecResult::default())
+                }
+                Err(e) => Err(e),
+            }
         }
         ast::Command::ExtendedTest(ext_test) => execute_extended_test(&ext_test.expr, state),
+    };
+
+    match result {
+        Err(RustBashError::ExpansionError { message, exit_code }) => {
+            state.last_exit_code = exit_code;
+            state.should_exit = true;
+            Ok(ExecResult {
+                stderr: format!("rust-bash: {message}\n"),
+                exit_code,
+                ..Default::default()
+            })
+        }
+        other => other,
     }
 }
 
@@ -710,6 +740,7 @@ fn execute_subshell(
         traps: state.traps.clone(),
         in_trap: false,
         errexit_suppressed: 0,
+        stdin_offset: 0,
     };
 
     let result = execute_compound_list(list, &mut sub_state, stdin);
@@ -851,6 +882,7 @@ fn make_exec_callback(
             traps: HashMap::new(),
             in_trap: false,
             errexit_suppressed: 0,
+            stdin_offset: 0,
         };
 
         let result = execute_program(&program, &mut sub_state)?;

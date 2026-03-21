@@ -1,0 +1,74 @@
+# awk pattern matching
+
+[[cases]]
+name = "begin_block"
+script = "echo '' | awk 'BEGIN { print \"header\" }'"
+stdout = "header\n"
+exit_code = 0
+
+[[cases]]
+name = "end_block"
+script = 'printf "a\nb\nc\n" | awk "END { print NR }"'
+stdout = "3\n"
+exit_code = 0
+
+[[cases]]
+name = "begin_and_end"
+script = 'printf "x\ny\n" | awk "BEGIN { print \"start\" } END { print \"end\" }"'
+stdout = "start\nend\n"
+exit_code = 0
+
+[[cases]]
+name = "regex_pattern"
+script = 'printf "apple\nbanana\napricot\n" | awk "/^a/ { print }"'
+stdout = "apple\napricot\n"
+exit_code = 0
+
+[[cases]]
+name = "expression_pattern"
+script = 'printf "1\n2\n3\n4\n5\n" | awk "NR > 3 { print }"'
+stdout = "4\n5\n"
+exit_code = 0
+
+[[cases]]
+name = "no_pattern_matches_all"
+script = 'printf "a\nb\nc\n" | awk "{ print \"line:\", \$0 }"'
+stdout = "line: a\nline: b\nline: c\n"
+exit_code = 0
+
+[[cases]]
+name = "multiple_rules"
+script = 'printf "1\n2\n3\n" | awk "/1/ { print \"one\" } /3/ { print \"three\" }"'
+stdout = "one\nthree\n"
+exit_code = 0
+
+[[cases]]
+name = "pattern_only_implicit_print"
+script = 'printf "apple\nbanana\ncherry\n" | awk "/banana/"'
+stdout = "banana\n"
+exit_code = 0
+
+[[cases]]
+name = "negated_regex"
+script = 'printf "apple\nbanana\ncherry\n" | awk "!/banana/ { print }"'
+stdout = "apple\ncherry\n"
+exit_code = 0
+
+[[cases]]
+name = "range_pattern"
+script = 'printf "a\nSTART\nb\nc\nEND\nd\n" | awk "/START/,/END/ { print }"'
+stdout = "START\nb\nc\nEND\n"
+exit_code = 0
+
+[[cases]]
+name = "compound_expression_pattern"
+script = 'printf "1 10\n2 20\n3 5\n" | awk "\$1 > 1 && \$2 > 10 { print }"'
+stdout = "2 20\n"
+exit_code = 0
+
+[[cases]]
+name = "syntax_error"
+script = "printf 'x\n' | awk '{ print'"
+stdout = ""
+exit_code = 2
+stderr_contains = "syntax error"

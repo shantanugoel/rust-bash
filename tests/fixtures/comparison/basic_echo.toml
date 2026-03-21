@@ -1,0 +1,36 @@
+[[cases]]
+name = "simple_echo"
+script = "echo hello"
+stdout = """
+hello
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "echo_multiple_args"
+script = "echo hello world"
+stdout = """
+hello world
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "variable_expansion"
+script = '''
+X=goodbye
+echo $X
+'''
+stdout = """
+goodbye
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "exit_code_propagation"
+script = "false"
+stdout = ""
+stderr = ""
+exit_code = 1

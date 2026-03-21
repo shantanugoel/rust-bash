@@ -151,6 +151,9 @@ pub struct InterpreterState {
     /// Nesting depth for contexts where `set -e` should NOT trigger an exit.
     /// Incremented when entering if/while/until conditions, `&&`/`||` left sides, or `!` pipelines.
     pub(crate) errexit_suppressed: usize,
+    /// Byte offset into the current stdin stream, used by `read` to consume
+    /// successive lines from piped input across loop iterations.
+    pub(crate) stdin_offset: usize,
 }
 
 // ── Parsing ──────────────────────────────────────────────────────────
@@ -350,6 +353,7 @@ mod tests {
             traps: HashMap::new(),
             in_trap: false,
             errexit_suppressed: 0,
+            stdin_offset: 0,
         }
     }
 }

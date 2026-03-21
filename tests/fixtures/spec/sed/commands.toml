@@ -1,0 +1,80 @@
+# sed commands (d, p, a, i, c, y, h, g, x, =, n, q)
+
+[[cases]]
+name = "print_with_quiet"
+script = 'printf "a\nb\nc\n" | sed -n "2p"'
+stdout = "b\n"
+exit_code = 0
+
+[[cases]]
+name = "append_text"
+script = 'printf "a\nb\n" | sed "1a\\added"'
+stdout = "a\nadded\nb\n"
+exit_code = 0
+
+[[cases]]
+name = "insert_text"
+script = 'printf "a\nb\n" | sed "2i\\inserted"'
+stdout = "a\ninserted\nb\n"
+exit_code = 0
+
+[[cases]]
+name = "change_text"
+script = 'printf "a\nb\nc\n" | sed "2c\\changed"'
+stdout = "a\nchanged\nc\n"
+exit_code = 0
+
+[[cases]]
+name = "transliterate"
+script = 'printf "hello\n" | sed "y/helo/HELO/"'
+stdout = "HELLO\n"
+exit_code = 0
+
+[[cases]]
+name = "print_line_number"
+script = 'printf "a\nb\nc\n" | sed -n "2="'
+stdout = "2\n"
+exit_code = 0
+
+[[cases]]
+name = "quit_command"
+script = 'printf "a\nb\nc\nd\n" | sed "2q"'
+stdout = "a\nb\n"
+exit_code = 0
+
+[[cases]]
+name = "hold_space_swap"
+script = 'printf "first\nsecond\n" | sed -n "1h;2{x;p;}"'
+stdout = "first\n"
+exit_code = 0
+
+[[cases]]
+name = "next_line_command"
+script = 'printf "a\nb\nc\n" | sed "/a/{n;s/b/B/;}"'
+stdout = "a\nB\nc\n"
+exit_code = 0
+
+[[cases]]
+name = "command_grouping"
+script = 'printf "a\nb\nc\n" | sed -n "/b/{s/b/B/;p;}"'
+stdout = "B\n"
+exit_code = 0
+
+[[cases]]
+name = "in_place_edit"
+script = 'sed -i "s/old/new/" /test.txt && cat /test.txt'
+stdout = "new value\n"
+exit_code = 0
+files = { "/test.txt" = "old value\n" }
+
+[[cases]]
+name = "delete_empty_lines"
+script = 'printf "a\n\nb\n\nc\n" | sed "/^$/d"'
+stdout = "a\nb\nc\n"
+exit_code = 0
+
+[[cases]]
+name = "branch_label"
+script = 'printf "a\nb\nc\n" | sed -n ":start;p;n;b start"'
+stdout = "a\nb\nc\n"
+exit_code = 0

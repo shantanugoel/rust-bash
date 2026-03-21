@@ -924,7 +924,7 @@ fn word_split_ifs_colon_with_empty_fields() {
     let mut sh = shell();
     sh.exec(r#"IFS=:; VAR=":a::b:""#).unwrap();
     let r = sh.exec(r#"for w in $VAR; do echo "[$w]"; done"#).unwrap();
-    assert_eq!(r.stdout, "[]\n[a]\n[]\n[b]\n[]\n");
+    assert_eq!(r.stdout, "[]\n[a]\n[]\n[b]\n");
 }
 
 #[test]
@@ -1996,7 +1996,7 @@ fn brace_single_item_no_expansion() {
 fn brace_empty_alternative() {
     let mut sh = shell();
     let r = sh.exec("echo {a,}").unwrap();
-    assert_eq!(r.stdout, "a \n");
+    assert_eq!(r.stdout, "a\n");
 }
 
 #[test]
@@ -4423,14 +4423,11 @@ fn expand_assign_default_sets_variable() {
 #[test]
 fn expand_error_if_unset() {
     let mut sh = shell();
-    let r = sh.exec("echo ${MISSING:?variable is required} 2>&1");
-    match r {
-        Err(_) => {} // error propagated
-        Ok(r) => {
-            assert_ne!(r.exit_code, 0);
-            assert!(r.stderr.contains("variable is required"));
-        }
-    }
+    let r = sh
+        .exec("echo ${MISSING:?variable is required} 2>&1")
+        .unwrap();
+    assert_eq!(r.exit_code, 127);
+    assert!(r.stderr.contains("variable is required"));
 }
 
 #[test]

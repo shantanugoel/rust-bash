@@ -1,0 +1,84 @@
+# Logical operators: && and || chaining, subshells, brace groups
+
+[[cases]]
+name = "and_list_both_true"
+script = 'true && echo yes'
+stdout = """
+yes
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "and_list_first_fails"
+script = 'false && echo never; echo $?'
+stdout = """
+1
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "or_list_first_fails"
+script = 'false || echo fallback'
+stdout = """
+fallback
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "or_list_first_succeeds"
+script = 'true || echo never; echo done'
+stdout = """
+done
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "chained_and_or"
+script = 'false && echo a || echo b'
+stdout = """
+b
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "subshell_variable_isolation"
+script = 'X=outer; (X=inner; echo "$X"); echo "$X"'
+stdout = """
+inner
+outer
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "subshell_exit_code"
+script = '(exit 42); echo $?'
+stdout = """
+42
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "brace_group"
+script = '{ echo a; echo b; }'
+stdout = """
+a
+b
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "negation_operator"
+script = '! false; echo $?'
+stdout = """
+0
+"""
+stderr = ""
+exit_code = 0

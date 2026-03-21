@@ -1,0 +1,76 @@
+# For loops: word list and C-style
+
+[[cases]]
+name = "for_word_list"
+script = 'for x in a b c; do echo "$x"; done'
+stdout = """
+a
+b
+c
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "for_brace_expansion"
+script = 'for i in {1..3}; do echo "$i"; done'
+stdout = """
+1
+2
+3
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "for_command_substitution"
+script = 'for w in $(echo "x y z"); do echo "$w"; done'
+stdout = """
+x
+y
+z
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "for_c_style"
+script = 'for ((i=0; i<3; i++)); do echo "$i"; done'
+stdout = """
+0
+1
+2
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "for_empty_list"
+script = 'for x in ; do echo "$x"; done; echo done'
+stdout = """
+done
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "for_with_break"
+script = 'for i in 1 2 3 4 5; do if [ "$i" -eq 3 ]; then break; fi; echo "$i"; done'
+stdout = """
+1
+2
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "for_with_continue"
+script = 'for i in 1 2 3 4 5; do if [ "$i" -eq 3 ]; then continue; fi; echo "$i"; done'
+stdout = """
+1
+2
+4
+5
+"""
+stderr = ""
+exit_code = 0

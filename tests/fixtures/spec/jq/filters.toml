@@ -1,0 +1,97 @@
+# jq filter functions
+
+[[cases]]
+name = "map_function"
+script = "echo '[1,2,3]' | jq 'map(. * 2)'"
+stdout = "[\n  2,\n  4,\n  6\n]\n"
+exit_code = 0
+
+[[cases]]
+name = "select_function"
+script = "echo '[1,2,3,4,5]' | jq '[.[] | select(. > 3)]'"
+stdout = "[\n  4,\n  5\n]\n"
+exit_code = 0
+
+[[cases]]
+name = "keys_function"
+script = "echo '{\"b\":2,\"a\":1,\"c\":3}' | jq '[keys[]]'"
+stdout = "[\n  \"a\",\n  \"b\",\n  \"c\"\n]\n"
+exit_code = 0
+
+[[cases]]
+name = "values_function"
+script = "echo '{\"a\":1,\"b\":2}' | jq '[values[]]' | jq 'sort'"
+stdout = "[\n  1,\n  2\n]\n"
+exit_code = 0
+
+[[cases]]
+name = "length_array"
+script = "echo '[1,2,3]' | jq 'length'"
+stdout = "3\n"
+exit_code = 0
+
+[[cases]]
+name = "length_string"
+script = "echo '\"hello\"' | jq 'length'"
+stdout = "5\n"
+exit_code = 0
+
+[[cases]]
+name = "length_object"
+script = "echo '{\"a\":1,\"b\":2}' | jq 'length'"
+stdout = "2\n"
+exit_code = 0
+
+[[cases]]
+name = "has_function"
+script = "echo '{\"name\":\"alice\"}' | jq 'has(\"name\")'"
+stdout = "true\n"
+exit_code = 0
+
+[[cases]]
+name = "has_function_missing"
+script = "echo '{\"name\":\"alice\"}' | jq 'has(\"age\")'"
+stdout = "false\n"
+exit_code = 0
+
+[[cases]]
+name = "to_entries_function"
+script = "echo '{\"a\":1}' | jq '[to_entries[]]'"
+stdout = "[\n  {\n    \"key\": \"a\",\n    \"value\": 1\n  }\n]\n"
+exit_code = 0
+
+[[cases]]
+name = "sort_function"
+script = "echo '[3,1,2]' | jq 'sort'"
+stdout = "[\n  1,\n  2,\n  3\n]\n"
+exit_code = 0
+
+[[cases]]
+name = "unique_function"
+script = "echo '[1,2,1,3,2]' | jq 'unique'"
+stdout = "[\n  1,\n  2,\n  3\n]\n"
+exit_code = 0
+
+[[cases]]
+name = "alternative_operator"
+script = "echo '{\"a\":null}' | jq '.a // \"default\"'"
+stdout = "\"default\"\n"
+exit_code = 0
+
+[[cases]]
+name = "reduce_function"
+script = "echo '[1,2,3,4,5]' | jq 'reduce .[] as $x (0; . + $x)'"
+stdout = "15\n"
+exit_code = 0
+
+[[cases]]
+name = "split_and_join"
+script = "echo '\"a,b,c\"' | jq 'split(\",\") | join(\"-\")'"
+stdout = "\"a-b-c\"\n"
+exit_code = 0
+
+[[cases]]
+name = "test_regex"
+script = "echo '\"hello123\"' | jq 'test(\"[0-9]+\")'"
+stdout = "true\n"
+exit_code = 0

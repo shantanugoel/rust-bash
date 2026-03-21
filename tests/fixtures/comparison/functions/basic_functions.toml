@@ -1,0 +1,115 @@
+# Functions: definition, local vars, return, recursion, positional params
+
+[[cases]]
+name = "basic_function_call"
+script = '''
+greet() { echo "hello $1"; }
+greet world
+'''
+stdout = """
+hello world
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "function_keyword_syntax"
+script = '''
+function greet { echo "hi $1"; }
+greet there
+'''
+stdout = """
+hi there
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "local_variable"
+script = '''
+f() {
+  local X=inner
+  echo "$X"
+}
+X=outer
+f
+echo "$X"
+'''
+stdout = """
+inner
+outer
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "return_value"
+script = '''
+is_even() {
+  if [ $(($1 % 2)) -eq 0 ]; then return 0; else return 1; fi
+}
+is_even 4; echo $?
+is_even 3; echo $?
+'''
+stdout = """
+0
+1
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "function_positional_params"
+script = '''
+show() { echo "$# args: $1 $2 $3"; }
+show a b c
+'''
+stdout = """
+3 args: a b c
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "recursive_function"
+script = '''
+countdown() {
+  if [ "$1" -le 0 ]; then return; fi
+  echo "$1"
+  countdown $(($1 - 1))
+}
+countdown 3
+'''
+stdout = """
+3
+2
+1
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "dollar_at_preserves_words"
+script = '''
+show_args() { for a in "$@"; do echo "[$a]"; done; }
+show_args "hello world" "foo bar"
+'''
+stdout = """
+[hello world]
+[foo bar]
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "dollar_star_joins_with_ifs"
+script = '''
+show_star() { echo "$*"; }
+IFS=,
+show_star a b c
+'''
+stdout = """
+a,b,c
+"""
+stderr = ""
+exit_code = 0

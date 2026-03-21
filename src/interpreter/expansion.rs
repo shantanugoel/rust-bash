@@ -47,7 +47,6 @@ pub fn expand_word(
     // Brace expansion first — operates on raw word text before parsing.
     let brace_expanded =
         crate::interpreter::brace::brace_expand(&word.value, state.limits.max_brace_expansion)?;
-    let did_brace_expand = brace_expanded.len() > 1;
 
     let mut all_results = Vec::new();
     for raw in &brace_expanded {
@@ -58,12 +57,7 @@ pub fn expand_word(
         let words = expand_word_segments(&sub_word, state)?;
         let split = finalize_with_ifs_split(words, state);
         let expanded = glob_expand_words(split, state)?;
-        if expanded.is_empty() && did_brace_expand {
-            // Brace expansion produced this alternative; preserve it as an empty word.
-            all_results.push(String::new());
-        } else {
-            all_results.extend(expanded);
-        }
+        all_results.extend(expanded);
     }
     Ok(all_results)
 }
@@ -75,7 +69,6 @@ pub(crate) fn expand_word_mut(
 ) -> Result<Vec<String>, RustBashError> {
     let brace_expanded =
         crate::interpreter::brace::brace_expand(&word.value, state.limits.max_brace_expansion)?;
-    let did_brace_expand = brace_expanded.len() > 1;
 
     let mut all_results = Vec::new();
     for raw in &brace_expanded {
@@ -86,11 +79,7 @@ pub(crate) fn expand_word_mut(
         let words = expand_word_segments_mut(&sub_word, state)?;
         let split = finalize_with_ifs_split(words, state);
         let expanded = glob_expand_words(split, state)?;
-        if expanded.is_empty() && did_brace_expand {
-            all_results.push(String::new());
-        } else {
-            all_results.extend(expanded);
-        }
+        all_results.extend(expanded);
     }
     Ok(all_results)
 }
@@ -256,6 +245,7 @@ fn execute_command_substitution(
         traps: HashMap::new(),
         in_trap: false,
         errexit_suppressed: 0,
+        stdin_offset: 0,
     };
 
     let result = execute_program(&program, &mut sub_state);
@@ -491,7 +481,10 @@ fn expand_parameter(
                 } else {
                     "parameter null or not set".to_string()
                 };
-                return Err(RustBashError::Execution(format!("{param_name}: {msg}")));
+                return Err(RustBashError::ExpansionError {
+                    message: format!("{param_name}: {msg}"),
+                    exit_code: 127,
+                });
             }
             push_segment(words, &val, in_dq, in_dq);
         }
@@ -897,7 +890,6 @@ fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
     let mut current = String::new();
     let mut current_may_glob = false;
     let mut has_content = false;
-    let mut saw_nw_delim = false;
     let mut i = 0;
 
     // Skip leading unquoted IFS whitespace.
@@ -918,7 +910,6 @@ fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
                 current_may_glob = true;
             }
             has_content = true;
-            saw_nw_delim = false;
             i += 1;
         } else if is_ifs_nw(c) {
             // Non-whitespace IFS delimiter: always produces a field boundary.
@@ -928,7 +919,6 @@ fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
             });
             current_may_glob = false;
             has_content = false;
-            saw_nw_delim = true;
             i += 1;
             // Skip trailing IFS whitespace after delimiter.
             while i < len && !chars[i].1 && is_ifs_ws(chars[i].0) {
@@ -951,7 +941,6 @@ fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
                 });
                 current_may_glob = false;
                 has_content = false;
-                saw_nw_delim = false;
             }
         } else {
             // Regular character (not IFS).
@@ -960,21 +949,16 @@ fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
                 current_may_glob = true;
             }
             has_content = true;
-            saw_nw_delim = false;
             i += 1;
         }
     }
 
-    // Push the last field if non-empty, or a trailing empty field after non-ws delimiter.
+    // Push the last field if non-empty. Trailing non-whitespace IFS delimiters
+    // do NOT produce a trailing empty field (bash behavior).
     if has_content || !current.is_empty() {
         result.push(SplitWord {
             text: current,
             may_glob: current_may_glob,
-        });
-    } else if saw_nw_delim {
-        result.push(SplitWord {
-            text: String::new(),
-            may_glob: false,
         });
     }
 }

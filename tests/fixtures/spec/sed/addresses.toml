@@ -1,0 +1,61 @@
+# sed address modes
+
+[[cases]]
+name = "line_number_address"
+script = 'printf "a\nb\nc\n" | sed "2s/b/B/"'
+stdout = "a\nB\nc\n"
+exit_code = 0
+
+[[cases]]
+name = "last_line_address"
+script = "printf \"a\\nb\\nc\\n\" | sed '$s/c/C/'"
+stdout = "a\nb\nC\n"
+exit_code = 0
+
+[[cases]]
+name = "regex_address"
+script = 'printf "foo\nbar\nbaz\n" | sed "/bar/s/bar/BAR/"'
+stdout = "foo\nBAR\nbaz\n"
+exit_code = 0
+
+[[cases]]
+name = "line_range_address"
+script = 'printf "a\nb\nc\nd\ne\n" | sed "2,4s/./X/"'
+stdout = "a\nX\nX\nX\ne\n"
+exit_code = 0
+
+[[cases]]
+name = "regex_range_address"
+script = 'printf "a\nSTART\nb\nEND\nc\n" | sed "/START/,/END/s/^/>> /"'
+stdout = "a\n>> START\n>> b\n>> END\nc\n"
+exit_code = 0
+
+[[cases]]
+name = "negated_address"
+script = 'printf "a\nb\nc\n" | sed "2!s/./X/"'
+stdout = "X\nb\nX\n"
+exit_code = 0
+
+[[cases]]
+name = "delete_by_line"
+script = 'printf "a\nb\nc\nd\n" | sed "2d"'
+stdout = "a\nc\nd\n"
+exit_code = 0
+
+[[cases]]
+name = "delete_by_regex"
+script = 'printf "keep\nremove this\nkeep too\n" | sed "/remove/d"'
+stdout = "keep\nkeep too\n"
+exit_code = 0
+
+[[cases]]
+name = "step_address"
+script = 'printf "1\n2\n3\n4\n5\n6\n" | sed "1~2s/.*/{&}/"'
+stdout = "{1}\n2\n{3}\n4\n{5}\n6\n"
+exit_code = 0
+
+[[cases]]
+name = "mixed_range_line_regex"
+script = 'printf "a\nb\nc\nd\ne\n" | sed "2,/d/s/./X/"'
+stdout = "a\nX\nX\nX\ne\n"
+exit_code = 0

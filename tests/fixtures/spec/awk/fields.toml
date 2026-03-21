@@ -1,0 +1,115 @@
+# awk field splitting and access
+
+[[cases]]
+name = "default_field_splitting"
+script = 'printf "hello world foo\n" | awk "{ print \$2 }"'
+stdout = "world\n"
+exit_code = 0
+
+[[cases]]
+name = "print_all_fields"
+script = 'printf "a b c\n" | awk "{ print \$0 }"'
+stdout = "a b c\n"
+exit_code = 0
+
+[[cases]]
+name = "nf_variable"
+script = 'printf "a b c\nx y\n" | awk "{ print NF }"'
+stdout = "3\n2\n"
+exit_code = 0
+
+[[cases]]
+name = "nr_variable"
+script = 'printf "a\nb\nc\n" | awk "{ print NR, \$0 }"'
+stdout = "1 a\n2 b\n3 c\n"
+exit_code = 0
+
+[[cases]]
+name = "custom_field_separator"
+script = 'printf "a:b:c\nd:e:f\n" | awk -F: "{ print \$2 }"'
+stdout = "b\ne\n"
+exit_code = 0
+
+[[cases]]
+name = "ofs_variable"
+script = 'printf "a b c\n" | awk "BEGIN { OFS=\",\" } { print \$1, \$2, \$3 }"'
+stdout = "a,b,c\n"
+exit_code = 0
+
+[[cases]]
+name = "field_assignment_rebuilds_record"
+script = 'printf "a b c\n" | awk "BEGIN { OFS=\"-\" } { \$2 = \"X\"; print \$0 }"'
+stdout = "a-X-c\n"
+exit_code = 0
+
+[[cases]]
+name = "last_field_via_nf"
+script = 'printf "a b c\n" | awk "{ print \$NF }"'
+stdout = "c\n"
+exit_code = 0
+
+[[cases]]
+name = "multiple_whitespace_splitting"
+script = 'printf "  a   b   c  \n" | awk "{ print \$1, \$2, \$3 }"'
+stdout = "a b c\n"
+exit_code = 0
+
+[[cases]]
+name = "v_flag_variable"
+script = 'printf "hello\n" | awk -v greeting=hi "{ print greeting, \$0 }"'
+stdout = "hi hello\n"
+exit_code = 0
+
+[[cases]]
+name = "accumulate_with_end"
+script = 'printf "10\n20\n30\n" | awk "{ sum += \$1 } END { print sum }"'
+stdout = "60\n"
+exit_code = 0
+
+[[cases]]
+name = "associative_array"
+script = 'printf "a\nb\na\nc\na\n" | awk "{ count[\$1]++ } END { print count[\"a\"] }"'
+stdout = "3\n"
+exit_code = 0
+
+[[cases]]
+name = "for_in_array"
+script = 'printf "a\nb\na\n" | awk "{ count[\$1]++ } END { for (k in count) print k, count[k] }" | sort'
+stdout = "a 2\nb 1\n"
+exit_code = 0
+
+[[cases]]
+name = "if_else_control"
+script = 'printf "1\n2\n3\n4\n5\n" | awk "{ if (\$1 % 2 == 0) print \"even\"; else print \"odd\" }"'
+stdout = "odd\neven\nodd\neven\nodd\n"
+exit_code = 0
+
+[[cases]]
+name = "while_loop"
+script = "echo '' | awk 'BEGIN { i=1; while(i<=3) { print i; i++ } }'"
+stdout = "1\n2\n3\n"
+exit_code = 0
+
+[[cases]]
+name = "for_loop"
+script = "echo '' | awk 'BEGIN { for(i=1; i<=3; i++) print i }'"
+stdout = "1\n2\n3\n"
+exit_code = 0
+
+[[cases]]
+name = "string_concatenation"
+script = "echo '' | awk 'BEGIN { s = \"hello\" \" \" \"world\"; print s }'"
+stdout = "hello world\n"
+exit_code = 0
+
+[[cases]]
+name = "delete_array_element"
+script = "echo '' | awk 'BEGIN { a[\"x\"]=1; a[\"y\"]=2; delete a[\"x\"]; for(k in a) print k, a[k] }'"
+stdout = "y 2\n"
+exit_code = 0
+
+[[cases]]
+name = "in_operator"
+script = "echo '' | awk 'BEGIN { a[\"x\"]=1; print (\"x\" in a), (\"y\" in a) }'"
+stdout = "1 0\n"
+exit_code = 0

@@ -1,0 +1,117 @@
+# Quoting edge cases — single, double, backslash, $'...', mixed quoting
+# Focus: behaviors known to diverge from real bash
+
+[[cases]]
+name = "single_quotes_preserve_dollar"
+script = "echo 'hello $USER'"
+stdout = """
+hello $USER
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "single_quotes_preserve_backslash"
+script = "echo 'hello\\nworld'"
+stdout = '''
+hello\nworld
+'''
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "double_quotes_expand_variable"
+script = 'X=world; echo "hello $X"'
+stdout = """
+hello world
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "double_quotes_preserve_literal_dollar"
+script = 'echo "price is \$5"'
+stdout = """
+price is $5
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "ansi_c_quoting_tab"
+script = "echo $'hello\\tworld'"
+stdout = """
+hello\tworld
+"""
+stderr = ""
+exit_code = 0
+skip = "rust-bash does not implement ANSI-C quoting ($'...')"
+
+[[cases]]
+name = "ansi_c_quoting_newline"
+script = "echo $'line1\\nline2'"
+stdout = """
+line1
+line2
+"""
+stderr = ""
+exit_code = 0
+skip = "rust-bash does not implement ANSI-C quoting ($'...')"
+
+[[cases]]
+name = "ansi_c_quoting_hex"
+script = "echo $'\\x41\\x42\\x43'"
+stdout = """
+ABC
+"""
+stderr = ""
+exit_code = 0
+skip = "rust-bash does not implement ANSI-C quoting ($'...')"
+
+[[cases]]
+name = "mixed_adjacent_quoting"
+script = """echo "hello" 'world'"""
+stdout = """
+hello world
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "empty_string_quoting"
+script = 'echo "" "" ""'
+stdout = """
+  
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "backslash_newline_continuation"
+script = '''
+echo hello \
+world
+'''
+stdout = """
+hello world
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "double_quote_backslash_special_chars"
+script = 'echo "a\\b" "a\$b" "a\"b"'
+stdout = '''
+a\b a$b a"b
+'''
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "nested_quoting_in_command_sub"
+script = 'echo "$(echo "inner quotes")"'
+stdout = """
+inner quotes
+"""
+stderr = ""
+exit_code = 0

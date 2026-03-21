@@ -1,0 +1,141 @@
+# jq type checks, conversions, and comparisons
+
+[[cases]]
+name = "type_string"
+script = "echo '\"hello\"' | jq 'type'"
+stdout = "\"string\"\n"
+exit_code = 0
+
+[[cases]]
+name = "type_number"
+script = "echo '42' | jq 'type'"
+stdout = "\"number\"\n"
+exit_code = 0
+
+[[cases]]
+name = "type_boolean"
+script = "echo 'true' | jq 'type'"
+stdout = "\"boolean\"\n"
+exit_code = 0
+
+[[cases]]
+name = "type_null"
+script = "echo 'null' | jq 'type'"
+stdout = "\"null\"\n"
+exit_code = 0
+
+[[cases]]
+name = "type_array"
+script = "echo '[1,2]' | jq 'type'"
+stdout = "\"array\"\n"
+exit_code = 0
+
+[[cases]]
+name = "type_object"
+script = "echo '{\"a\":1}' | jq 'type'"
+stdout = "\"object\"\n"
+exit_code = 0
+
+[[cases]]
+name = "null_handling"
+script = "echo '{\"a\":null}' | jq '.a'"
+stdout = "null\n"
+exit_code = 0
+
+[[cases]]
+name = "missing_field_null"
+script = "echo '{\"a\":1}' | jq '.b'"
+stdout = "null\n"
+exit_code = 0
+
+[[cases]]
+name = "boolean_not"
+script = "echo 'true' | jq 'not'"
+stdout = "false\n"
+exit_code = 0
+
+[[cases]]
+name = "comparison_equal"
+script = "jq -n '1 == 1'"
+stdout = "true\n"
+exit_code = 0
+
+[[cases]]
+name = "comparison_not_equal"
+script = "jq -n '1 != 2'"
+stdout = "true\n"
+exit_code = 0
+
+[[cases]]
+name = "comparison_less_than"
+script = "jq -n '1 < 2'"
+stdout = "true\n"
+exit_code = 0
+
+[[cases]]
+name = "arithmetic_operations"
+script = "jq -n '2 + 3'"
+stdout = "5\n"
+exit_code = 0
+
+[[cases]]
+name = "string_concatenation"
+script = "jq -n '\"hello\" + \" \" + \"world\"'"
+stdout = "\"hello world\"\n"
+exit_code = 0
+
+[[cases]]
+name = "if_then_else"
+script = "echo '5' | jq 'if . > 3 then \"big\" else \"small\" end'"
+stdout = "\"big\"\n"
+exit_code = 0
+
+[[cases]]
+name = "slurp_mode"
+script = "printf '1\n2\n3\n' | jq -s '.'"
+stdout = "[\n  1,\n  2,\n  3\n]\n"
+exit_code = 0
+
+[[cases]]
+name = "invalid_json_error"
+script = "echo 'not json' | jq '.'"
+stdout = ""
+exit_code = 2
+stderr_ignore = true
+
+[[cases]]
+name = "invalid_filter_error"
+script = "echo '{}' | jq '..invalid..'"
+stdout = ""
+exit_code = 3
+stderr_ignore = true
+
+[[cases]]
+name = "exit_status_true"
+script = "echo '5' | jq -e '. > 3'"
+stdout = "true\n"
+exit_code = 0
+
+[[cases]]
+name = "exit_status_false"
+script = "echo 'false' | jq -e '.'"
+stdout = "false\n"
+exit_code = 1
+
+[[cases]]
+name = "exit_status_null"
+script = "echo 'null' | jq -e '.'"
+stdout = "null\n"
+exit_code = 1
+
+[[cases]]
+name = "sort_keys"
+script = "echo '{\"b\":2,\"a\":1}' | jq -S '.'"
+stdout = "{\n  \"a\": 1,\n  \"b\": 2\n}\n"
+exit_code = 0
+
+[[cases]]
+name = "join_output_no_newline"
+script = "echo '{\"a\":1}' | jq -j '.a'"
+stdout = "1"
+exit_code = 0

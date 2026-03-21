@@ -1,0 +1,62 @@
+# While and until loops
+
+[[cases]]
+name = "while_countdown"
+script = 'i=3; while [ "$i" -gt 0 ]; do echo "$i"; i=$((i-1)); done'
+stdout = """
+3
+2
+1
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "until_countup"
+script = 'i=1; until [ "$i" -gt 3 ]; do echo "$i"; i=$((i+1)); done'
+stdout = """
+1
+2
+3
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "while_read_lines"
+script = 'printf "a\nb\nc\n" | while read line; do echo "got: $line"; done'
+stdout = """
+got: a
+got: b
+got: c
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "while_with_continue"
+script = '''
+i=0
+while [ "$i" -lt 5 ]; do
+  i=$((i+1))
+  if [ "$i" -eq 3 ]; then continue; fi
+  echo "$i"
+done
+'''
+stdout = """
+1
+2
+4
+5
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "while_false_never_executes"
+script = 'while false; do echo never; done; echo after'
+stdout = """
+after
+"""
+stderr = ""
+exit_code = 0

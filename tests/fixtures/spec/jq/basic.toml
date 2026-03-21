@@ -1,0 +1,85 @@
+# jq basic filters
+
+[[cases]]
+name = "identity_filter"
+script = "echo '{\"a\":1}' | jq '.'"
+stdout = "{\n  \"a\": 1\n}\n"
+exit_code = 0
+
+[[cases]]
+name = "field_access"
+script = "echo '{\"name\":\"alice\",\"age\":30}' | jq '.name'"
+stdout = "\"alice\"\n"
+exit_code = 0
+
+[[cases]]
+name = "nested_field_access"
+script = "echo '{\"a\":{\"b\":{\"c\":42}}}' | jq '.a.b.c'"
+stdout = "42\n"
+exit_code = 0
+
+[[cases]]
+name = "array_iteration"
+script = "echo '[1,2,3]' | jq '.[]'"
+stdout = "1\n2\n3\n"
+exit_code = 0
+
+[[cases]]
+name = "array_index"
+script = "echo '[\"a\",\"b\",\"c\"]' | jq '.[1]'"
+stdout = "\"b\"\n"
+exit_code = 0
+
+[[cases]]
+name = "pipe_operator"
+script = "echo '{\"users\":[{\"name\":\"alice\"},{\"name\":\"bob\"}]}' | jq '.users[] | .name'"
+stdout = "\"alice\"\n\"bob\"\n"
+exit_code = 0
+
+[[cases]]
+name = "raw_output"
+script = "echo '{\"name\":\"alice\"}' | jq -r '.name'"
+stdout = "alice\n"
+exit_code = 0
+
+[[cases]]
+name = "compact_output"
+script = "echo '{\"a\":1,\"b\":2}' | jq -c '.'"
+stdout = "{\"a\":1,\"b\":2}\n"
+exit_code = 0
+
+[[cases]]
+name = "null_input"
+script = "jq -n '1 + 2'"
+stdout = "3\n"
+exit_code = 0
+
+[[cases]]
+name = "object_construction"
+script = "echo '{\"name\":\"alice\",\"age\":30}' | jq '{user: .name, years: .age}'"
+stdout = "{\n  \"user\": \"alice\",\n  \"years\": 30\n}\n"
+exit_code = 0
+
+[[cases]]
+name = "array_construction"
+script = "echo '{\"a\":1,\"b\":2}' | jq '[.a, .b]'"
+stdout = "[\n  1,\n  2\n]\n"
+exit_code = 0
+
+[[cases]]
+name = "string_interpolation"
+script = "echo '{\"name\":\"alice\"}' | jq -r '\"Hello, \\(.name)\"'"
+stdout = "Hello, alice\n"
+exit_code = 0
+
+[[cases]]
+name = "arg_variable"
+script = "jq -n --arg name alice '$name'"
+stdout = "\"alice\"\n"
+exit_code = 0
+
+[[cases]]
+name = "argjson_variable"
+script = "jq -n --argjson val 42 '$val + 1'"
+stdout = "43\n"
+exit_code = 0

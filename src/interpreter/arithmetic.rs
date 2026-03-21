@@ -1093,6 +1093,7 @@ mod tests {
             traps: HashMap::new(),
             in_trap: false,
             errexit_suppressed: 0,
+            stdin_offset: 0,
         }
     }
 

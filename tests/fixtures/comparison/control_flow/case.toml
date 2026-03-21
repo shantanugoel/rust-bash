@@ -1,0 +1,79 @@
+# Case statement: patterns, alternation, glob matching
+
+[[cases]]
+name = "basic_case"
+script = '''
+X=banana
+case "$X" in
+  apple) echo fruit1 ;;
+  banana) echo fruit2 ;;
+  *) echo unknown ;;
+esac
+'''
+stdout = """
+fruit2
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "case_wildcard"
+script = '''
+X=hello
+case "$X" in
+  h*) echo starts_with_h ;;
+  *) echo other ;;
+esac
+'''
+stdout = """
+starts_with_h
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "case_alternation"
+script = '''
+X=yes
+case "$X" in
+  yes|y) echo affirmative ;;
+  no|n) echo negative ;;
+esac
+'''
+stdout = """
+affirmative
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "case_default"
+script = '''
+X=unknown
+case "$X" in
+  a) echo a ;;
+  b) echo b ;;
+  *) echo default ;;
+esac
+'''
+stdout = """
+default
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "case_no_match"
+script = '''
+X=zzz
+case "$X" in
+  a) echo a ;;
+  b) echo b ;;
+esac
+echo done
+'''
+stdout = """
+done
+"""
+stderr = ""
+exit_code = 0

@@ -1,0 +1,97 @@
+# awk built-in functions
+
+[[cases]]
+name = "length_string"
+script = "echo '' | awk 'BEGIN { print length(\"hello\") }'"
+stdout = "5\n"
+exit_code = 0
+
+[[cases]]
+name = "substr_function"
+script = "echo '' | awk 'BEGIN { print substr(\"hello world\", 7) }'"
+stdout = "world\n"
+exit_code = 0
+
+[[cases]]
+name = "substr_with_length"
+script = "echo '' | awk 'BEGIN { print substr(\"hello world\", 1, 5) }'"
+stdout = "hello\n"
+exit_code = 0
+
+[[cases]]
+name = "index_function"
+script = "echo '' | awk 'BEGIN { print index(\"hello world\", \"world\") }'"
+stdout = "7\n"
+exit_code = 0
+
+[[cases]]
+name = "index_not_found"
+script = "echo '' | awk 'BEGIN { print index(\"hello\", \"xyz\") }'"
+stdout = "0\n"
+exit_code = 0
+
+[[cases]]
+name = "split_function"
+script = "echo '' | awk 'BEGIN { n = split(\"a:b:c\", arr, \":\"); print n, arr[1], arr[2], arr[3] }'"
+stdout = "3 a b c\n"
+exit_code = 0
+
+[[cases]]
+name = "tolower_function"
+script = "echo '' | awk 'BEGIN { print tolower(\"HELLO World\") }'"
+stdout = "hello world\n"
+exit_code = 0
+
+[[cases]]
+name = "toupper_function"
+script = "echo '' | awk 'BEGIN { print toupper(\"hello World\") }'"
+stdout = "HELLO WORLD\n"
+exit_code = 0
+
+[[cases]]
+name = "sprintf_function"
+script = "echo '' | awk 'BEGIN { s = sprintf(\"%05d\", 42); print s }'"
+stdout = "00042\n"
+exit_code = 0
+
+[[cases]]
+name = "gsub_function"
+script = 'printf "aabbcc\n" | awk "{ gsub(/b/, \"X\"); print }"'
+stdout = "aaXXcc\n"
+exit_code = 0
+
+[[cases]]
+name = "sub_function"
+script = 'printf "aabbcc\n" | awk "{ sub(/b/, \"X\"); print }"'
+stdout = "aaXbcc\n"
+exit_code = 0
+
+[[cases]]
+name = "match_function"
+script = "echo '' | awk 'BEGIN { print match(\"hello123world\", /[0-9]+/), RSTART, RLENGTH }'"
+stdout = "6 6 3\n"
+exit_code = 0
+
+[[cases]]
+name = "match_no_match"
+script = "echo '' | awk 'BEGIN { print match(\"hello\", /[0-9]+/), RSTART, RLENGTH }'"
+stdout = "0 0 -1\n"
+exit_code = 0
+
+[[cases]]
+name = "int_function"
+script = "echo '' | awk 'BEGIN { print int(3.9), int(-3.9) }'"
+stdout = "3 -3\n"
+exit_code = 0
+
+[[cases]]
+name = "sqrt_function"
+script = "echo '' | awk 'BEGIN { print sqrt(16) }'"
+stdout = "4\n"
+exit_code = 0
+
+[[cases]]
+name = "printf_format"
+script = "echo '' | awk 'BEGIN { printf \"%s is %d years old\\n\", \"Alice\", 30 }'"
+stdout = "Alice is 30 years old\n"
+exit_code = 0

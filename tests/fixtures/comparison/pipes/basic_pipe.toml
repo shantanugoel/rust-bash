@@ -1,0 +1,47 @@
+# Pipes: simple, multi-stage, exit codes
+
+[[cases]]
+name = "simple_pipe"
+script = 'echo "hello world" | tr a-z A-Z'
+stdout = """
+HELLO WORLD
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "multi_stage_pipe"
+script = 'echo -e "c\na\nb" | sort | head -1'
+stdout = """
+a
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "pipe_preserves_lines"
+script = 'printf "a\nb\nc\n" | wc -l'
+stdout = """
+3
+"""
+stderr = ""
+exit_code = 0
+
+
+[[cases]]
+name = "pipe_exit_code_is_last_command"
+script = 'false | true; echo $?'
+stdout = """
+0
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "pipe_grep_filter"
+script = 'printf "apple\nbanana\ncherry\n" | grep an'
+stdout = """
+banana
+"""
+stderr = ""
+exit_code = 0

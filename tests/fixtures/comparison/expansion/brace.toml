@@ -1,0 +1,100 @@
+# Brace expansion: sequences, string lists, nesting, edge cases
+
+[[cases]]
+name = "string_list"
+script = 'echo {a,b,c}'
+stdout = """
+a b c
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "numeric_sequence"
+script = 'echo {1..5}'
+stdout = """
+1 2 3 4 5
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "reverse_sequence"
+script = 'echo {5..1}'
+stdout = """
+5 4 3 2 1
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "char_sequence"
+script = 'echo {a..e}'
+stdout = """
+a b c d e
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "sequence_with_step"
+script = 'echo {0..10..2}'
+stdout = """
+0 2 4 6 8 10
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "prefix_suffix"
+script = 'echo file{1,2,3}.txt'
+stdout = """
+file1.txt file2.txt file3.txt
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "nested_braces"
+script = 'echo {a,b{1,2}}'
+stdout = """
+a b1 b2
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "cartesian_product"
+script = 'echo {a,b}{1,2}'
+stdout = """
+a1 a2 b1 b2
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "empty_alternation"
+script = 'echo {a,}'
+stdout = """
+a
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "single_item_no_expansion"
+script = 'echo {a}'
+stdout = """
+{a}
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "zero_padded_sequence"
+script = 'echo {01..03}'
+stdout = """
+01 02 03
+"""
+stderr = ""
+exit_code = 0

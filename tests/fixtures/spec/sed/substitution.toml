@@ -1,0 +1,80 @@
+# sed substitution command tests
+
+[[cases]]
+name = "basic_substitute"
+script = 'printf "hello world\n" | sed "s/world/earth/"'
+stdout = "hello earth\n"
+exit_code = 0
+
+[[cases]]
+name = "global_substitute"
+script = 'printf "aaa\n" | sed "s/a/b/g"'
+stdout = "bbb\n"
+exit_code = 0
+
+[[cases]]
+name = "no_match_passthrough"
+script = 'printf "hello\n" | sed "s/xyz/abc/"'
+stdout = "hello\n"
+exit_code = 0
+
+[[cases]]
+name = "case_insensitive_substitute"
+script = 'printf "Hello World\n" | sed "s/hello/hi/i"'
+stdout = "hi World\n"
+exit_code = 0
+
+[[cases]]
+name = "nth_occurrence"
+script = 'printf "a a a a\n" | sed "s/a/b/3"'
+stdout = "a a b a\n"
+exit_code = 0
+
+[[cases]]
+name = "backreference"
+script = 'printf "hello world\n" | sed -E "s/(hello) (world)/\2 \1/"'
+stdout = "world hello\n"
+exit_code = 0
+
+[[cases]]
+name = "ampersand_match_reference"
+script = 'printf "hello\n" | sed "s/hello/[&]/"'
+stdout = "[hello]\n"
+exit_code = 0
+
+[[cases]]
+name = "alternate_delimiter"
+script = 'printf "/usr/local/bin\n" | sed "s|/usr/local|/opt|"'
+stdout = "/opt/bin\n"
+exit_code = 0
+
+[[cases]]
+name = "substitute_with_print"
+script = 'printf "aaa\nbbb\n" | sed -n "s/aaa/xxx/p"'
+stdout = "xxx\n"
+exit_code = 0
+
+[[cases]]
+name = "multiple_substitutions"
+script = 'printf "hello world\n" | sed -e "s/hello/hi/" -e "s/world/earth/"'
+stdout = "hi earth\n"
+exit_code = 0
+
+[[cases]]
+name = "regex_substitute"
+script = 'printf "abc123def\n" | sed -E "s/[0-9]+/NUM/"'
+stdout = "abcNUMdef\n"
+exit_code = 0
+
+[[cases]]
+name = "invalid_regex_error"
+script = 'printf "hello\n" | sed "s/[invalid/foo/"'
+stdout = ""
+exit_code = 2
+stderr_contains = "invalid regex"
+
+[[cases]]
+name = "multiline_input"
+script = 'printf "foo\nbar\nbaz\n" | sed "s/bar/BAR/"'
+stdout = "foo\nBAR\nbaz\n"
+exit_code = 0

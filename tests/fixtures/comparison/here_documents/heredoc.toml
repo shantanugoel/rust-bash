@@ -1,0 +1,77 @@
+# Here-documents and here-strings: expansion, quoting, tab stripping
+
+[[cases]]
+name = "basic_heredoc"
+script = '''
+cat <<EOF
+hello world
+EOF
+'''
+stdout = """
+hello world
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "heredoc_variable_expansion"
+script = '''
+NAME=test
+cat <<EOF
+hello $NAME
+EOF
+'''
+stdout = """
+hello test
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "heredoc_quoted_delimiter_no_expansion"
+script = '''
+NAME=test
+cat <<'EOF'
+hello $NAME
+EOF
+'''
+stdout = """
+hello $NAME
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "here_string_basic"
+script = 'cat <<< "hello world"'
+stdout = """
+hello world
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "here_string_variable_expansion"
+script = 'X=test; cat <<< "value is $X"'
+stdout = """
+value is test
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "heredoc_multiline"
+script = '''
+cat <<EOF
+line one
+line two
+line three
+EOF
+'''
+stdout = """
+line one
+line two
+line three
+"""
+stderr = ""
+exit_code = 0

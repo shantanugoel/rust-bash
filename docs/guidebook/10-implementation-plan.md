@@ -267,15 +267,9 @@ Implement `${var@operator}` syntax for variable transformations:
 
 Also add `printf` format specifiers `%b` (interpret backslash escapes) and `%q` (shell-quote output).
 
-### M6.12 — Differential Testing Against Real Bash
+### M6.12 — Differential Testing Against Real Bash ✅
 
-Build a comparison test suite that runs bash scripts against both rust-bash and real `/bin/bash`, comparing stdout/stderr/exit code. Inspired by just-bash's 30+ `*.comparison.test.ts` files with fixture recording for offline replay.
-
-- **Fixture-based runner**: Each test case is a bash script + recorded expected output. Tests run against rust-bash only by default (`cargo test`). A `RECORD_FIXTURES=1` mode re-records expected output from real bash.
-- **Coverage areas**: Start with shell language features (quoting, expansion, word splitting, globs, redirections, pipes, control flow, functions, here-documents). Expand to command output format matching as commands are added in M7.
-- **Spec tests by domain**: Add dedicated spec-test suites for `awk`, `grep`, `sed`, and `jq` — structured test cases testing specific features of each mini-language, separate from the comparison suite. just-bash has dedicated spec-test directories for each.
-
-**Why in M6**: Shell language correctness is the highest-leverage testing target. These tests directly validate M6 features (arrays, shopt, builtins, advanced expansions) against ground truth.
+Fixture-based comparison test suite that records expected output from real `/bin/bash` and replays it against rust-bash on every `cargo test`. Delivered: 157 comparison test cases across 19 fixture files covering shell language features (quoting, expansion, word splitting, globbing, redirections, pipes, control flow, functions, here-documents), plus 197 spec test cases across 14 fixture files for `grep`, `sed`, `awk`, and `jq`. Recording mode (`RECORD_FIXTURES=1`) re-captures ground truth from real bash. Infrastructure uses `datatest-stable` for per-file test discovery and `toml_edit` for round-trip fixture updates.
 
 ---
 

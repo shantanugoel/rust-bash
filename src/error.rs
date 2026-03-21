@@ -42,6 +42,13 @@ impl std::error::Error for VfsError {}
 pub enum RustBashError {
     Parse(String),
     Execution(String),
+    /// An expansion-time error that should abort the current command and set
+    /// the exit code, but NOT crash the entire `exec()` call. Used for
+    /// `${var:?msg}` which prints to stderr and exits the script with a code.
+    ExpansionError {
+        message: String,
+        exit_code: i32,
+    },
     LimitExceeded {
         limit_name: &'static str,
         limit_value: usize,
@@ -57,6 +64,9 @@ impl fmt::Display for RustBashError {
         match self {
             RustBashError::Parse(msg) => write!(f, "parse error: {msg}"),
             RustBashError::Execution(msg) => write!(f, "execution error: {msg}"),
+            RustBashError::ExpansionError { message, .. } => {
+                write!(f, "expansion error: {message}")
+            }
             RustBashError::LimitExceeded {
                 limit_name,
                 limit_value,

@@ -361,6 +361,7 @@ impl RustBashBuilder {
             traps: HashMap::new(),
             in_trap: false,
             errexit_suppressed: 0,
+            stdin_offset: 0,
         };
 
         Ok(RustBash { state })
@@ -747,8 +748,10 @@ mod tests {
     #[test]
     fn expand_error_if_unset() {
         let mut shell = shell();
-        let result = shell.exec("echo ${UNSET:?missing var}");
-        assert!(result.is_err());
+        let result = shell.exec("echo ${UNSET:?missing var}").unwrap();
+        assert_eq!(result.exit_code, 127);
+        assert!(result.stderr.contains("missing var"));
+        assert!(result.stdout.is_empty());
     }
 
     #[test]

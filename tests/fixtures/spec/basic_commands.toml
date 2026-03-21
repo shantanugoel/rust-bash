@@ -1,0 +1,47 @@
+[[cases]]
+name = "echo_basic"
+script = "echo hello"
+stdout = "hello\n"
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "true_command"
+script = "true"
+stdout = ""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "false_command"
+script = "false"
+stdout = ""
+stderr = ""
+exit_code = 1
+
+[[cases]]
+name = "printf_format"
+script = 'printf "%s %d\n" hello 42'
+stdout = "hello 42\n"
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "cat_from_stdin"
+script = "cat"
+stdin = "hello from stdin"
+stdout = "hello from stdin\n"
+exit_code = 0
+
+[[cases]]
+name = "custom_env_variable"
+script = 'echo $MY_VAR'
+env = { "MY_VAR" = "custom_value" }
+stdout = "custom_value\n"
+exit_code = 0
+
+[[cases]]
+name = "syntax_error_expect_error"
+script = "if then fi"
+expect_error = true
+exit_code = 2

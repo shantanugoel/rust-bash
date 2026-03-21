@@ -627,8 +627,31 @@ fn builtin_read(
         var_names.push("REPLY");
     }
 
-    // Read one line from stdin
-    let line = stdin.lines().next().unwrap_or("");
+    // Read one line from stdin, starting at the current offset
+    let effective_stdin = if state.stdin_offset < stdin.len() {
+        &stdin[state.stdin_offset..]
+    } else {
+        ""
+    };
+    let line = match effective_stdin.lines().next() {
+        Some(l) => {
+            // Advance offset past this line and its newline
+            state.stdin_offset += l.len();
+            if state.stdin_offset < stdin.len()
+                && stdin.as_bytes().get(state.stdin_offset) == Some(&b'\n')
+            {
+                state.stdin_offset += 1;
+            }
+            l
+        }
+        None => {
+            // EOF — no more input
+            return Ok(ExecResult {
+                exit_code: 1,
+                ..ExecResult::default()
+            });
+        }
+    };
 
     // Check input line length before processing
     if line.len() > state.limits.max_string_length {
@@ -1020,6 +1043,7 @@ mod tests {
             traps: HashMap::new(),
             in_trap: false,
             errexit_suppressed: 0,
+            stdin_offset: 0,
         }
     }
 

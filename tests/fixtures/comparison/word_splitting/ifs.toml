@@ -1,0 +1,79 @@
+# IFS variations: custom IFS, empty IFS, quoting prevents splitting
+
+[[cases]]
+name = "default_ifs_collapses_whitespace"
+script = 'X="a   b   c"; for w in $X; do echo "[$w]"; done'
+stdout = """
+[a]
+[b]
+[c]
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "custom_ifs_colon"
+script = 'IFS=:; X="a:b:c"; for w in $X; do echo "[$w]"; done'
+stdout = """
+[a]
+[b]
+[c]
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "empty_ifs_no_splitting"
+script = 'IFS=""; X="a b c"; for w in $X; do echo "[$w]"; done'
+stdout = """
+[a b c]
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "ifs_with_newline_splitting"
+script = '''
+X="line1
+line2
+line3"
+for w in $X; do echo "[$w]"; done
+'''
+stdout = """
+[line1]
+[line2]
+[line3]
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "quoting_prevents_splitting"
+script = 'X="a b c"; for w in "$X"; do echo "[$w]"; done'
+stdout = """
+[a b c]
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "ifs_leading_trailing_whitespace"
+script = 'X="  hello  world  "; for w in $X; do echo "[$w]"; done'
+stdout = """
+[hello]
+[world]
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "ifs_non_whitespace_preserves_empty"
+script = 'IFS=:; X=":a::b:"; for w in $X; do echo "[$w]"; done'
+stdout = """
+[]
+[a]
+[]
+[b]
+"""
+stderr = ""
+exit_code = 0

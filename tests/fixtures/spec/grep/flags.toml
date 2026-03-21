@@ -1,0 +1,118 @@
+# grep flags and options
+
+[[cases]]
+name = "case_insensitive"
+script = 'printf "Hello\nhello\nHELLO\nworld\n" | grep -i hello'
+stdout = "Hello\nhello\nHELLO\n"
+exit_code = 0
+
+[[cases]]
+name = "invert_match"
+script = 'printf "apple\nbanana\ncherry\n" | grep -v banana'
+stdout = "apple\ncherry\n"
+exit_code = 0
+
+[[cases]]
+name = "count_matches"
+script = 'printf "a\nb\na\nc\na\n" | grep -c a'
+stdout = "3\n"
+exit_code = 0
+
+[[cases]]
+name = "count_no_matches"
+script = 'printf "a\nb\nc\n" | grep -c z'
+stdout = "0\n"
+exit_code = 1
+
+[[cases]]
+name = "line_numbers"
+script = 'printf "foo\nbar\nfoo\n" | grep -n foo'
+stdout = "1:foo\n3:foo\n"
+exit_code = 0
+
+[[cases]]
+name = "files_with_matches"
+script = 'grep -l hello /a.txt /b.txt /c.txt'
+stdout = "/a.txt\n/c.txt\n"
+exit_code = 0
+files = { "/a.txt" = "hello\n", "/b.txt" = "goodbye\n", "/c.txt" = "hello world\n" }
+
+[[cases]]
+name = "only_matching"
+script = 'printf "foobar\n" | grep -o "foo"'
+stdout = "foo\n"
+exit_code = 0
+
+[[cases]]
+name = "word_match"
+script = 'printf "cat\ncatch\nthe cat\n" | grep -w cat'
+stdout = "cat\nthe cat\n"
+exit_code = 0
+
+[[cases]]
+name = "quiet_mode_match"
+script = 'printf "hello\n" | grep -q hello; echo $?'
+stdout = "0\n"
+exit_code = 0
+
+[[cases]]
+name = "quiet_mode_no_match"
+script = 'printf "hello\n" | grep -q xyz; echo $?'
+stdout = "1\n"
+exit_code = 0
+
+[[cases]]
+name = "fixed_strings"
+script = 'printf "a.b\na*b\nabc\n" | grep -F "a.b"'
+stdout = "a.b\n"
+exit_code = 0
+
+[[cases]]
+name = "recursive_search"
+script = 'grep -r hello /dir'
+stdout = "/dir/a.txt:hello world\n/dir/sub/b.txt:hello there\n"
+exit_code = 0
+files = { "/dir/a.txt" = "hello world\ngoodbye\n", "/dir/sub/b.txt" = "hello there\n", "/dir/c.txt" = "nothing\n" }
+
+[[cases]]
+name = "context_after"
+script = 'printf "a\nb\nc\nd\ne\n" | grep -A 1 c'
+stdout = "c\nd\n"
+exit_code = 0
+
+[[cases]]
+name = "context_before"
+script = 'printf "a\nb\nc\nd\ne\n" | grep -B 1 c'
+stdout = "b\nc\n"
+exit_code = 0
+
+[[cases]]
+name = "context_both"
+script = 'printf "a\nb\nc\nd\ne\n" | grep -C 1 c'
+stdout = "b\nc\nd\n"
+exit_code = 0
+
+[[cases]]
+name = "multiple_patterns_with_e"
+script = 'printf "apple\nbanana\ncherry\n" | grep -e apple -e cherry'
+stdout = "apple\ncherry\n"
+exit_code = 0
+
+[[cases]]
+name = "line_regexp"
+script = 'printf "foo\nfoobar\nbarfoo\n" | grep -x foo'
+stdout = "foo\n"
+exit_code = 0
+
+[[cases]]
+name = "max_count"
+script = 'printf "a\na\na\na\n" | grep -m 2 a'
+stdout = "a\na\n"
+exit_code = 0
+
+[[cases]]
+name = "suppress_filename"
+script = 'grep -h hello /a.txt /b.txt'
+stdout = "hello world\nhello there\n"
+exit_code = 0
+files = { "/a.txt" = "hello world\n", "/b.txt" = "hello there\n" }

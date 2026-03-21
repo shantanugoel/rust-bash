@@ -1,0 +1,79 @@
+# grep basic literal matching and exit codes
+
+[[cases]]
+name = "literal_match"
+script = 'printf "apple\nbanana\ncherry\n" | grep banana'
+stdout = "banana\n"
+exit_code = 0
+
+[[cases]]
+name = "no_match_exit_code"
+script = 'printf "hello\n" | grep xyz'
+stdout = ""
+exit_code = 1
+
+[[cases]]
+name = "multiple_lines_match"
+script = 'printf "foo bar\nfoo baz\nhello\n" | grep foo'
+stdout = "foo bar\nfoo baz\n"
+exit_code = 0
+
+[[cases]]
+name = "match_from_file"
+script = 'grep hello /data.txt'
+stdout = "hello world\n"
+exit_code = 0
+files = { "/data.txt" = "hello world\ngoodbye\n" }
+
+[[cases]]
+name = "no_match_from_file"
+script = 'grep missing /data.txt'
+stdout = ""
+exit_code = 1
+files = { "/data.txt" = "hello world\ngoodbye\n" }
+
+[[cases]]
+name = "multiple_files_with_prefix"
+script = 'grep hello /a.txt /b.txt'
+stdout = "/a.txt:hello world\n/b.txt:hello there\n"
+exit_code = 0
+files = { "/a.txt" = "hello world\ngoodbye\n", "/b.txt" = "hello there\nfoo\n" }
+
+[[cases]]
+name = "file_not_found_error"
+script = 'grep hello /nonexistent.txt'
+stdout = ""
+exit_code = 2
+stderr_contains = "No such file"
+
+[[cases]]
+name = "empty_input_no_match"
+script = 'printf "" | grep anything'
+stdout = ""
+exit_code = 1
+
+[[cases]]
+name = "match_with_special_chars_literal"
+script = 'printf "price: \$10\nfoo\n" | grep -F "\$10"'
+stdout = "price: $10\n"
+exit_code = 0
+
+[[cases]]
+name = "stdin_via_pipe"
+script = 'echo "hello world" | grep world'
+stdout = "hello world\n"
+exit_code = 0
+
+[[cases]]
+name = "missing_pattern_error"
+script = 'echo hello | grep'
+stdout = ""
+exit_code = 2
+stderr_contains = "missing pattern"
+
+[[cases]]
+name = "files_without_match"
+script = 'grep -L hello /a.txt /b.txt /c.txt'
+stdout = "/b.txt\n"
+exit_code = 0
+files = { "/a.txt" = "hello\n", "/b.txt" = "goodbye\n", "/c.txt" = "hello world\n" }

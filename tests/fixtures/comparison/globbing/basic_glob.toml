@@ -1,0 +1,60 @@
+# Glob expansion: *, ?, [...], no-match, quoting prevents globs
+
+[[cases]]
+name = "star_glob_matches"
+script = 'echo *.txt'
+files = { "/file1.txt" = "", "/file2.txt" = "", "/other.log" = "" }
+stdout = """
+file1.txt file2.txt
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "question_mark_glob"
+script = 'echo ?.txt'
+files = { "/a.txt" = "", "/b.txt" = "", "/ab.txt" = "" }
+stdout = """
+a.txt b.txt
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "bracket_glob"
+script = 'echo [ab].txt'
+files = { "/a.txt" = "", "/b.txt" = "", "/c.txt" = "" }
+stdout = """
+a.txt b.txt
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "no_match_returns_literal"
+script = 'echo *.nonexistent'
+stdout = """
+*.nonexistent
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "quoted_glob_no_expansion"
+script = 'echo "*.txt"'
+files = { "/file1.txt" = "", "/file2.txt" = "" }
+stdout = """
+*.txt
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "dotfiles_not_matched_by_star"
+script = 'echo *'
+files = { "/.hidden" = "", "/visible" = "" }
+stdout = """
+visible
+"""
+stderr = ""
+exit_code = 0

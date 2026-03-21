@@ -1,0 +1,121 @@
+# Parameter expansion: default values, alternative values, error, assign
+# Focus: edge cases around empty-vs-unset semantics with colon variants
+
+[[cases]]
+name = "unset_default_with_colon"
+script = 'echo "${UNSET:-fallback}"'
+stdout = """
+fallback
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "empty_default_with_colon"
+script = 'X=""; echo "${X:-fallback}"'
+stdout = """
+fallback
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "empty_default_without_colon"
+script = 'X=""; echo "${X-fallback}"'
+stdout = """
+
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "set_value_ignores_default"
+script = 'X=hello; echo "${X:-fallback}"'
+stdout = """
+hello
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "assign_default_with_colon"
+script = 'unset Y; echo "${Y:=assigned}"; echo "$Y"'
+stdout = """
+assigned
+assigned
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "alternative_value_set"
+script = 'X=hello; echo "${X:+alternative}"'
+stdout = """
+alternative
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "alternative_value_unset"
+script = 'echo "${UNSET:+alternative}"'
+stdout = """
+
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "alternative_value_empty_with_colon"
+script = 'X=""; echo "${X:+alt}"'
+stdout = """
+
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "alternative_value_empty_without_colon"
+script = 'X=""; echo "${X+alt}"'
+stdout = """
+alt
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "string_length"
+script = 'X="hello world"; echo "${#X}"'
+stdout = """
+11
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "string_length_empty"
+script = 'X=""; echo "${#X}"'
+stdout = """
+0
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "string_length_unset"
+script = 'unset Z; echo "${#Z}"'
+stdout = """
+0
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "error_on_unset"
+script = 'unset MISSING; echo "${MISSING:?variable not set}" 2>/dev/null; echo $?'
+stdout = ""
+stderr = """
+/bin/bash: line 1: MISSING: variable not set
+"""
+exit_code = 127
+stderr_ignore = true

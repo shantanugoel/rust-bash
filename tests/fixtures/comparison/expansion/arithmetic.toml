@@ -1,0 +1,129 @@
+# Arithmetic expansion: operators, ternary, variable references, edge cases
+
+[[cases]]
+name = "basic_addition"
+script = 'echo $((2 + 3))'
+stdout = """
+5
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "multiplication_precedence"
+script = 'echo $((2 + 3 * 4))'
+stdout = """
+14
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "parentheses_override_precedence"
+script = 'echo $(( (2 + 3) * 4 ))'
+stdout = """
+20
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "ternary_operator"
+script = 'echo $((1 > 0 ? 42 : 99))'
+stdout = """
+42
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "variable_in_arithmetic"
+script = 'X=10; echo $((X + 5))'
+stdout = """
+15
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "pre_increment"
+script = 'X=5; echo $((++X)); echo $X'
+stdout = """
+6
+6
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "post_increment"
+script = 'X=5; echo $((X++)); echo $X'
+stdout = """
+5
+6
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "bitwise_operators"
+script = 'echo $((0xFF & 0x0F))'
+stdout = """
+15
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "modulo_operator"
+script = 'echo $((17 % 5))'
+stdout = """
+2
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "exponentiation"
+script = 'echo $((2 ** 10))'
+stdout = """
+1024
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "compound_assignment"
+script = 'X=10; ((X += 5)); echo $X'
+stdout = """
+15
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "arithmetic_command_exit_code_zero"
+script = '((0)); echo $?'
+stdout = """
+1
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "arithmetic_command_exit_code_nonzero"
+script = '((1)); echo $?'
+stdout = """
+0
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "nested_arithmetic"
+script = 'echo $(( $((2+3)) * $((4+5)) ))'
+stdout = """
+45
+"""
+stderr = ""
+exit_code = 0

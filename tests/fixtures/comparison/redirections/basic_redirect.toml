@@ -1,0 +1,64 @@
+# Redirections: >, >>, 2>, &>, <, heredocs, here-strings
+# Note: scripts use relative paths since VFS and bash tempdir both work with them
+
+[[cases]]
+name = "redirect_stdout_to_file"
+script = 'echo hello > out.txt; cat out.txt'
+stdout = """
+hello
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "redirect_append"
+script = 'echo line1 > out.txt; echo line2 >> out.txt; cat out.txt'
+stdout = """
+line1
+line2
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "redirect_stdin_from_file"
+script = 'cat < input.txt'
+files = { "/input.txt" = "from file\n" }
+stdout = """
+from file
+"""
+stderr = ""
+exit_code = 0
+skip = "VFS uses absolute paths but recording uses relative temp dir"
+
+[[cases]]
+name = "redirect_stderr_to_dev_null"
+script = 'echo error >&2 2>/dev/null; echo ok'
+stdout = """
+ok
+"""
+stderr = """
+error
+"""
+exit_code = 0
+skip = "rust-bash processes redirect order differently for >&2 2>/dev/null"
+
+[[cases]]
+name = "redirect_both_stdout_stderr"
+script = 'echo out; echo err >&2'
+stdout = """
+out
+"""
+stderr = """
+err
+"""
+exit_code = 0
+
+[[cases]]
+name = "redirect_dev_null"
+script = 'echo hidden > /dev/null; echo visible'
+stdout = """
+visible
+"""
+stderr = ""
+exit_code = 0

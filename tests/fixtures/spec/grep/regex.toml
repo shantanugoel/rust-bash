@@ -1,0 +1,61 @@
+# grep regex pattern matching
+
+[[cases]]
+name = "dot_matches_any_char"
+script = 'printf "cat\ncar\ncap\ndog\n" | grep "ca."'
+stdout = "cat\ncar\ncap\n"
+exit_code = 0
+
+[[cases]]
+name = "character_class"
+script = 'printf "cat\nbat\nhat\ndog\n" | grep "[cbh]at"'
+stdout = "cat\nbat\nhat\n"
+exit_code = 0
+
+[[cases]]
+name = "negated_character_class"
+script = 'printf "cat\nbat\nhat\ndog\n" | grep "[^ch]at"'
+stdout = "bat\n"
+exit_code = 0
+
+[[cases]]
+name = "anchor_start_of_line"
+script = 'printf "hello world\nworld hello\n" | grep "^hello"'
+stdout = "hello world\n"
+exit_code = 0
+
+[[cases]]
+name = "anchor_end_of_line"
+script = 'printf "hello world\nworld hello\n" | grep "world$"'
+stdout = "hello world\n"
+exit_code = 0
+
+[[cases]]
+name = "extended_regex_alternation"
+script = 'printf "cat\ndog\nbird\n" | grep -E "cat|dog"'
+stdout = "cat\ndog\n"
+exit_code = 0
+
+[[cases]]
+name = "extended_regex_groups"
+script = 'printf "foobar\nfoobaz\nfoo\n" | grep -E "foo(bar|baz)"'
+stdout = "foobar\nfoobaz\n"
+exit_code = 0
+
+[[cases]]
+name = "extended_regex_plus_quantifier"
+script = 'printf "ac\nabc\nabbc\n" | grep -E "ab+c"'
+stdout = "abc\nabbc\n"
+exit_code = 0
+
+[[cases]]
+name = "extended_regex_question_quantifier"
+script = 'printf "ac\nabc\nabbc\n" | grep -E "ab?c"'
+stdout = "ac\nabc\n"
+exit_code = 0
+
+[[cases]]
+name = "star_quantifier"
+script = 'printf "ac\nabc\nabbc\n" | grep "ab*c"'
+stdout = "ac\nabc\nabbc\n"
+exit_code = 0

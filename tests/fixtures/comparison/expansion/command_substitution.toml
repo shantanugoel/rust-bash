@@ -1,0 +1,82 @@
+# Command substitution: $(...), backticks, nesting, trailing newline stripping
+
+[[cases]]
+name = "basic_dollar_paren"
+script = 'echo "$(echo hello)"'
+stdout = """
+hello
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "basic_backtick"
+script = 'echo `echo hello`'
+stdout = """
+hello
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "trailing_newlines_stripped"
+script = 'X=$(printf "hi\n\n\n"); echo "[$X]"'
+stdout = """
+[hi]
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "nested_substitution"
+script = 'echo "$(echo "$(echo deep)")"'
+stdout = """
+deep
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "substitution_in_assignment"
+script = 'X=$(echo hello); echo "$X"'
+stdout = """
+hello
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "substitution_preserves_spaces_when_quoted"
+script = 'echo "$(echo "  spaced  ")"'
+stdout = """
+  spaced  
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "substitution_splits_when_unquoted"
+script = 'echo $(echo "a   b   c")'
+stdout = """
+a b c
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "substitution_exit_code"
+script = '$(exit 42); echo $?'
+stdout = """
+42
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "empty_substitution"
+script = 'echo "[$(true)]"'
+stdout = """
+[]
+"""
+stderr = ""
+exit_code = 0

@@ -1,0 +1,145 @@
+# Parameter expansion: pattern removal, replacement, substring extraction
+
+[[cases]]
+name = "prefix_removal_shortest"
+script = 'X="foo/bar/baz"; echo "${X#*/}"'
+stdout = """
+bar/baz
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "prefix_removal_longest"
+script = 'X="foo/bar/baz"; echo "${X##*/}"'
+stdout = """
+baz
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "suffix_removal_shortest"
+script = 'X="foo/bar/baz"; echo "${X%/*}"'
+stdout = """
+foo/bar
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "suffix_removal_longest"
+script = 'X="foo/bar/baz"; echo "${X%%/*}"'
+stdout = """
+foo
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "substring_offset"
+script = 'X="hello world"; echo "${X:6}"'
+stdout = """
+world
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "substring_offset_length"
+script = 'X="hello world"; echo "${X:0:5}"'
+stdout = """
+hello
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "substring_negative_offset"
+script = 'X="hello world"; echo "${X: -5}"'
+stdout = """
+world
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "case_upper_first"
+script = 'X="hello"; echo "${X^}"'
+stdout = """
+Hello
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "case_upper_all"
+script = 'X="hello"; echo "${X^^}"'
+stdout = """
+HELLO
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "case_lower_first"
+script = 'X="HELLO"; echo "${X,}"'
+stdout = """
+hELLO
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "case_lower_all"
+script = 'X="HELLO"; echo "${X,,}"'
+stdout = """
+hello
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "single_replacement"
+script = 'X="hello world hello"; echo "${X/hello/hi}"'
+stdout = """
+hi world hello
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "global_replacement"
+script = 'X="hello world hello"; echo "${X//hello/hi}"'
+stdout = """
+hi world hi
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "prefix_replacement"
+script = 'X="hello world"; echo "${X/#hello/greetings}"'
+stdout = """
+greetings world
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "suffix_replacement"
+script = 'X="hello world"; echo "${X/%world/earth}"'
+stdout = """
+hello earth
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "replacement_delete"
+script = 'X="hello world"; echo "${X/ world/}"'
+stdout = """
+hello
+"""
+stderr = ""
+exit_code = 0

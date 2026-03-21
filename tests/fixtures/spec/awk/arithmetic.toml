@@ -1,0 +1,98 @@
+# awk arithmetic operations
+
+[[cases]]
+name = "basic_addition"
+script = "echo '' | awk 'BEGIN { print 2 + 3 }'"
+stdout = "5\n"
+exit_code = 0
+
+[[cases]]
+name = "subtraction"
+script = "echo '' | awk 'BEGIN { print 10 - 4 }'"
+stdout = "6\n"
+exit_code = 0
+
+[[cases]]
+name = "multiplication"
+script = "echo '' | awk 'BEGIN { print 3 * 7 }'"
+stdout = "21\n"
+exit_code = 0
+
+[[cases]]
+name = "division"
+script = "echo '' | awk 'BEGIN { print 10 / 4 }'"
+stdout = "2.5\n"
+exit_code = 0
+
+[[cases]]
+name = "modulo"
+script = "echo '' | awk 'BEGIN { print 10 % 3 }'"
+stdout = "1\n"
+exit_code = 0
+
+[[cases]]
+name = "exponentiation"
+script = "echo '' | awk 'BEGIN { print 2 ^ 10 }'"
+stdout = "1024\n"
+exit_code = 0
+
+[[cases]]
+name = "unary_minus"
+script = "echo '' | awk 'BEGIN { x = 5; print -x }'"
+stdout = "-5\n"
+exit_code = 0
+
+[[cases]]
+name = "increment"
+script = "echo '' | awk 'BEGIN { x = 5; x++; print x }'"
+stdout = "6\n"
+exit_code = 0
+
+[[cases]]
+name = "decrement"
+script = "echo '' | awk 'BEGIN { x = 5; x--; print x }'"
+stdout = "4\n"
+exit_code = 0
+
+[[cases]]
+name = "compound_assignment"
+script = "echo '' | awk 'BEGIN { x = 10; x += 5; x *= 2; print x }'"
+stdout = "30\n"
+exit_code = 0
+
+[[cases]]
+name = "comparison_operators"
+script = "echo '' | awk 'BEGIN { print (3 > 2), (3 < 2), (3 == 3), (3 != 4) }'"
+stdout = "1 0 1 1\n"
+exit_code = 0
+
+[[cases]]
+name = "logical_operators"
+script = "echo '' | awk 'BEGIN { print (1 && 1), (1 && 0), (0 || 1), (!0) }'"
+stdout = "1 0 1 1\n"
+exit_code = 0
+
+[[cases]]
+name = "string_to_number_coercion"
+script = 'printf "42abc\n" | awk "{ print \$1 + 0 }"'
+stdout = "42\n"
+exit_code = 0
+
+[[cases]]
+name = "integer_output_format"
+script = "echo '' | awk 'BEGIN { print 3.0 + 2.0 }'"
+stdout = "5\n"
+exit_code = 0
+
+[[cases]]
+name = "division_by_zero"
+script = "echo '' | awk 'BEGIN { print 1/0 }'"
+stdout = "0\n"
+exit_code = 0
+stderr_contains = "division by zero"
+
+[[cases]]
+name = "ternary_operator"
+script = "echo '' | awk 'BEGIN { x = 5; print (x > 3 ? \"big\" : \"small\") }'"
+stdout = "big\n"
+exit_code = 0

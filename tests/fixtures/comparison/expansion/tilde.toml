@@ -1,0 +1,46 @@
+# Tilde expansion: ~, tilde in assignments
+
+[[cases]]
+name = "bare_tilde"
+script = 'echo ~'
+stdout = """
+/root
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "tilde_in_path"
+script = 'echo ~/subdir'
+stdout = """
+/root/subdir
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "tilde_in_assignment"
+script = 'X=~; echo "$X"'
+stdout = """
+/root
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "tilde_quoted_no_expansion"
+script = "echo '~'"
+stdout = """
+~
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "tilde_double_quoted_no_expansion"
+script = 'echo "~"'
+stdout = """
+~
+"""
+stderr = ""
+exit_code = 0

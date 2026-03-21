@@ -1,0 +1,90 @@
+# If/elif/else: test conditions, edge cases
+
+[[cases]]
+name = "basic_if_true"
+script = 'if true; then echo yes; fi'
+stdout = """
+yes
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "basic_if_false"
+script = 'if false; then echo yes; else echo no; fi'
+stdout = """
+no
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "elif_chain"
+script = '''
+X=2
+if [ "$X" -eq 1 ]; then echo one
+elif [ "$X" -eq 2 ]; then echo two
+elif [ "$X" -eq 3 ]; then echo three
+else echo other
+fi
+'''
+stdout = """
+two
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "if_with_command_test"
+script = 'if echo check > /dev/null; then echo passed; fi'
+stdout = """
+passed
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "nested_if"
+script = '''
+X=5
+if [ "$X" -gt 0 ]; then
+  if [ "$X" -lt 10 ]; then
+    echo "single digit positive"
+  fi
+fi
+'''
+stdout = """
+single digit positive
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "if_with_negation"
+script = 'if ! false; then echo negated; fi'
+stdout = """
+negated
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "extended_test_pattern_match"
+script = '''
+X="hello.txt"
+if [[ "$X" == *.txt ]]; then echo "text file"; else echo "other"; fi
+'''
+stdout = """
+text file
+"""
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "extended_test_string_comparison"
+script = 'if [[ "abc" < "def" ]]; then echo "less"; fi'
+stdout = """
+less
+"""
+stderr = ""
+exit_code = 0

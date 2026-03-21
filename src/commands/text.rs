@@ -1388,30 +1388,71 @@ impl super::VirtualCommand for WcCommand {
             Err(r) => return r,
         };
 
-        let mut stdout = String::new();
+        // First pass: compute counts for all inputs.
+        let mut counts: Vec<(usize, usize, usize)> = Vec::new();
         let mut total_lines = 0usize;
         let mut total_words = 0usize;
         let mut total_bytes = 0usize;
 
-        for (filename, content) in &inputs {
+        for (_filename, content) in &inputs {
             let line_count = content.lines().count();
-            // If content ends with newline, that's accurate; if not, lines() still counts last
             let word_count = content.split_whitespace().count();
             let byte_count = content.len();
-
             total_lines += line_count;
             total_words += word_count;
             total_bytes += byte_count;
+            counts.push((line_count, word_count, byte_count));
+        }
+
+        // Compute dynamic field width like GNU wc: width of the largest number
+        // that will appear (including the totals row if present).
+        let max_val = {
+            let mut m = 0usize;
+            let use_totals = inputs.len() > 1;
+            for &(l, w, b) in &counts {
+                if show_lines {
+                    m = m.max(l);
+                }
+                if show_words {
+                    m = m.max(w);
+                }
+                if show_bytes {
+                    m = m.max(b);
+                }
+            }
+            if use_totals {
+                if show_lines {
+                    m = m.max(total_lines);
+                }
+                if show_words {
+                    m = m.max(total_words);
+                }
+                if show_bytes {
+                    m = m.max(total_bytes);
+                }
+            }
+            m
+        };
+        let width = if max_val == 0 {
+            1
+        } else {
+            max_val.to_string().len()
+        };
+
+        let mut stdout = String::new();
+
+        for (i, (filename, _content)) in inputs.iter().enumerate() {
+            let (line_count, word_count, byte_count) = counts[i];
 
             let mut parts = Vec::new();
             if show_lines {
-                parts.push(format!("{:>7}", line_count));
+                parts.push(format!("{:>w$}", line_count, w = width));
             }
             if show_words {
-                parts.push(format!("{:>7}", word_count));
+                parts.push(format!("{:>w$}", word_count, w = width));
             }
             if show_bytes {
-                parts.push(format!("{:>7}", byte_count));
+                parts.push(format!("{:>w$}", byte_count, w = width));
             }
 
             let display_name = if files.is_empty() {
@@ -1419,21 +1460,21 @@ impl super::VirtualCommand for WcCommand {
             } else {
                 format!(" {}", filename)
             };
-            stdout.push_str(&format!("{}{}\n", parts.join(""), display_name));
+            stdout.push_str(&format!("{}{}\n", parts.join(" "), display_name));
         }
 
         if inputs.len() > 1 {
             let mut parts = Vec::new();
             if show_lines {
-                parts.push(format!("{:>7}", total_lines));
+                parts.push(format!("{:>w$}", total_lines, w = width));
             }
             if show_words {
-                parts.push(format!("{:>7}", total_words));
+                parts.push(format!("{:>w$}", total_words, w = width));
             }
             if show_bytes {
-                parts.push(format!("{:>7}", total_bytes));
+                parts.push(format!("{:>w$}", total_bytes, w = width));
             }
-            stdout.push_str(&format!("{} total\n", parts.join("")));
+            stdout.push_str(&format!("{} total\n", parts.join(" ")));
         }
 
         CommandResult {
