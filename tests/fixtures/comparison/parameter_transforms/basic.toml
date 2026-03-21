@@ -1,0 +1,118 @@
+# M6.11 — Parameter transformation operators (mixed pass/xfail)
+
+[[cases]]
+name = "transform_Q"
+script = '''
+x="hello world"
+echo "${x@Q}"
+'''
+stdout = "'hello world'\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.11"
+feature = "param_transform.Q"
+
+[[cases]]
+name = "transform_E"
+script = '''
+x='hello\nworld'
+echo "${x@E}"
+'''
+stdout = "hello\nworld\n"
+stderr = ""
+exit_code = 0
+status = "xfail"
+milestone = "M6.11"
+feature = "param_transform.E"
+reason = "parameter transforms not implemented"
+
+[[cases]]
+name = "transform_A"
+script = '''
+declare -i num=42
+echo "${num@A}"
+'''
+stdout = "declare -i num='42'\n"
+stderr = ""
+exit_code = 0
+status = "xfail"
+milestone = "M6.11"
+feature = "param_transform.A"
+reason = "parameter transforms not implemented"
+
+[[cases]]
+name = "transform_a"
+script = '''
+declare -i num=42
+echo "${num@a}"
+'''
+stdout = "i\n"
+stderr = ""
+exit_code = 0
+status = "xfail"
+milestone = "M6.11"
+feature = "param_transform.a"
+reason = "parameter transforms not implemented"
+
+[[cases]]
+name = "indirect_expansion_basic"
+script = '''
+target=hello
+ref=target
+echo "${!ref}"
+'''
+stdout = "hello\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.11"
+feature = "indirect_expansion"
+
+[[cases]]
+name = "prefix_name_expansion"
+script = '''
+FOO_A=1
+FOO_B=2
+FOO_C=3
+echo "${!FOO_*}"
+'''
+stdout = "FOO_A FOO_B FOO_C\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.11"
+feature = "prefix_expansion"
+
+[[cases]]
+name = "printf_v_assigns"
+script = '''
+printf -v result "hello %s" "world"
+echo "$result"
+'''
+stdout = "hello world\n"
+stderr = ""
+exit_code = 0
+status = "xfail"
+milestone = "M6.11"
+feature = "printf_v"
+reason = "printf -v not implemented"
+
+[[cases]]
+name = "printf_percent_b"
+script = 'printf "%b\n" "hello\tworld"'
+stdout = "hello\tworld\n"
+stderr = ""
+exit_code = 0
+status = "xfail"
+milestone = "M6.11"
+feature = "printf_b"
+reason = "printf %b not implemented"
+
+[[cases]]
+name = "printf_percent_q"
+script = "printf '%q\\n' 'hello world'"
+stdout = "hello\\ world\n"
+stderr = ""
+exit_code = 0
+status = "xfail"
+milestone = "M6.11"
+feature = "printf_q"
+reason = "printf %q not implemented"

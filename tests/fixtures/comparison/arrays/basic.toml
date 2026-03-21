@@ -1,0 +1,113 @@
+# M6.1 — Indexed and Associative Arrays: core behavior
+
+[[cases]]
+name = "indexed_array_basic_assignment"
+script = '''
+arr=(one two three)
+echo "${arr[0]}"
+echo "${arr[1]}"
+echo "${arr[2]}"
+'''
+stdout = "one\ntwo\nthree\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.1"
+feature = "indexed_arrays"
+
+[[cases]]
+name = "indexed_array_sparse_indices"
+script = '''
+arr[0]=a
+arr[5]=b
+arr[10]=c
+echo "${arr[0]} ${arr[5]} ${arr[10]}"
+echo "${arr[3]}"
+'''
+stdout = "a b c\n\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.1"
+feature = "indexed_arrays"
+
+[[cases]]
+name = "indexed_array_append"
+script = '''
+arr=(x y)
+arr+=(z w)
+echo "${arr[@]}"
+'''
+stdout = "x y z w\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.1"
+feature = "indexed_arrays"
+
+[[cases]]
+name = "array_at_vs_star_quoted"
+script = '''
+arr=(one two three)
+for x in "${arr[@]}"; do echo "item:$x"; done
+echo "---"
+for x in "${arr[*]}"; do echo "joined:$x"; done
+'''
+stdout = "item:one\nitem:two\nitem:three\n---\njoined:one two three\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.1"
+feature = "indexed_arrays"
+
+[[cases]]
+name = "associative_array_basic"
+script = '''
+declare -A map
+map[name]=alice
+map[age]=30
+echo "${map[name]}"
+echo "${map[age]}"
+'''
+stdout = "alice\n30\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.1"
+feature = "associative_arrays"
+
+[[cases]]
+name = "associative_array_keys"
+script = '''
+declare -A map
+map[x]=1
+map[y]=2
+map[z]=3
+for k in $(echo "${!map[@]}" | tr ' ' '\n' | sort); do echo "$k"; done
+'''
+stdout = "x\ny\nz\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.1"
+feature = "associative_arrays"
+
+[[cases]]
+name = "array_length"
+script = '''
+arr=(a b c d e)
+echo "${#arr[@]}"
+'''
+stdout = "5\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.1"
+feature = "indexed_arrays"
+
+[[cases]]
+name = "unset_array_element"
+script = '''
+arr=(a b c d)
+unset 'arr[1]'
+echo "${arr[@]}"
+echo "${#arr[@]}"
+'''
+stdout = "a c d\n3\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.1"
+feature = "indexed_arrays"

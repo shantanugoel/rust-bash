@@ -1501,11 +1501,11 @@ fn extended_test_regex_match() {
     let mut sh = shell();
     let r = sh.exec("[[ \"abc123\" =~ ^[a-z]+([0-9]+)$ ]]").unwrap();
     assert_eq!(r.exit_code, 0);
-    // BASH_REMATCH should contain the whole match
-    let r2 = sh.exec("echo $BASH_REMATCH").unwrap();
+    // BASH_REMATCH[0] should contain the whole match
+    let r2 = sh.exec("echo ${BASH_REMATCH[0]}").unwrap();
     assert_eq!(r2.stdout, "abc123\n");
-    // First capture group
-    let r3 = sh.exec("echo $BASH_REMATCH_1").unwrap();
+    // BASH_REMATCH[1] should contain first capture group
+    let r3 = sh.exec("echo ${BASH_REMATCH[1]}").unwrap();
     assert_eq!(r3.stdout, "123\n");
 }
 
@@ -1514,6 +1514,138 @@ fn extended_test_regex_no_match() {
     let mut sh = shell();
     let r = sh.exec("[[ \"hello\" =~ ^[0-9]+$ ]]").unwrap();
     assert_eq!(r.exit_code, 1);
+}
+
+// --- PIPESTATUS tests ---
+
+#[test]
+fn pipestatus_simple_command() {
+    let mut sh = shell();
+    let r = sh.exec("true; echo ${PIPESTATUS[0]}").unwrap();
+    assert_eq!(r.stdout, "0\n");
+}
+
+#[test]
+fn pipestatus_pipeline_all_elements() {
+    let mut sh = shell();
+    let r = sh
+        .exec("echo hello | grep x; echo ${PIPESTATUS[@]}")
+        .unwrap();
+    assert_eq!(r.stdout.trim(), "0 1");
+}
+
+#[test]
+fn pipestatus_pipeline_specific_index() {
+    let mut sh = shell();
+    let r = sh
+        .exec("true | false | true; echo ${PIPESTATUS[1]}")
+        .unwrap();
+    assert_eq!(r.stdout, "1\n");
+}
+
+#[test]
+fn pipestatus_overwritten_by_subsequent_command() {
+    let mut sh = shell();
+    let r = sh
+        .exec("true | false; echo hi; echo ${PIPESTATUS[0]}")
+        .unwrap();
+    // PIPESTATUS should reflect `echo hi` (exit 0), not the earlier pipeline
+    assert!(r.stdout.ends_with("0\n"));
+}
+
+#[test]
+fn pipestatus_length() {
+    let mut sh = shell();
+    let r = sh
+        .exec("true | false | true; echo ${#PIPESTATUS[@]}")
+        .unwrap();
+    assert_eq!(r.stdout, "3\n");
+}
+
+// --- BASH_REMATCH array tests ---
+
+#[test]
+fn bash_rematch_array_whole_match() {
+    let mut sh = shell();
+    let r = sh
+        .exec("[[ \"abc123\" =~ ([a-z]+)([0-9]+) ]]; echo ${BASH_REMATCH[0]}")
+        .unwrap();
+    assert_eq!(r.stdout, "abc123\n");
+}
+
+#[test]
+fn bash_rematch_array_capture_groups() {
+    let mut sh = shell();
+    let r = sh
+        .exec("[[ \"abc123\" =~ ([a-z]+)([0-9]+) ]]; echo ${BASH_REMATCH[1]}")
+        .unwrap();
+    assert_eq!(r.stdout, "abc\n");
+    let r2 = sh
+        .exec("[[ \"abc123\" =~ ([a-z]+)([0-9]+) ]]; echo ${BASH_REMATCH[2]}")
+        .unwrap();
+    assert_eq!(r2.stdout, "123\n");
+}
+
+#[test]
+fn bash_rematch_array_length() {
+    let mut sh = shell();
+    let r = sh
+        .exec("[[ \"abc123\" =~ ([a-z]+)([0-9]+) ]]; echo ${#BASH_REMATCH[@]}")
+        .unwrap();
+    assert_eq!(r.stdout, "3\n");
+}
+
+#[test]
+fn bash_rematch_all_elements() {
+    let mut sh = shell();
+    let r = sh
+        .exec("[[ \"abc123\" =~ ([a-z]+)([0-9]+) ]]; echo ${BASH_REMATCH[@]}")
+        .unwrap();
+    assert_eq!(r.stdout, "abc123 abc 123\n");
+}
+
+#[test]
+fn bash_rematch_cleared_on_no_match() {
+    let mut sh = shell();
+    sh.exec("[[ \"abc123\" =~ ([a-z]+)([0-9]+) ]]").unwrap();
+    let r = sh
+        .exec("[[ \"!!!\" =~ ([a-z]+) ]]; echo ${#BASH_REMATCH[@]}")
+        .unwrap();
+    assert_eq!(r.stdout, "0\n");
+}
+
+#[test]
+fn bash_rematch_scalar_access_returns_index_zero() {
+    let mut sh = shell();
+    let r = sh
+        .exec("[[ \"abc123\" =~ ([a-z]+)([0-9]+) ]]; echo $BASH_REMATCH")
+        .unwrap();
+    assert_eq!(r.stdout, "abc123\n");
+}
+
+#[test]
+fn bash_rematch_non_participating_group() {
+    let mut sh = shell();
+    let r = sh
+        .exec("[[ \"a\" =~ (a)|(b) ]]; echo ${#BASH_REMATCH[@]}")
+        .unwrap();
+    assert_eq!(r.stdout, "3\n");
+}
+
+#[test]
+fn pipestatus_scalar_access_returns_first_code() {
+    let mut sh = shell();
+    let r = sh.exec("true | false; echo $PIPESTATUS").unwrap();
+    assert_eq!(r.stdout, "0\n");
+}
+
+#[test]
+fn bash_rematch_persists_across_non_regex_commands() {
+    let mut sh = shell();
+    sh.exec("[[ \"abc123\" =~ ([a-z]+)([0-9]+) ]]").unwrap();
+    sh.exec("echo hello").unwrap();
+    let r = sh.exec("echo ${BASH_REMATCH[1]}").unwrap();
+    assert_eq!(r.stdout, "abc\n");
 }
 
 #[test]
@@ -1860,6 +1992,7 @@ fn glob_ls_command() {
 #[test]
 fn glob_recursive_doublestar() {
     let mut sh = shell();
+    sh.exec("shopt -s globstar").unwrap();
     sh.exec("mkdir -p /proj/src/sub && echo x > /proj/README.md && echo x > /proj/src/lib.md && echo x > /proj/src/sub/deep.md")
         .unwrap();
     let r = sh.exec("echo /proj/**/*.md").unwrap();
@@ -1922,6 +2055,7 @@ fn glob_var_quoted_no_expand() {
 #[test]
 fn glob_doublestar_skips_hidden_dirs() {
     let mut sh = shell();
+    sh.exec("shopt -s globstar").unwrap();
     sh.exec("mkdir -p /d/.hidden && echo x > /d/.hidden/secret.md && echo x > /d/visible.md")
         .unwrap();
     let r = sh.exec("echo /d/**/*.md").unwrap();
@@ -4694,4 +4828,421 @@ fn redirect_ampersand_greater_than() {
         .unwrap();
     assert!(r.stdout.contains("out"));
     assert!(r.stdout.contains("command not found"));
+}
+
+// ── Arrays (M6.1) ──────────────────────────────────────────────────
+
+#[test]
+fn array_basic_indexed_assignment() {
+    let mut sh = shell();
+    let r = sh
+        .exec("arr=(one two three); echo ${arr[0]} ${arr[1]} ${arr[2]}")
+        .unwrap();
+    assert_eq!(r.stdout, "one two three\n");
+}
+
+#[test]
+fn array_element_assignment() {
+    let mut sh = shell();
+    let r = sh
+        .exec("arr[0]=hello; arr[1]=world; echo ${arr[0]} ${arr[1]}")
+        .unwrap();
+    assert_eq!(r.stdout, "hello world\n");
+}
+
+#[test]
+fn array_all_elements_at() {
+    let mut sh = shell();
+    let r = sh.exec("arr=(a b c); echo ${arr[@]}").unwrap();
+    assert_eq!(r.stdout, "a b c\n");
+}
+
+#[test]
+fn array_all_elements_star() {
+    let mut sh = shell();
+    let r = sh.exec("arr=(a b c); echo ${arr[*]}").unwrap();
+    assert_eq!(r.stdout, "a b c\n");
+}
+
+#[test]
+fn array_star_with_ifs() {
+    let mut sh = shell();
+    let r = sh.exec("IFS=','; arr=(a b c); echo \"${arr[*]}\"").unwrap();
+    assert_eq!(r.stdout, "a,b,c\n");
+}
+
+#[test]
+fn array_at_in_double_quotes_word_splitting() {
+    let mut sh = shell();
+    let r = sh
+        .exec("arr=(one two three); for x in \"${arr[@]}\"; do echo \"item:$x\"; done")
+        .unwrap();
+    assert_eq!(r.stdout, "item:one\nitem:two\nitem:three\n");
+}
+
+#[test]
+fn array_length() {
+    let mut sh = shell();
+    let r = sh.exec("arr=(a b c d e); echo ${#arr[@]}").unwrap();
+    assert_eq!(r.stdout, "5\n");
+}
+
+#[test]
+fn array_length_star() {
+    let mut sh = shell();
+    let r = sh.exec("arr=(a b c); echo ${#arr[*]}").unwrap();
+    assert_eq!(r.stdout, "3\n");
+}
+
+#[test]
+fn array_keys_at() {
+    let mut sh = shell();
+    let r = sh.exec("arr=(a b c); echo ${!arr[@]}").unwrap();
+    assert_eq!(r.stdout, "0 1 2\n");
+}
+
+#[test]
+fn array_sparse_indices() {
+    let mut sh = shell();
+    let r = sh
+        .exec("arr=([0]=x [5]=y [10]=z); echo ${!arr[@]}")
+        .unwrap();
+    assert_eq!(r.stdout, "0 5 10\n");
+}
+
+#[test]
+fn array_sparse_values() {
+    let mut sh = shell();
+    let r = sh.exec("arr=([0]=x [5]=y [10]=z); echo ${arr[@]}").unwrap();
+    assert_eq!(r.stdout, "x y z\n");
+}
+
+#[test]
+fn array_unset_element() {
+    let mut sh = shell();
+    let r = sh
+        .exec("arr=(a b c d); unset arr[1]; echo ${arr[@]}")
+        .unwrap();
+    assert_eq!(r.stdout, "a c d\n");
+}
+
+#[test]
+fn array_unset_preserves_indices() {
+    let mut sh = shell();
+    let r = sh
+        .exec("arr=(a b c d); unset arr[1]; echo ${!arr[@]}")
+        .unwrap();
+    assert_eq!(r.stdout, "0 2 3\n");
+}
+
+#[test]
+fn array_append() {
+    let mut sh = shell();
+    let r = sh.exec("arr=(a b); arr+=(c d); echo ${arr[@]}").unwrap();
+    assert_eq!(r.stdout, "a b c d\n");
+}
+
+#[test]
+fn array_append_length() {
+    let mut sh = shell();
+    let r = sh.exec("arr=(x y); arr+=(z); echo ${#arr[@]}").unwrap();
+    assert_eq!(r.stdout, "3\n");
+}
+
+#[test]
+fn array_scalar_as_element_zero() {
+    let mut sh = shell();
+    let r = sh.exec("x=hello; echo ${x[0]}").unwrap();
+    assert_eq!(r.stdout, "hello\n");
+}
+
+#[test]
+fn array_no_name_gives_element_zero() {
+    let mut sh = shell();
+    let r = sh.exec("arr=(first second third); echo $arr").unwrap();
+    assert_eq!(r.stdout, "first\n");
+}
+
+#[test]
+fn array_declare_indexed() {
+    let mut sh = shell();
+    let r = sh
+        .exec("declare -a myarr; myarr[0]=hello; echo ${myarr[0]}")
+        .unwrap();
+    assert_eq!(r.stdout, "hello\n");
+}
+
+#[test]
+fn array_declare_associative() {
+    let mut sh = shell();
+    let r = sh
+        .exec(
+            "declare -A mymap; mymap[name]=alice; mymap[age]=30; echo ${mymap[name]} ${mymap[age]}",
+        )
+        .unwrap();
+    assert_eq!(r.stdout, "alice 30\n");
+}
+
+#[test]
+fn array_associative_keys() {
+    let mut sh = shell();
+    let r = sh
+        .exec("declare -A m; m[a]=1; m[b]=2; m[c]=3; for k in \"${!m[@]}\"; do echo $k; done")
+        .unwrap();
+    let mut lines: Vec<&str> = r.stdout.trim().split('\n').collect();
+    lines.sort();
+    assert_eq!(lines, vec!["a", "b", "c"]);
+}
+
+#[test]
+fn array_in_arithmetic() {
+    let mut sh = shell();
+    let r = sh
+        .exec("arr=(10 20 30); echo $((arr[0] + arr[2]))")
+        .unwrap();
+    assert_eq!(r.stdout, "40\n");
+}
+
+#[test]
+fn array_arithmetic_assignment() {
+    let mut sh = shell();
+    let r = sh
+        .exec("arr=(0 0 0); ((arr[1] = 42)); echo ${arr[1]}")
+        .unwrap();
+    assert_eq!(r.stdout, "42\n");
+}
+
+#[test]
+fn array_arithmetic_compound_assign() {
+    let mut sh = shell();
+    let r = sh
+        .exec("arr=(10 20 30); ((arr[1] += 5)); echo ${arr[1]}")
+        .unwrap();
+    assert_eq!(r.stdout, "25\n");
+}
+
+#[test]
+fn array_empty_at_expansion_no_empty_word() {
+    let mut sh = shell();
+    let r = sh
+        .exec("arr=(); for x in \"${arr[@]}\"; do echo \"item:$x\"; done; echo done")
+        .unwrap();
+    assert_eq!(r.stdout, "done\n");
+}
+
+#[test]
+fn array_element_string_length() {
+    let mut sh = shell();
+    let r = sh.exec("arr=(hello world); echo ${#arr[0]}").unwrap();
+    assert_eq!(r.stdout, "5\n");
+}
+
+#[test]
+fn array_with_explicit_indices() {
+    let mut sh = shell();
+    let r = sh
+        .exec("arr=([2]=two [5]=five); echo ${arr[2]} ${arr[5]}")
+        .unwrap();
+    assert_eq!(r.stdout, "two five\n");
+}
+
+#[test]
+fn array_mixed_auto_and_explicit_indices() {
+    let mut sh = shell();
+    let r = sh.exec("arr=(a [3]=b c); echo ${!arr[@]}").unwrap();
+    assert_eq!(r.stdout, "0 3 4\n");
+}
+
+#[test]
+fn array_overwrite_element() {
+    let mut sh = shell();
+    let r = sh
+        .exec("arr=(old value); arr[0]=new; echo ${arr[0]} ${arr[1]}")
+        .unwrap();
+    assert_eq!(r.stdout, "new value\n");
+}
+
+#[test]
+fn array_read_nonexistent_index() {
+    let mut sh = shell();
+    let r = sh.exec("arr=(a b c); echo \"[${arr[99]}]\"").unwrap();
+    assert_eq!(r.stdout, "[]\n");
+}
+
+#[test]
+fn array_max_elements_limit() {
+    let mut sh = RustBashBuilder::new()
+        .max_array_elements(5)
+        .build()
+        .unwrap();
+    let r = sh.exec("arr=(1 2 3 4 5 6)");
+    assert!(r.is_err());
+}
+
+#[test]
+fn array_export_shows_scalar() {
+    let mut sh = shell();
+    let r = sh
+        .exec("arr=(hello world); export arr; echo ${arr[0]}")
+        .unwrap();
+    assert_eq!(r.stdout, "hello\n");
+}
+
+// ── declare attributes ─────────────────────────────────────────────
+
+#[test]
+fn declare_integer_basic() {
+    let mut sh = shell();
+    let r = sh.exec("declare -i x; x=2+3; echo $x").unwrap();
+    assert_eq!(r.stdout, "5\n");
+}
+
+#[test]
+fn declare_integer_with_value() {
+    let mut sh = shell();
+    let r = sh.exec("declare -i x=2+3; echo $x").unwrap();
+    assert_eq!(r.stdout, "5\n");
+}
+
+#[test]
+fn declare_integer_propagation_append() {
+    let mut sh = shell();
+    let r = sh.exec("declare -i x=10; x+=5; echo $x").unwrap();
+    assert_eq!(r.stdout, "15\n");
+}
+
+#[test]
+fn declare_integer_variable_reference() {
+    let mut sh = shell();
+    let r = sh.exec("declare -i x; y=3; x=y+7; echo $x").unwrap();
+    assert_eq!(r.stdout, "10\n");
+}
+
+#[test]
+fn declare_lowercase() {
+    let mut sh = shell();
+    let r = sh.exec("declare -l s; s=HELLO; echo $s").unwrap();
+    assert_eq!(r.stdout, "hello\n");
+}
+
+#[test]
+fn declare_lowercase_with_value() {
+    let mut sh = shell();
+    let r = sh.exec("declare -l s=WORLD; echo $s").unwrap();
+    assert_eq!(r.stdout, "world\n");
+}
+
+#[test]
+fn declare_uppercase() {
+    let mut sh = shell();
+    let r = sh.exec("declare -u s; s=hello; echo $s").unwrap();
+    assert_eq!(r.stdout, "HELLO\n");
+}
+
+#[test]
+fn declare_uppercase_with_value() {
+    let mut sh = shell();
+    let r = sh.exec("declare -u s=hello; echo $s").unwrap();
+    assert_eq!(r.stdout, "HELLO\n");
+}
+
+#[test]
+fn declare_nameref_read() {
+    let mut sh = shell();
+    let r = sh.exec("x=42; declare -n ref=x; echo $ref").unwrap();
+    assert_eq!(r.stdout, "42\n");
+}
+
+#[test]
+fn declare_nameref_write() {
+    let mut sh = shell();
+    let r = sh.exec("x=42; declare -n ref=x; ref=99; echo $x").unwrap();
+    assert_eq!(r.stdout, "99\n");
+}
+
+#[test]
+fn declare_nameref_circular_error() {
+    let mut sh = shell();
+    let r = sh.exec("declare -n a=b; declare -n b=a; echo $a");
+    assert!(r.is_err());
+}
+
+#[test]
+fn declare_print_integer_exported() {
+    let mut sh = shell();
+    let r = sh.exec("declare -ix num=5; declare -p num").unwrap();
+    assert_eq!(r.stdout, "declare -ix num=\"5\"\n");
+}
+
+#[test]
+fn declare_print_lowercase() {
+    let mut sh = shell();
+    let r = sh.exec("declare -l s=HELLO; declare -p s").unwrap();
+    assert_eq!(r.stdout, "declare -l s=\"hello\"\n");
+}
+
+#[test]
+fn declare_array_indexed() {
+    let mut sh = shell();
+    let r = sh.exec("declare -a arr; arr[0]=x; echo ${arr[0]}").unwrap();
+    assert_eq!(r.stdout, "x\n");
+}
+
+#[test]
+fn declare_array_associative() {
+    let mut sh = shell();
+    let r = sh
+        .exec("declare -A m; m[hello]=world; echo ${m[hello]}")
+        .unwrap();
+    assert_eq!(r.stdout, "world\n");
+}
+
+#[test]
+fn declare_nameref_chain() {
+    let mut sh = shell();
+    let r = sh
+        .exec("x=100; declare -n ref1=x; declare -n ref2=ref1; echo $ref2")
+        .unwrap();
+    assert_eq!(r.stdout, "100\n");
+}
+
+#[test]
+fn declare_integer_in_for_loop() {
+    let mut sh = shell();
+    let r = sh
+        .exec("declare -i sum=0; for i in 1 2 3; do sum+=i; done; echo $sum")
+        .unwrap();
+    assert_eq!(r.stdout, "6\n");
+}
+
+#[test]
+fn declare_indexed_array_with_value() {
+    let mut sh = shell();
+    let r = sh.exec("declare -a arr=hello; echo ${arr[0]}").unwrap();
+    assert_eq!(r.stdout, "hello\n");
+}
+
+#[test]
+fn declare_integer_readonly_prevents_reassign() {
+    let mut sh = shell();
+    sh.exec("declare -ir x=5").unwrap();
+    let r = sh.exec("x=10");
+    assert!(r.is_err());
+}
+
+#[test]
+fn declare_integer_array_element() {
+    let mut sh = shell();
+    let r = sh
+        .exec("declare -ia arr; arr[0]=2+3; echo ${arr[0]}")
+        .unwrap();
+    assert_eq!(r.stdout, "5\n");
+}
+
+#[test]
+fn declare_print_nonexistent_returns_error() {
+    let mut sh = shell();
+    let r = sh.exec("declare -p nonexistent").unwrap();
+    assert_eq!(r.exit_code, 1);
+    assert!(r.stderr.contains("not found"));
 }

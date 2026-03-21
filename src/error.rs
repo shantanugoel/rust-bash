@@ -49,6 +49,11 @@ pub enum RustBashError {
         message: String,
         exit_code: i32,
     },
+    /// A failglob error: no glob matches found when `shopt -s failglob` is on.
+    /// Aborts the current simple command (exit code 1) but does NOT exit the script.
+    FailGlob {
+        pattern: String,
+    },
     LimitExceeded {
         limit_name: &'static str,
         limit_value: usize,
@@ -66,6 +71,9 @@ impl fmt::Display for RustBashError {
             RustBashError::Execution(msg) => write!(f, "execution error: {msg}"),
             RustBashError::ExpansionError { message, .. } => {
                 write!(f, "expansion error: {message}")
+            }
+            RustBashError::FailGlob { pattern } => {
+                write!(f, "no match: {pattern}")
             }
             RustBashError::LimitExceeded {
                 limit_name,

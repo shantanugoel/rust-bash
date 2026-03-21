@@ -1,0 +1,81 @@
+# M6.4 — Directory stack and alias builtins
+
+[[cases]]
+name = "pushd_dirs_basic"
+script = '''
+mkdir -p /tmp/testdir
+pushd /tmp/testdir > /dev/null
+pwd
+popd > /dev/null
+'''
+stdout = "/tmp/testdir\n"
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "popd_basic"
+script = '''
+mkdir -p /tmp/a /tmp/b
+pushd /tmp/a > /dev/null
+pushd /tmp/b > /dev/null
+popd > /dev/null
+pwd
+popd > /dev/null
+'''
+stdout = "/tmp/a\n"
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "dirs_p_format"
+script = '''
+mkdir -p /tmp/a /tmp/b
+pushd /tmp/a > /dev/null
+pushd /tmp/b > /dev/null
+dirs -p | head -1
+'''
+stdout = "/tmp/b\n"
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "hash_basic"
+script = '''
+hash -r
+echo done
+'''
+stdout = "done\n"
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "hash_r_clears"
+script = '''
+hash -r
+hash 2>&1 | head -1
+'''
+stdout = "hash: hash table empty\n"
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "alias_basic_listing"
+script = '''
+alias ll='ls -la'
+alias ll
+'''
+stdout = "alias ll='ls -la'\n"
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "unalias_basic"
+script = '''
+alias ll='ls -la'
+unalias ll
+alias ll 2>&1
+echo $?
+'''
+stdout = "alias: ll: not found\n1\n"
+stderr = ""
+exit_code = 0

@@ -3,7 +3,8 @@
 use crate::commands::{self, VirtualCommand};
 use crate::error::RustBashError;
 use crate::interpreter::{
-    self, ExecResult, ExecutionCounters, ExecutionLimits, InterpreterState, ShellOpts, Variable,
+    self, ExecResult, ExecutionCounters, ExecutionLimits, InterpreterState, ShellOpts, ShoptOpts,
+    Variable, VariableAttrs, VariableValue,
 };
 use crate::network::NetworkPolicy;
 use crate::vfs::{InMemoryFs, VirtualFs};
@@ -157,9 +158,8 @@ impl RustBash {
                 self.state.env.insert(
                     key.clone(),
                     Variable {
-                        value: value.clone(),
-                        exported: true,
-                        readonly: false,
+                        value: VariableValue::Scalar(value.clone()),
+                        attrs: VariableAttrs::EXPORTED,
                     },
                 );
             }
@@ -287,6 +287,14 @@ impl RustBashBuilder {
         self
     }
 
+    /// Set the maximum number of elements allowed in a single array.
+    pub fn max_array_elements(mut self, max: usize) -> Self {
+        let mut limits = self.limits.unwrap_or_default();
+        limits.max_array_elements = max;
+        self.limits = Some(limits);
+        self
+    }
+
     /// Override the default network policy.
     pub fn network_policy(mut self, policy: NetworkPolicy) -> Self {
         self.network_policy = Some(policy);
@@ -326,9 +334,8 @@ impl RustBashBuilder {
                 (
                     k,
                     Variable {
-                        value: v,
-                        exported: true,
-                        readonly: false,
+                        value: VariableValue::Scalar(v),
+                        attrs: VariableAttrs::EXPORTED,
                     },
                 )
             })
@@ -347,6 +354,7 @@ impl RustBashBuilder {
             last_exit_code: 0,
             commands,
             shell_opts: ShellOpts::default(),
+            shopt_opts: ShoptOpts::default(),
             limits: self.limits.unwrap_or_default(),
             counters: ExecutionCounters::default(),
             network_policy: self.network_policy.unwrap_or_default(),
@@ -362,6 +370,9 @@ impl RustBashBuilder {
             in_trap: false,
             errexit_suppressed: 0,
             stdin_offset: 0,
+            dir_stack: Vec::new(),
+            command_hash: HashMap::new(),
+            aliases: HashMap::new(),
         };
 
         Ok(RustBash { state })
@@ -556,7 +567,7 @@ mod tests {
         let mut shell = shell();
         let result = shell.exec("FOO=bar").unwrap();
         assert_eq!(result.exit_code, 0);
-        assert_eq!(shell.state.env.get("FOO").unwrap().value, "bar");
+        assert_eq!(shell.state.env.get("FOO").unwrap().value.as_scalar(), "bar");
     }
 
     // ── State persistence ───────────────────────────────────────
@@ -565,10 +576,16 @@ mod tests {
     fn state_persists_across_exec_calls() {
         let mut shell = shell();
         shell.exec("FOO=hello").unwrap();
-        assert_eq!(shell.state.env.get("FOO").unwrap().value, "hello");
+        assert_eq!(
+            shell.state.env.get("FOO").unwrap().value.as_scalar(),
+            "hello"
+        );
         let result = shell.exec("true").unwrap();
         assert_eq!(result.exit_code, 0);
-        assert_eq!(shell.state.env.get("FOO").unwrap().value, "hello");
+        assert_eq!(
+            shell.state.env.get("FOO").unwrap().value.as_scalar(),
+            "hello"
+        );
     }
 
     // ── Empty / whitespace input ────────────────────────────────
@@ -608,7 +625,10 @@ mod tests {
         let mut env = HashMap::new();
         env.insert("HOME".to_string(), "/home/test".to_string());
         let shell = RustBashBuilder::new().env(env).build().unwrap();
-        assert_eq!(shell.state.env.get("HOME").unwrap().value, "/home/test");
+        assert_eq!(
+            shell.state.env.get("HOME").unwrap().value.as_scalar(),
+            "/home/test"
+        );
     }
 
     #[test]
@@ -662,8 +682,8 @@ mod tests {
     fn multiple_bare_assignments() {
         let mut shell = shell();
         shell.exec("A=1 B=2").unwrap();
-        assert_eq!(shell.state.env.get("A").unwrap().value, "1");
-        assert_eq!(shell.state.env.get("B").unwrap().value, "2");
+        assert_eq!(shell.state.env.get("A").unwrap().value.as_scalar(), "1");
+        assert_eq!(shell.state.env.get("B").unwrap().value.as_scalar(), "2");
     }
 
     #[test]
@@ -734,7 +754,10 @@ mod tests {
         let mut shell = shell();
         let result = shell.exec("echo ${UNSET:=fallback}").unwrap();
         assert_eq!(result.stdout, "fallback\n");
-        assert_eq!(shell.state.env.get("UNSET").unwrap().value, "fallback");
+        assert_eq!(
+            shell.state.env.get("UNSET").unwrap().value.as_scalar(),
+            "fallback"
+        );
     }
 
     #[test]
@@ -1063,7 +1086,10 @@ mod tests {
     fn cd_sets_oldpwd() {
         let mut shell = RustBashBuilder::new().cwd("/home/user").build().unwrap();
         shell.exec("cd /").unwrap();
-        assert_eq!(shell.state.env.get("OLDPWD").unwrap().value, "/home/user");
+        assert_eq!(
+            shell.state.env.get("OLDPWD").unwrap().value.as_scalar(),
+            "/home/user"
+        );
     }
 
     #[test]
@@ -1071,17 +1097,17 @@ mod tests {
         let mut shell = shell();
         shell.exec("export FOO=bar").unwrap();
         let var = shell.state.env.get("FOO").unwrap();
-        assert_eq!(var.value, "bar");
-        assert!(var.exported);
+        assert_eq!(var.value.as_scalar(), "bar");
+        assert!(var.exported());
     }
 
     #[test]
     fn export_marks_existing_var() {
         let mut shell = shell();
         shell.exec("FOO=bar").unwrap();
-        assert!(!shell.state.env.get("FOO").unwrap().exported);
+        assert!(!shell.state.env.get("FOO").unwrap().exported());
         shell.exec("export FOO").unwrap();
-        assert!(shell.state.env.get("FOO").unwrap().exported);
+        assert!(shell.state.env.get("FOO").unwrap().exported());
     }
 
     #[test]
@@ -1121,8 +1147,8 @@ mod tests {
         let mut shell = shell();
         shell.exec("readonly X=42").unwrap();
         let var = shell.state.env.get("X").unwrap();
-        assert_eq!(var.value, "42");
-        assert!(var.readonly);
+        assert_eq!(var.value.as_scalar(), "42");
+        assert!(var.readonly());
         let result = shell.exec("X=new");
         assert!(result.is_err());
     }
@@ -1131,7 +1157,7 @@ mod tests {
     fn declare_readonly() {
         let mut shell = shell();
         shell.exec("declare -r Y=99").unwrap();
-        assert!(shell.state.env.get("Y").unwrap().readonly);
+        assert!(shell.state.env.get("Y").unwrap().readonly());
     }
 
     #[test]
@@ -1140,7 +1166,10 @@ mod tests {
         shell.exec("echo 'hello world' > /tmp_input").unwrap();
         let result = shell.exec("read VAR < /tmp_input").unwrap();
         assert_eq!(result.exit_code, 0);
-        assert_eq!(shell.state.env.get("VAR").unwrap().value, "hello world");
+        assert_eq!(
+            shell.state.env.get("VAR").unwrap().value.as_scalar(),
+            "hello world"
+        );
     }
 
     #[test]
@@ -1150,8 +1179,11 @@ mod tests {
             .exec("echo 'one two three four' > /tmp_input")
             .unwrap();
         shell.exec("read A B < /tmp_input").unwrap();
-        assert_eq!(shell.state.env.get("A").unwrap().value, "one");
-        assert_eq!(shell.state.env.get("B").unwrap().value, "two three four");
+        assert_eq!(shell.state.env.get("A").unwrap().value.as_scalar(), "one");
+        assert_eq!(
+            shell.state.env.get("B").unwrap().value.as_scalar(),
+            "two three four"
+        );
     }
 
     #[test]

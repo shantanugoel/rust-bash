@@ -1,0 +1,68 @@
+# M6.8 — Special variables: call stack (mixed pass/xfail)
+
+[[cases]]
+name = "funcname_current_function"
+script = '''
+greet() { echo "${FUNCNAME[0]}"; }
+greet
+'''
+stdout = "greet\n"
+stderr = ""
+exit_code = 0
+status = "xfail"
+milestone = "M6.8"
+feature = "FUNCNAME"
+reason = "FUNCNAME not implemented"
+
+[[cases]]
+name = "bash_source_current_source"
+script = '''
+echo "${BASH_SOURCE[0]}"
+'''
+stdout = "\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.8"
+feature = "BASH_SOURCE"
+
+[[cases]]
+name = "bash_lineno_callsite"
+script = '''
+f() { echo "${BASH_LINENO[0]}"; }
+f
+'''
+stdout = "2\n"
+stderr = ""
+exit_code = 0
+status = "xfail"
+milestone = "M6.8"
+feature = "BASH_LINENO"
+reason = "BASH_LINENO not implemented"
+
+[[cases]]
+name = "shellopts_reflect_errexit"
+script = '''
+set -e
+echo "$SHELLOPTS" | tr ':' '\n' | grep errexit
+'''
+stdout = "errexit\n"
+stderr = ""
+exit_code = 0
+status = "xfail"
+milestone = "M6.8"
+feature = "SHELLOPTS"
+reason = "SHELLOPTS not implemented"
+
+[[cases]]
+name = "bashopts_reflect_shopt"
+script = '''
+shopt -s nullglob
+echo "$BASHOPTS" | tr ':' '\n' | grep nullglob
+'''
+stdout = "nullglob\n"
+stderr = ""
+exit_code = 0
+status = "xfail"
+milestone = "M6.8"
+feature = "BASHOPTS"
+reason = "BASHOPTS not implemented"

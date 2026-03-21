@@ -5,8 +5,8 @@ use crate::error::RustBashError;
 use crate::interpreter::builtins::{self, resolve_path};
 use crate::interpreter::expansion::{expand_word_mut, expand_word_to_string_mut};
 use crate::interpreter::{
-    ExecResult, ExecutionCounters, FunctionDef, InterpreterState, Variable, execute_trap, parse,
-    set_variable,
+    ExecResult, ExecutionCounters, FunctionDef, InterpreterState, Variable, VariableAttrs,
+    VariableValue, execute_trap, parse, set_array_element, set_variable,
 };
 
 use brush_parser::ast;
@@ -224,6 +224,20 @@ fn execute_pipeline(
         exit_code
     };
 
+    // Set PIPESTATUS indexed array with each command's exit code.
+    // Overwritten on every pipeline (including single commands).
+    let mut pipestatus_map = std::collections::BTreeMap::new();
+    for (i, code) in exit_codes.iter().enumerate() {
+        pipestatus_map.insert(i, code.to_string());
+    }
+    state.env.insert(
+        "PIPESTATUS".to_string(),
+        Variable {
+            value: VariableValue::IndexedArray(pipestatus_map),
+            attrs: VariableAttrs::empty(),
+        },
+    );
+
     Ok(ExecResult {
         stdout: pipe_data,
         stderr: combined_stderr,
@@ -268,8 +282,267 @@ fn execute_command(
                 ..Default::default()
             })
         }
+        Err(RustBashError::FailGlob { pattern }) => {
+            state.last_exit_code = 1;
+            Ok(ExecResult {
+                stderr: format!("rust-bash: no match: {pattern}\n"),
+                exit_code: 1,
+                ..Default::default()
+            })
+        }
         other => other,
     }
+}
+
+// ── Assignment processing ────────────────────────────────────────────
+
+/// A processed assignment ready to be applied to the interpreter state.
+#[derive(Debug, Clone)]
+enum Assignment {
+    /// `name=value` — simple scalar assignment
+    Scalar { name: String, value: String },
+    /// `name=(val1 val2 ...)` — indexed array assignment
+    IndexedArray {
+        name: String,
+        elements: Vec<(Option<usize>, String)>,
+    },
+    /// `name[index]=value` — single array element
+    ArrayElement {
+        name: String,
+        index: String,
+        value: String,
+    },
+    /// `name+=(val1 val2 ...)` — append to array
+    AppendArray {
+        name: String,
+        elements: Vec<(Option<usize>, String)>,
+    },
+    /// `name+=value` — append to scalar
+    AppendScalar { name: String, value: String },
+}
+
+impl Assignment {
+    fn name(&self) -> &str {
+        match self {
+            Assignment::Scalar { name, .. }
+            | Assignment::IndexedArray { name, .. }
+            | Assignment::ArrayElement { name, .. }
+            | Assignment::AppendArray { name, .. }
+            | Assignment::AppendScalar { name, .. } => name,
+        }
+    }
+}
+
+/// Process an AST assignment into our internal Assignment type.
+fn process_assignment(
+    assignment: &ast::Assignment,
+    append: bool,
+    state: &mut InterpreterState,
+) -> Result<Assignment, RustBashError> {
+    match (&assignment.name, &assignment.value) {
+        (ast::AssignmentName::VariableName(name), ast::AssignmentValue::Scalar(w)) => {
+            let value = expand_word_to_string_mut(w, state)?;
+            if append {
+                Ok(Assignment::AppendScalar {
+                    name: name.clone(),
+                    value,
+                })
+            } else {
+                Ok(Assignment::Scalar {
+                    name: name.clone(),
+                    value,
+                })
+            }
+        }
+        (ast::AssignmentName::VariableName(name), ast::AssignmentValue::Array(items)) => {
+            let mut elements = Vec::new();
+            for (opt_idx_word, val_word) in items {
+                let idx = if let Some(idx_word) = opt_idx_word {
+                    let idx_str = expand_word_to_string_mut(idx_word, state)?;
+                    let idx_val = crate::interpreter::arithmetic::eval_arithmetic(&idx_str, state)?;
+                    if idx_val < 0 {
+                        return Err(RustBashError::Execution(format!(
+                            "negative array subscript: {idx_val}"
+                        )));
+                    }
+                    Some(idx_val as usize)
+                } else {
+                    None
+                };
+                let val = expand_word_to_string_mut(val_word, state)?;
+                elements.push((idx, val));
+            }
+            if append {
+                Ok(Assignment::AppendArray {
+                    name: name.clone(),
+                    elements,
+                })
+            } else {
+                Ok(Assignment::IndexedArray {
+                    name: name.clone(),
+                    elements,
+                })
+            }
+        }
+        (
+            ast::AssignmentName::ArrayElementName(name, index_str),
+            ast::AssignmentValue::Scalar(w),
+        ) => {
+            let value = expand_word_to_string_mut(w, state)?;
+            // Expand index — it may contain variable references
+            let index_word = ast::Word {
+                value: index_str.clone(),
+                loc: None,
+            };
+            let expanded_index = expand_word_to_string_mut(&index_word, state)?;
+            Ok(Assignment::ArrayElement {
+                name: name.clone(),
+                index: expanded_index,
+                value,
+            })
+        }
+        (ast::AssignmentName::ArrayElementName(name, _), ast::AssignmentValue::Array(_)) => Err(
+            RustBashError::Execution(format!("{name}: cannot assign array to array element")),
+        ),
+    }
+}
+
+/// Apply a processed assignment to the interpreter state.
+fn apply_assignment(
+    assignment: Assignment,
+    state: &mut InterpreterState,
+) -> Result<(), RustBashError> {
+    match assignment {
+        Assignment::Scalar { name, value } => {
+            set_variable(state, &name, value)?;
+        }
+        Assignment::IndexedArray { name, elements } => {
+            if let Some(var) = state.env.get(&name)
+                && var.readonly()
+            {
+                return Err(RustBashError::Execution(format!(
+                    "{name}: readonly variable"
+                )));
+            }
+            let limit = state.limits.max_array_elements;
+            let mut map = std::collections::BTreeMap::new();
+            let mut auto_idx: usize = 0;
+            for (opt_idx, val) in elements {
+                let idx = opt_idx.unwrap_or(auto_idx);
+                if map.len() >= limit {
+                    return Err(RustBashError::LimitExceeded {
+                        limit_name: "max_array_elements",
+                        limit_value: limit,
+                        actual_value: map.len() + 1,
+                    });
+                }
+                map.insert(idx, val);
+                auto_idx = idx + 1;
+            }
+            let attrs = state
+                .env
+                .get(&name)
+                .map(|v| v.attrs)
+                .unwrap_or(VariableAttrs::empty());
+            state.env.insert(
+                name,
+                Variable {
+                    value: VariableValue::IndexedArray(map),
+                    attrs,
+                },
+            );
+        }
+        Assignment::ArrayElement { name, index, value } => {
+            // Check if target is an associative array
+            let is_assoc = state
+                .env
+                .get(&name)
+                .is_some_and(|v| matches!(v.value, VariableValue::AssociativeArray(_)));
+            if is_assoc {
+                crate::interpreter::set_assoc_element(state, &name, index, value)?;
+            } else {
+                // Evaluate index as arithmetic expression
+                let idx = crate::interpreter::arithmetic::eval_arithmetic(&index, state)?;
+                if idx < 0 {
+                    return Err(RustBashError::Execution(format!(
+                        "negative array subscript: {idx}"
+                    )));
+                }
+                set_array_element(state, &name, idx as usize, value)?;
+            }
+        }
+        Assignment::AppendArray { name, elements } => {
+            // Find current max index + 1
+            let start_idx = match state.env.get(&name) {
+                Some(var) => match &var.value {
+                    VariableValue::IndexedArray(map) => {
+                        map.keys().next_back().map(|k| k + 1).unwrap_or(0)
+                    }
+                    VariableValue::Scalar(s) if s.is_empty() => 0,
+                    VariableValue::Scalar(_) => 1,
+                    VariableValue::AssociativeArray(_) => 0,
+                },
+                None => 0,
+            };
+
+            // If the variable doesn't exist yet, create it
+            if !state.env.contains_key(&name) {
+                state.env.insert(
+                    name.clone(),
+                    Variable {
+                        value: VariableValue::IndexedArray(std::collections::BTreeMap::new()),
+                        attrs: VariableAttrs::empty(),
+                    },
+                );
+            }
+
+            // Convert scalar to array if needed
+            if let Some(var) = state.env.get_mut(&name)
+                && let VariableValue::Scalar(s) = &var.value
+            {
+                let mut map = std::collections::BTreeMap::new();
+                if !s.is_empty() {
+                    map.insert(0, s.clone());
+                }
+                var.value = VariableValue::IndexedArray(map);
+            }
+
+            let mut auto_idx = start_idx;
+            for (opt_idx, val) in elements {
+                let idx = opt_idx.unwrap_or(auto_idx);
+                set_array_element(state, &name, idx, val)?;
+                auto_idx = idx + 1;
+            }
+        }
+        Assignment::AppendScalar { name, value } => {
+            // For integer variables, += performs arithmetic addition.
+            let target = crate::interpreter::resolve_nameref(&name, state)?;
+            let is_integer = state
+                .env
+                .get(&target)
+                .is_some_and(|v| v.attrs.contains(VariableAttrs::INTEGER));
+            if is_integer {
+                let current = state
+                    .env
+                    .get(&target)
+                    .map(|v| v.value.as_scalar().to_string())
+                    .unwrap_or_else(|| "0".to_string());
+                let expr = format!("{current}+{value}");
+                set_variable(state, &name, expr)?;
+            } else {
+                match state.env.get(&target) {
+                    Some(var) => {
+                        let new_val = format!("{}{}", var.value.as_scalar(), value);
+                        set_variable(state, &name, new_val)?;
+                    }
+                    None => {
+                        set_variable(state, &name, value)?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn execute_simple_command(
@@ -278,22 +551,15 @@ fn execute_simple_command(
     stdin: &str,
 ) -> Result<ExecResult, RustBashError> {
     // 1. Collect redirections and assignments from prefix
-    let mut assignments: Vec<(String, String)> = Vec::new();
+    let mut assignments: Vec<Assignment> = Vec::new();
     let mut redirects: Vec<&ast::IoRedirect> = Vec::new();
 
     if let Some(prefix) = &cmd.prefix {
         for item in &prefix.0 {
             match item {
-                ast::CommandPrefixOrSuffixItem::AssignmentWord(assignment, _) => {
-                    let name = match &assignment.name {
-                        ast::AssignmentName::VariableName(n) => n.clone(),
-                        ast::AssignmentName::ArrayElementName(n, _) => n.clone(),
-                    };
-                    let value = match &assignment.value {
-                        ast::AssignmentValue::Scalar(w) => expand_word_to_string_mut(w, state)?,
-                        ast::AssignmentValue::Array(_) => String::new(),
-                    };
-                    assignments.push((name, value));
+                ast::CommandPrefixOrSuffixItem::AssignmentWord(assignment, _word) => {
+                    let a = process_assignment(assignment, assignment.append, state)?;
+                    assignments.push(a);
                 }
                 ast::CommandPrefixOrSuffixItem::IoRedirect(redir) => {
                     redirects.push(redir);
@@ -315,14 +581,22 @@ fn execute_simple_command(
     if let Some(suffix) = &cmd.suffix {
         for item in &suffix.0 {
             match item {
-                ast::CommandPrefixOrSuffixItem::Word(w) => {
-                    let expanded = expand_word_mut(w, state)?;
-                    args.extend(expanded);
-                }
+                ast::CommandPrefixOrSuffixItem::Word(w) => match expand_word_mut(w, state) {
+                    Ok(expanded) => args.extend(expanded),
+                    Err(RustBashError::FailGlob { pattern }) => {
+                        state.last_exit_code = 1;
+                        return Ok(ExecResult {
+                            stderr: format!("rust-bash: no match: {pattern}\n"),
+                            exit_code: 1,
+                            ..Default::default()
+                        });
+                    }
+                    Err(e) => return Err(e),
+                },
                 ast::CommandPrefixOrSuffixItem::IoRedirect(redir) => {
                     redirects.push(redir);
                 }
-                ast::CommandPrefixOrSuffixItem::AssignmentWord(assignment, _) => {
+                ast::CommandPrefixOrSuffixItem::AssignmentWord(assignment, _word) => {
                     // For declaration builtins (export, readonly, declare, local),
                     // assignments in suffix are forwarded as "NAME=VALUE" args.
                     let name = match &assignment.name {
@@ -342,16 +616,16 @@ fn execute_simple_command(
 
     // 4. No command name → persist assignments in environment
     let Some(cmd_name) = cmd_name else {
-        for (name, value) in assignments {
-            set_variable(state, &name, value)?;
+        for a in assignments {
+            apply_assignment(a, state)?;
         }
         return Ok(ExecResult::default());
     };
 
     // 4b. Empty command name (e.g. from `$(false)`) → no command, persist assignments
     if cmd_name.is_empty() && args.is_empty() {
-        for (name, value) in assignments {
-            set_variable(state, &name, value)?;
+        for a in assignments {
+            apply_assignment(a, state)?;
         }
         return Ok(ExecResult {
             exit_code: state.last_exit_code,
@@ -359,11 +633,33 @@ fn execute_simple_command(
         });
     }
 
+    // 4c. Alias expansion: if expand_aliases is on and the command name is an alias,
+    // substitute the alias value. Multi-word aliases produce a new command + extra args.
+    let (cmd_name, args) = if state.shopt_opts.expand_aliases {
+        if let Some(expansion) = state.aliases.get(&cmd_name).cloned() {
+            let mut parts: Vec<String> = expansion
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect();
+            if parts.is_empty() {
+                (cmd_name, args)
+            } else {
+                let new_cmd = parts.remove(0);
+                parts.extend(args);
+                (new_cmd, parts)
+            }
+        } else {
+            (cmd_name, args)
+        }
+    } else {
+        (cmd_name, args)
+    };
+
     // 5. Apply temporary pre-command assignments
     let mut saved: Vec<(String, Option<Variable>)> = Vec::new();
-    for (name, value) in &assignments {
-        saved.push((name.clone(), state.env.get(name).cloned()));
-        set_variable(state, name, value.clone())?;
+    for a in &assignments {
+        saved.push((a.name().to_string(), state.env.get(a.name()).cloned()));
+        apply_assignment(a.clone(), state)?;
     }
 
     // 6. Handle stdin redirection
@@ -720,6 +1016,7 @@ fn execute_subshell(
         last_exit_code: state.last_exit_code,
         commands: clone_commands(&state.commands),
         shell_opts: state.shell_opts.clone(),
+        shopt_opts: state.shopt_opts.clone(),
         limits: state.limits.clone(),
         counters: ExecutionCounters {
             command_count: state.counters.command_count,
@@ -741,6 +1038,9 @@ fn execute_subshell(
         in_trap: false,
         errexit_suppressed: 0,
         stdin_offset: 0,
+        dir_stack: state.dir_stack.clone(),
+        command_hash: state.command_hash.clone(),
+        aliases: state.aliases.clone(),
     };
 
     let result = execute_compound_list(list, &mut sub_state, stdin);
@@ -775,7 +1075,12 @@ fn execute_case(
             let mut m = false;
             for pattern_word in &case_item.patterns {
                 let pattern = expand_word_to_string_mut(pattern_word, state)?;
-                if crate::interpreter::pattern::glob_match(&pattern, &value) {
+                let matched_pattern = if state.shopt_opts.nocasematch {
+                    crate::interpreter::pattern::glob_match_nocase(&pattern, &value)
+                } else {
+                    crate::interpreter::pattern::glob_match(&pattern, &value)
+                };
+                if matched_pattern {
                     m = true;
                     break;
                 }
@@ -842,6 +1147,7 @@ fn make_exec_callback(
     let last_exit_code = state.last_exit_code;
     let commands = clone_commands(&state.commands);
     let shell_opts = state.shell_opts.clone();
+    let shopt_opts = state.shopt_opts.clone();
     let limits = state.limits.clone();
     let network_policy = state.network_policy.clone();
     let positional_params = state.positional_params.clone();
@@ -862,6 +1168,7 @@ fn make_exec_callback(
             last_exit_code,
             commands: clone_commands(&commands),
             shell_opts: shell_opts.clone(),
+            shopt_opts: shopt_opts.clone(),
             limits: limits.clone(),
             counters: ExecutionCounters {
                 command_count: 0,
@@ -883,6 +1190,9 @@ fn make_exec_callback(
             in_trap: false,
             errexit_suppressed: 0,
             stdin_offset: 0,
+            dir_stack: Vec::new(),
+            command_hash: HashMap::new(),
+            aliases: HashMap::new(),
         };
 
         let result = execute_program(&program, &mut sub_state)?;
@@ -988,7 +1298,7 @@ fn dispatch_command(
         let env: HashMap<String, String> = state
             .env
             .iter()
-            .map(|(k, v)| (k.clone(), v.value.clone()))
+            .map(|(k, v)| (k.clone(), v.value.as_scalar().to_string()))
             .collect();
         let fs = Arc::clone(&state.fs);
         let cwd = state.cwd.clone();
@@ -1007,7 +1317,18 @@ fn dispatch_command(
             exec: Some(&exec_callback),
         };
 
-        let cmd_result = cmd.execute(args, &ctx);
+        // xpg_echo: when enabled, echo interprets backslash escapes by default
+        let effective_args: Vec<String>;
+        let cmd_args: &[String] = if name == "echo" && state.shopt_opts.xpg_echo {
+            effective_args = std::iter::once("-e".to_string())
+                .chain(args.iter().cloned())
+                .collect();
+            &effective_args
+        } else {
+            args
+        };
+
+        let cmd_result = cmd.execute(cmd_args, &ctx);
         return Ok(ExecResult {
             stdout: cmd_result.stdout,
             stderr: cmd_result.stderr,
@@ -1307,7 +1628,7 @@ fn eval_extended_test_expr(
             let env: HashMap<String, String> = state
                 .env
                 .iter()
-                .map(|(k, v)| (k.clone(), v.value.clone()))
+                .map(|(k, v)| (k.clone(), v.value.as_scalar().to_string()))
                 .collect();
             Ok(crate::commands::test_cmd::eval_unary_predicate(
                 pred, &operand, &*state.fs, &state.cwd, &env,
@@ -1330,9 +1651,31 @@ fn eval_extended_test_expr(
             let right = expand_word_to_string_mut(right_word, state)?;
 
             // Pattern matching (glob) for == and != inside [[
-            Ok(crate::commands::test_cmd::eval_binary_predicate(
-                pred, &left, &right, true,
-            ))
+            if state.shopt_opts.nocasematch {
+                // Case-insensitive pattern matching
+                let result = match pred {
+                    ast::BinaryPredicate::StringExactlyMatchesPattern => {
+                        crate::interpreter::pattern::glob_match_nocase(&right, &left)
+                    }
+                    ast::BinaryPredicate::StringDoesNotExactlyMatchPattern => {
+                        !crate::interpreter::pattern::glob_match_nocase(&right, &left)
+                    }
+                    ast::BinaryPredicate::StringExactlyMatchesString => {
+                        left.eq_ignore_ascii_case(&right)
+                    }
+                    ast::BinaryPredicate::StringDoesNotExactlyMatchString => {
+                        !left.eq_ignore_ascii_case(&right)
+                    }
+                    _ => {
+                        crate::commands::test_cmd::eval_binary_predicate(pred, &left, &right, true)
+                    }
+                };
+                Ok(result)
+            } else {
+                Ok(crate::commands::test_cmd::eval_binary_predicate(
+                    pred, &left, &right, true,
+                ))
+            }
         }
     }
 }
@@ -1342,27 +1685,42 @@ fn eval_regex_match(
     pattern: &str,
     state: &mut InterpreterState,
 ) -> Result<bool, RustBashError> {
-    let re = regex::Regex::new(pattern)
+    // When nocasematch is on, prepend (?i) to make the regex case-insensitive
+    let effective_pattern = if state.shopt_opts.nocasematch {
+        format!("(?i){pattern}")
+    } else {
+        pattern.to_string()
+    };
+    let re = regex::Regex::new(&effective_pattern)
         .map_err(|e| RustBashError::Execution(format!("invalid regex '{pattern}': {e}")))?;
 
     if let Some(captures) = re.captures(string) {
-        // Store BASH_REMATCH[0] = whole match
+        // Store BASH_REMATCH as a proper indexed array:
+        // index 0 = whole match, index 1..N = capture groups
+        let mut map = std::collections::BTreeMap::new();
         let whole = captures.get(0).map(|m| m.as_str()).unwrap_or("");
-        set_variable(state, "BASH_REMATCH", whole.to_string())?;
-
-        // Store capture groups as BASH_REMATCH_1, BASH_REMATCH_2, etc.
-        // Also store count for potential array-like access
+        map.insert(0, whole.to_string());
         for i in 1..captures.len() {
             let val = captures.get(i).map(|m| m.as_str()).unwrap_or("");
-            set_variable(state, &format!("BASH_REMATCH_{i}"), val.to_string())?;
+            map.insert(i, val.to_string());
         }
-        set_variable(state, "BASH_REMATCH_COUNT", captures.len().to_string())?;
-
+        state.env.insert(
+            "BASH_REMATCH".to_string(),
+            Variable {
+                value: VariableValue::IndexedArray(map),
+                attrs: VariableAttrs::empty(),
+            },
+        );
         Ok(true)
     } else {
         // Clear BASH_REMATCH on non-match
-        set_variable(state, "BASH_REMATCH", String::new())?;
-        set_variable(state, "BASH_REMATCH_COUNT", "0".to_string())?;
+        state.env.insert(
+            "BASH_REMATCH".to_string(),
+            Variable {
+                value: VariableValue::IndexedArray(std::collections::BTreeMap::new()),
+                attrs: VariableAttrs::empty(),
+            },
+        );
         Ok(false)
     }
 }

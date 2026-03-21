@@ -8,6 +8,7 @@ use crate::interpreter::{
     ExecutionCounters, InterpreterState, next_random, parse, parser_options, set_variable,
 };
 
+use crate::vfs::GlobOptions;
 use brush_parser::ast;
 use brush_parser::word::{
     Parameter, ParameterExpr, ParameterTestType, SpecialParameter, SubstringMatchKind, WordPiece,
@@ -225,6 +226,7 @@ fn execute_command_substitution(
         last_exit_code: state.last_exit_code,
         commands: clone_commands(&state.commands),
         shell_opts: state.shell_opts.clone(),
+        shopt_opts: state.shopt_opts.clone(),
         limits: state.limits.clone(),
         counters: ExecutionCounters {
             command_count: state.counters.command_count,
@@ -246,6 +248,9 @@ fn execute_command_substitution(
         in_trap: false,
         errexit_suppressed: 0,
         stdin_offset: 0,
+        dir_stack: state.dir_stack.clone(),
+        command_hash: state.command_hash.clone(),
+        aliases: state.aliases.clone(),
     };
 
     let result = execute_program(&program, &mut sub_state);
@@ -417,7 +422,7 @@ fn expand_parameter(
             parameter,
             indirect,
         } => {
-            let val = resolve_parameter(parameter, state, *indirect);
+            // ${#arr[@]} and ${#arr[*]} return element count
             match parameter {
                 Parameter::Special(SpecialParameter::AllPositionalParameters {
                     concatenate: _,
@@ -429,7 +434,12 @@ fn expand_parameter(
                         in_dq,
                     );
                 }
+                Parameter::NamedWithAllIndices { name, .. } => {
+                    let values = get_array_values(name, state);
+                    push_segment(words, &values.len().to_string(), in_dq, in_dq);
+                }
                 _ => {
+                    let val = resolve_parameter(parameter, state, *indirect);
                     push_segment(words, &val.len().to_string(), in_dq, in_dq);
                 }
             }
@@ -692,8 +702,29 @@ fn expand_parameter(
             names.sort();
             push_segment(words, &names.join(" "), in_dq, in_dq);
         }
-        ParameterExpr::MemberKeys { .. } => {
-            // Arrays not supported yet
+        ParameterExpr::MemberKeys {
+            variable_name,
+            concatenate,
+        } => {
+            let keys = get_array_keys(variable_name, state);
+            if *concatenate {
+                // ${!arr[*]} — join with IFS[0], single word
+                let sep = match get_var(state, "IFS") {
+                    Some(s) => s.chars().next().map(|c| c.to_string()).unwrap_or_default(),
+                    None => " ".to_string(),
+                };
+                push_segment(words, &keys.join(&sep), in_dq, in_dq);
+            } else if keys.is_empty() {
+                at_empty = true;
+            } else {
+                // ${!arr[@]} — each key becomes a separate word
+                for (i, k) in keys.iter().enumerate() {
+                    if i > 0 {
+                        start_new_word(words);
+                    }
+                    push_segment(words, k, in_dq, in_dq);
+                }
+            }
         }
     }
     Ok(at_empty)
@@ -713,7 +744,7 @@ fn expand_parameter_mut(
             test_type,
             default_value,
         } => {
-            let val = resolve_parameter_maybe_mut(parameter, state, *indirect);
+            let val = resolve_parameter_maybe_mut(parameter, state, *indirect)?;
             if should_use_default(&val, test_type, state, parameter) {
                 let dv = if let Some(raw) = default_value {
                     expand_raw_string_mut(raw, state)?
@@ -734,7 +765,7 @@ fn expand_parameter_mut(
             indirect,
         } => {
             check_nounset(parameter, state)?;
-            let val = resolve_parameter_maybe_mut(parameter, state, *indirect);
+            let val = resolve_parameter_maybe_mut(parameter, state, *indirect)?;
             let at_empty = expand_param_value(&val, words, state, in_dq, parameter);
             Ok(at_empty)
         }
@@ -744,19 +775,24 @@ fn expand_parameter_mut(
 }
 
 /// Resolve a parameter with possible mutation (e.g. $RANDOM uses next_random).
+/// Returns Result to propagate circular nameref errors.
 fn resolve_parameter_maybe_mut(
     parameter: &Parameter,
     state: &mut InterpreterState,
     indirect: bool,
-) -> String {
+) -> Result<String, RustBashError> {
+    // Check for circular namerefs on Named parameters.
+    if let Parameter::Named(name) = parameter {
+        crate::interpreter::resolve_nameref(name, state)?;
+    }
     let val = match parameter {
         Parameter::Named(name) if name == "RANDOM" => next_random(state).to_string(),
         _ => resolve_parameter_direct(parameter, state),
     };
     if indirect {
-        get_var(state, &val).unwrap_or_default()
+        Ok(get_var(state, &val).unwrap_or_default())
     } else {
-        val
+        Ok(val)
     }
 }
 
@@ -795,6 +831,31 @@ fn expand_param_value(
                         start_new_word(words);
                     }
                     push_segment(words, param, in_dq, in_dq);
+                }
+                false
+            }
+        }
+        Parameter::NamedWithAllIndices { name, concatenate } => {
+            let values = get_array_values(name, state);
+            if *concatenate {
+                // ${arr[*]} — join with first char of IFS
+                let sep = match get_var(state, "IFS") {
+                    Some(s) => s.chars().next().map(|c| c.to_string()).unwrap_or_default(),
+                    None => " ".to_string(),
+                };
+                let joined = values.join(&sep);
+                push_segment(words, &joined, in_dq, in_dq);
+                false
+            } else if values.is_empty() {
+                // ${arr[@]} with zero elements — signal empty like $@
+                true
+            } else {
+                // ${arr[@]} — each element becomes a separate word (in dq)
+                for (i, v) in values.iter().enumerate() {
+                    if i > 0 {
+                        start_new_word(words);
+                    }
+                    push_segment(words, v, in_dq, in_dq);
                 }
                 false
             }
@@ -970,14 +1031,19 @@ use std::path::PathBuf;
 /// Expand glob metacharacters in words against the filesystem.
 ///
 /// For each word marked `may_glob`, attempt filesystem glob expansion.
-/// If matches are found, replace the word with the sorted matches.
-/// If no matches are found, keep the original pattern as a literal (bash default).
+/// Behavior depends on shopt options: nullglob, failglob, dotglob,
+/// nocaseglob, and globstar.
 fn glob_expand_words(
     words: Vec<SplitWord>,
     state: &InterpreterState,
 ) -> Result<Vec<String>, RustBashError> {
     let cwd = PathBuf::from(&state.cwd);
     let max = state.limits.max_glob_results;
+    let opts = GlobOptions {
+        dotglob: state.shopt_opts.dotglob,
+        nocaseglob: state.shopt_opts.nocaseglob,
+        globstar: state.shopt_opts.globstar,
+    };
     let mut result = Vec::new();
 
     for w in words {
@@ -986,7 +1052,7 @@ fn glob_expand_words(
             continue;
         }
 
-        match state.fs.glob(&w.text, &cwd) {
+        match state.fs.glob_with_opts(&w.text, &cwd, &opts) {
             Ok(matches) if !matches.is_empty() => {
                 if matches.len() > max {
                     return Err(RustBashError::LimitExceeded {
@@ -1000,7 +1066,16 @@ fn glob_expand_words(
                 }
             }
             _ => {
-                // No match or error — keep pattern as literal
+                if state.shopt_opts.failglob {
+                    return Err(RustBashError::FailGlob {
+                        pattern: w.text.clone(),
+                    });
+                }
+                if state.shopt_opts.nullglob {
+                    // nullglob: pattern expands to nothing
+                    continue;
+                }
+                // Default: keep pattern as literal
                 result.push(w.text);
             }
         }
@@ -1097,8 +1172,131 @@ fn resolve_parameter_direct(parameter: &Parameter, state: &InterpreterState) -> 
             }
         }
         Parameter::Special(sp) => resolve_special(sp, state),
-        Parameter::NamedWithIndex { name, .. } => resolve_named_var(name, state),
-        Parameter::NamedWithAllIndices { name, .. } => resolve_named_var(name, state),
+        Parameter::NamedWithIndex { name, index } => resolve_array_element(name, index, state),
+        Parameter::NamedWithAllIndices { name, concatenate } => {
+            // For resolve_parameter_direct, join all values into a single string.
+            // The actual multi-word expansion for [@] is handled in expand_param_value.
+            resolve_all_elements(name, *concatenate, state)
+        }
+    }
+}
+
+/// Resolve `${arr[index]}` — look up a specific element of an array variable.
+fn resolve_array_element(name: &str, index: &str, state: &InterpreterState) -> String {
+    use crate::interpreter::VariableValue;
+    let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
+    let Some(var) = state.env.get(&resolved) else {
+        return String::new();
+    };
+    match &var.value {
+        VariableValue::IndexedArray(map) => {
+            let idx = simple_arith_eval(index, state) as usize;
+            map.get(&idx).cloned().unwrap_or_default()
+        }
+        VariableValue::AssociativeArray(map) => map.get(index).cloned().unwrap_or_default(),
+        VariableValue::Scalar(s) => {
+            let idx = simple_arith_eval(index, state) as usize;
+            if idx == 0 { s.clone() } else { String::new() }
+        }
+    }
+}
+
+/// Simple arithmetic evaluation for array indices in immutable contexts.
+/// Handles integer literals, variable names, and simple expressions.
+fn simple_arith_eval(expr: &str, state: &InterpreterState) -> i64 {
+    let trimmed = expr.trim();
+    // Try as integer literal
+    if let Ok(n) = trimmed.parse::<i64>() {
+        return n;
+    }
+    // Try as variable name
+    if trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return read_var_immutable(state, trimmed);
+    }
+    // For complex expressions, return 0 — full arithmetic eval requires &mut
+    0
+}
+
+/// Read a variable as i64 (immutable — for use in expansion.rs contexts).
+fn read_var_immutable(state: &InterpreterState, name: &str) -> i64 {
+    let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
+    state
+        .env
+        .get(&resolved)
+        .map(|v| v.value.as_scalar().parse::<i64>().unwrap_or(0))
+        .unwrap_or(0)
+}
+
+/// Resolve all elements of an array, joined into a single string.
+/// `concatenate=true` → `[*]` (join with IFS[0]), `concatenate=false` → `[@]` (join with space).
+fn resolve_all_elements(name: &str, concatenate: bool, state: &InterpreterState) -> String {
+    use crate::interpreter::VariableValue;
+    let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
+    let Some(var) = state.env.get(&resolved) else {
+        return String::new();
+    };
+    let values: Vec<&str> = match &var.value {
+        VariableValue::IndexedArray(map) => map.values().map(|s| s.as_str()).collect(),
+        VariableValue::AssociativeArray(map) => map.values().map(|s| s.as_str()).collect(),
+        VariableValue::Scalar(s) => {
+            if s.is_empty() {
+                vec![]
+            } else {
+                vec![s.as_str()]
+            }
+        }
+    };
+    if concatenate {
+        let sep = match get_var(state, "IFS") {
+            Some(s) => s.chars().next().map(|c| c.to_string()).unwrap_or_default(),
+            None => " ".to_string(),
+        };
+        values.join(&sep)
+    } else {
+        values.join(" ")
+    }
+}
+
+/// Get all values of an array variable as a Vec.
+fn get_array_values(name: &str, state: &InterpreterState) -> Vec<String> {
+    use crate::interpreter::VariableValue;
+    let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
+    let Some(var) = state.env.get(&resolved) else {
+        return Vec::new();
+    };
+    match &var.value {
+        VariableValue::IndexedArray(map) => map.values().cloned().collect(),
+        VariableValue::AssociativeArray(map) => map.values().cloned().collect(),
+        VariableValue::Scalar(s) => {
+            if s.is_empty() {
+                vec![]
+            } else {
+                vec![s.clone()]
+            }
+        }
+    }
+}
+
+/// Get keys/indices of an array variable.
+fn get_array_keys(name: &str, state: &InterpreterState) -> Vec<String> {
+    use crate::interpreter::VariableValue;
+    let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
+    let Some(var) = state.env.get(&resolved) else {
+        return Vec::new();
+    };
+    match &var.value {
+        VariableValue::IndexedArray(map) => map.keys().map(|k| k.to_string()).collect(),
+        VariableValue::AssociativeArray(map) => map.keys().cloned().collect(),
+        VariableValue::Scalar(s) => {
+            if s.is_empty() {
+                vec![]
+            } else {
+                vec!["0".to_string()]
+            }
+        }
     }
 }
 
@@ -1147,7 +1345,11 @@ fn resolve_special(sp: &SpecialParameter, state: &InterpreterState) -> String {
 }
 
 fn get_var(state: &InterpreterState, name: &str) -> Option<String> {
-    state.env.get(name).map(|v| v.value.clone())
+    let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
+    state
+        .env
+        .get(&resolved)
+        .map(|v| v.value.as_scalar().to_string())
 }
 
 fn should_use_default(
@@ -1164,7 +1366,10 @@ fn should_use_default(
 
 fn is_unset(state: &InterpreterState, parameter: &Parameter) -> bool {
     match parameter {
-        Parameter::Named(name) => !state.env.contains_key(name),
+        Parameter::Named(name) => {
+            let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
+            !state.env.contains_key(&resolved)
+        }
         Parameter::Positional(n) => {
             if *n == 0 {
                 false
@@ -1173,8 +1378,14 @@ fn is_unset(state: &InterpreterState, parameter: &Parameter) -> bool {
             }
         }
         Parameter::Special(_) => false,
-        Parameter::NamedWithIndex { name, .. } => !state.env.contains_key(name),
-        Parameter::NamedWithAllIndices { name, .. } => !state.env.contains_key(name),
+        Parameter::NamedWithIndex { name, .. } => {
+            let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
+            !state.env.contains_key(&resolved)
+        }
+        Parameter::NamedWithAllIndices { name, .. } => {
+            let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
+            !state.env.contains_key(&resolved)
+        }
     }
 }
 

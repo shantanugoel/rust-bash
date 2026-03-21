@@ -1,0 +1,128 @@
+# M6.9 — Shell option enforcement via set (mixed pass/xfail)
+
+[[cases]]
+name = "set_x_emits_trace"
+script = '''
+set -x
+echo hello 2>&1 | grep -c '+ echo hello'
+'''
+stdout = "1\n"
+stderr_ignore = true
+exit_code = 0
+status = "xfail"
+milestone = "M6.9"
+feature = "set.xtrace"
+reason = "set -x tracing not implemented"
+
+[[cases]]
+name = "set_x_pipeline_trace"
+script = '''
+set -x
+echo a | cat 2>&1 | grep -c '+'
+'''
+stdout = "2\n"
+stderr_ignore = true
+exit_code = 0
+status = "xfail"
+milestone = "M6.9"
+feature = "set.xtrace"
+reason = "set -x tracing not implemented"
+
+[[cases]]
+name = "set_v_verbose_echoes_input"
+script = '''
+set -v
+echo hello
+'''
+stdout = "hello\n"
+stderr_ignore = true
+exit_code = 0
+milestone = "M6.9"
+feature = "set.verbose"
+
+[[cases]]
+name = "set_n_noexec"
+script = '''
+set -n
+echo "should not appear"
+'''
+stdout = ""
+stderr = ""
+exit_code = 0
+status = "xfail"
+milestone = "M6.9"
+feature = "set.noexec"
+reason = "set -n noexec not implemented"
+
+[[cases]]
+name = "set_C_noclobber"
+script = '''
+echo first > /tmp/nc.txt
+set -C
+echo second > /tmp/nc.txt 2>&1
+echo $?
+cat /tmp/nc.txt
+'''
+stdout = "1\nfirst\n"
+stderr_ignore = true
+exit_code = 0
+status = "xfail"
+milestone = "M6.9"
+feature = "set.noclobber"
+reason = "set -C noclobber not implemented"
+
+[[cases]]
+name = "set_C_force_override"
+script = '''
+echo first > /tmp/nc2.txt
+set -C
+echo second >| /tmp/nc2.txt
+cat /tmp/nc2.txt
+'''
+stdout = "second\n"
+stderr = ""
+exit_code = 0
+status = "xfail"
+milestone = "M6.9"
+feature = "set.noclobber"
+reason = "set -C and >| not implemented"
+
+[[cases]]
+name = "set_a_allexport"
+script = '''
+set -a
+MY_VAR=exported
+env | grep MY_VAR
+'''
+stdout = "MY_VAR=exported\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.9"
+feature = "set.allexport"
+
+[[cases]]
+name = "set_f_noglob"
+script = '''
+set -f
+echo *.txt
+'''
+files = { "/a.txt" = "", "/b.txt" = "" }
+stdout = "*.txt\n"
+stderr = ""
+exit_code = 0
+status = "xfail"
+milestone = "M6.9"
+feature = "set.noglob"
+reason = "set -f noglob not implemented"
+
+[[cases]]
+name = "set_o_posix_accepts_flag"
+script = '''
+set -o posix
+echo $?
+'''
+stdout = "0\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.9"
+feature = "set.posix"

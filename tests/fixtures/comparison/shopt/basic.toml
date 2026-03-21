@@ -1,0 +1,107 @@
+# M6.3 — Shopt options
+
+[[cases]]
+name = "nullglob_nonmatch"
+script = '''
+shopt -s nullglob
+echo *.nonexistent
+echo "done"
+'''
+stdout = "\ndone\n"
+stderr = ""
+exit_code = 0
+status = "pass"
+milestone = "M6.3"
+feature = "shopt.nullglob"
+
+[[cases]]
+name = "failglob_nonmatch"
+script = '''
+shopt -s failglob
+echo *.nonexistent 2>&1
+echo $?
+'''
+stdout = "1\n"
+stderr_ignore = true
+exit_code = 0
+status = "pass"
+milestone = "M6.3"
+feature = "shopt.failglob"
+
+[[cases]]
+name = "dotglob_includes_hidden"
+script = '''
+shopt -s dotglob
+echo *
+'''
+files = { "/.hidden" = "", "/visible" = "" }
+stdout = ".hidden visible\n"
+stderr = ""
+exit_code = 0
+status = "pass"
+milestone = "M6.3"
+feature = "shopt.dotglob"
+
+[[cases]]
+name = "nocasematch_case"
+script = '''
+shopt -s nocasematch
+[[ "HELLO" == hello ]] && echo match || echo nomatch
+'''
+stdout = "match\n"
+stderr = ""
+exit_code = 0
+status = "pass"
+milestone = "M6.3"
+feature = "shopt.nocasematch"
+
+[[cases]]
+name = "globstar_recursive"
+script = '''
+shopt -s globstar
+echo **/*.txt
+'''
+files = { "/a.txt" = "", "/sub/b.txt" = "" }
+stdout = "a.txt sub/b.txt\n"
+stderr = ""
+exit_code = 0
+status = "pass"
+milestone = "M6.3"
+feature = "shopt.globstar"
+
+[[cases]]
+name = "lastpipe_persists_read"
+script = '''
+shopt -s lastpipe
+echo value | read -r x
+echo "$x"
+'''
+stdout = "value\n"
+stderr = ""
+exit_code = 0
+status = "pass"
+milestone = "M6.3"
+feature = "shopt.lastpipe"
+
+[[cases]]
+name = "xpg_echo_default_escapes"
+script = '''
+shopt -s xpg_echo
+echo "hello\nworld"
+'''
+stdout = "hello\nworld\n"
+stderr = ""
+exit_code = 0
+status = "pass"
+milestone = "M6.3"
+feature = "shopt.xpg_echo"
+
+[[cases]]
+name = "shopt_p_output"
+script = 'shopt -p nullglob'
+stdout = "shopt -u nullglob\n"
+stderr = ""
+exit_code = 0
+status = "pass"
+milestone = "M6.3"
+feature = "shopt.print"

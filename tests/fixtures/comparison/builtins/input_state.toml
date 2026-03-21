@@ -1,0 +1,74 @@
+# M6.4 — Input/state builtins: getopts, mapfile, readarray, wait
+
+[[cases]]
+name = "getopts_basic_loop"
+script = '''
+f() {
+  while getopts "a:b" opt; do
+    case $opt in
+      a) echo "a=$OPTARG" ;;
+      b) echo "b" ;;
+    esac
+  done
+}
+f -a hello -b
+'''
+stdout = "a=hello\nb\n"
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "mapfile_basic"
+script = '''
+mapfile arr <<EOF
+one
+two
+three
+EOF
+echo "${arr[0]}"
+echo "${arr[1]}"
+echo "${#arr[@]}"
+'''
+stdout = "one\n\ntwo\n\n3\n"
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "mapfile_t_strip_newline"
+script = '''
+mapfile -t arr <<EOF
+one
+two
+three
+EOF
+echo "${arr[0]}"
+echo "${arr[1]}"
+'''
+stdout = "one\ntwo\n"
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "readarray_alias"
+script = '''
+readarray -t lines <<EOF
+a
+b
+c
+EOF
+echo "${lines[1]}"
+'''
+stdout = "b\n"
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "wait_returns_zero"
+script = '''
+true &
+wait
+echo $?
+'''
+stdout = "0\n"
+stderr = ""
+exit_code = 0

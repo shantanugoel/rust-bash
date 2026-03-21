@@ -81,6 +81,18 @@ pub enum FsNode {
     },
 }
 
+/// Options that modify glob expansion behavior.
+#[derive(Debug, Clone, Default)]
+pub struct GlobOptions {
+    /// Include dot-files even when the pattern doesn't start with `.`.
+    pub dotglob: bool,
+    /// Use case-insensitive matching for filenames.
+    pub nocaseglob: bool,
+    /// Treat `**` as recursive directory match (globstar).
+    /// When false, `**` is treated as `*`.
+    pub globstar: bool,
+}
+
 /// Trait abstracting all filesystem operations.
 ///
 /// All methods take `&self` — implementations use interior mutability.
@@ -120,6 +132,19 @@ pub trait VirtualFs: Send + Sync {
 
     // Glob expansion (stub for now)
     fn glob(&self, pattern: &str, cwd: &Path) -> Result<Vec<PathBuf>, VfsError>;
+
+    /// Glob expansion with shopt-controlled options (dotglob, nocaseglob, globstar).
+    ///
+    /// The default implementation ignores options and delegates to `glob()`.
+    /// Override in backends that can honor the options.
+    fn glob_with_opts(
+        &self,
+        pattern: &str,
+        cwd: &Path,
+        _opts: &GlobOptions,
+    ) -> Result<Vec<PathBuf>, VfsError> {
+        self.glob(pattern, cwd)
+    }
 
     /// Create an independent deep copy for subshell isolation.
     ///

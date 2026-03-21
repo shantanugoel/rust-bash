@@ -1,0 +1,59 @@
+[[cases]]
+name = "read_into_array"
+script = 'echo "a b c" | { read -ra arr; echo "${arr[1]}"; }'
+stdout = "b\n"
+exit_code = 0
+
+[[cases]]
+name = "read_array_element_count"
+script = 'echo "x y z" | { read -ra arr; echo "${#arr[@]}"; }'
+stdout = "3\n"
+exit_code = 0
+
+[[cases]]
+name = "read_delimiter_colon"
+script = "printf 'a:b:c' | { read -d : x; echo $x; }"
+stdout = "a\n"
+exit_code = 0
+
+[[cases]]
+name = "read_n_char_limit"
+script = 'echo "hello" | { read -n 3 x; echo $x; }'
+stdout = "hel\n"
+exit_code = 0
+
+[[cases]]
+name = "read_big_n_exact_count"
+script = "printf 'ab\\ncd' | { read -N 4 x; echo \"$x\"; }"
+stdout = "ab\nc\n"
+exit_code = 0
+
+[[cases]]
+name = "read_silent_flag"
+script = 'echo "secret" | { read -s x; echo $x; }'
+stdout = "secret\n"
+exit_code = 0
+
+[[cases]]
+name = "read_combined_ra"
+script = 'echo "1 2 3" | { read -ra nums; echo "${nums[0]}-${nums[2]}"; }'
+stdout = "1-3\n"
+exit_code = 0
+
+[[cases]]
+name = "read_delimiter_empty_reads_to_eof"
+script = "printf 'hello\\nworld' | { read -r -d '' x; echo \"$x\"; }"
+stdout = "hello\nworld\n"
+exit_code = 0
+
+[[cases]]
+name = "read_n_stops_at_newline"
+script = "printf 'hi\\nthere' | { read -n 10 x; echo $x; }"
+stdout = "hi\n"
+exit_code = 0
+
+[[cases]]
+name = "read_timeout_stub"
+script = 'echo "data" | { read -t 1 x; echo $x; }'
+stdout = "data\n"
+exit_code = 0

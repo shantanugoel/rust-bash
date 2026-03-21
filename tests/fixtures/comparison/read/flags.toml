@@ -1,0 +1,73 @@
+# M6.5 — read builtin flags (mixed pass/xfail)
+
+[[cases]]
+name = "read_basic_reply"
+script = 'echo "hello" | { read x; echo "$x"; }'
+stdout = "hello\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.5"
+feature = "read.basic"
+
+[[cases]]
+name = "read_raw_mode"
+script = 'echo "hello\\tworld" | { read -r x; echo "$x"; }'
+stdout = "hello\\tworld\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.5"
+feature = "read.raw"
+
+[[cases]]
+name = "read_prompt_noop"
+script = 'echo "data" | { read -p "prompt: " x; echo "$x"; }'
+stdout = "data\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.5"
+feature = "read.prompt"
+
+[[cases]]
+name = "read_array_ra"
+script = 'echo "a b c" | { read -ra arr; echo "${arr[1]}"; }'
+stdout = "b\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.5"
+feature = "read.array"
+
+[[cases]]
+name = "read_delimiter_d"
+script = "printf 'a:b:c' | { read -d : x; echo $x; }"
+stdout = "a\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.5"
+feature = "read.delimiter"
+
+[[cases]]
+name = "read_n_count"
+script = 'echo "hello" | { read -n 3 x; echo $x; }'
+stdout = "hel\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.5"
+feature = "read.count"
+
+[[cases]]
+name = "read_N_exact_count"
+script = "printf 'ab\\ncd' | { read -N 4 x; echo \"$x\"; }"
+stdout = "ab\nc\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.5"
+feature = "read.count"
+
+[[cases]]
+name = "read_timeout_stub"
+script = 'echo "data" | { read -t 1 x; echo $x; }'
+stdout = "data\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.5"
+feature = "read.timeout"

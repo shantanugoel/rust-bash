@@ -1,0 +1,132 @@
+# M6.6 — declare attributes: -i, -l, -u, -n, -a, -A, -p
+
+[[cases]]
+name = "declare_integer_assignment"
+script = '''
+declare -i x=5+3
+echo "$x"
+'''
+stdout = "8\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.6"
+feature = "declare.integer"
+
+[[cases]]
+name = "declare_integer_append"
+script = '''
+declare -i x=10
+x+=5
+echo "$x"
+'''
+stdout = "15\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.6"
+feature = "declare.integer"
+
+[[cases]]
+name = "declare_lowercase"
+script = '''
+declare -l x=HELLO
+echo "$x"
+'''
+stdout = "hello\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.6"
+feature = "declare.lowercase"
+
+[[cases]]
+name = "declare_uppercase"
+script = '''
+declare -u x=hello
+echo "$x"
+'''
+stdout = "HELLO\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.6"
+feature = "declare.uppercase"
+
+[[cases]]
+name = "declare_nameref_read"
+script = '''
+target=world
+declare -n ref=target
+echo "$ref"
+'''
+stdout = "world\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.6"
+feature = "declare.nameref"
+
+[[cases]]
+name = "declare_nameref_write"
+script = '''
+target=old
+declare -n ref=target
+ref=new
+echo "$target"
+'''
+stdout = "new\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.6"
+feature = "declare.nameref"
+
+[[cases]]
+name = "declare_nameref_cycle_errors"
+script = '''
+declare -n a=b
+declare -n b=a
+a=test 2>&1
+echo $?
+'''
+stdout = "1\n"
+stderr_ignore = true
+exit_code = 0
+status = "xfail"
+milestone = "M6.6"
+feature = "declare.nameref"
+reason = "nameref cycle returns Err instead of shell error"
+
+[[cases]]
+name = "declare_p_formats_flags"
+script = '''
+declare -i num=42
+declare -p num
+'''
+stdout = "declare -i num=\"42\"\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.6"
+feature = "declare.print"
+
+[[cases]]
+name = "declare_array_indexed"
+script = '''
+declare -a arr
+arr=(1 2 3)
+echo "${arr[1]}"
+'''
+stdout = "2\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.6"
+feature = "declare.array"
+
+[[cases]]
+name = "declare_array_associative"
+script = '''
+declare -A map
+map[k1]=v1
+map[k2]=v2
+echo "${map[k1]}"
+'''
+stdout = "v1\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.6"
+feature = "declare.array"

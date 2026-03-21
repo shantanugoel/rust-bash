@@ -5,7 +5,12 @@
 
 /// Match a shell glob pattern against a string.
 pub(crate) fn glob_match(pattern: &str, text: &str) -> bool {
-    glob_match_inner(pattern.as_bytes(), text.as_bytes())
+    glob_match_inner(pattern.as_bytes(), text.as_bytes(), false)
+}
+
+/// Case-insensitive variant of `glob_match`.
+pub(crate) fn glob_match_nocase(pattern: &str, text: &str) -> bool {
+    glob_match_inner(pattern.as_bytes(), text.as_bytes(), true)
 }
 
 /// Return the byte length of the UTF-8 character starting at `first_byte`.
@@ -21,7 +26,7 @@ fn utf8_char_len(first_byte: u8) -> usize {
     }
 }
 
-fn glob_match_inner(pat: &[u8], txt: &[u8]) -> bool {
+fn glob_match_inner(pat: &[u8], txt: &[u8], nocase: bool) -> bool {
     let mut pi = 0;
     let mut ti = 0;
     let mut star_pi = usize::MAX;
@@ -30,7 +35,7 @@ fn glob_match_inner(pat: &[u8], txt: &[u8]) -> bool {
     while ti < txt.len() {
         if pi < pat.len() && pat[pi] == b'\\' && pi + 1 < pat.len() {
             // escaped literal
-            if txt[ti] == pat[pi + 1] {
+            if bytes_eq(txt[ti], pat[pi + 1], nocase) {
                 pi += 2;
                 ti += 1;
                 continue;
@@ -41,7 +46,7 @@ fn glob_match_inner(pat: &[u8], txt: &[u8]) -> bool {
             ti += utf8_char_len(txt[ti]);
             continue;
         } else if pi < pat.len() && pat[pi] == b'[' {
-            if let Some((matched, end)) = match_char_class(&pat[pi..], txt[ti])
+            if let Some((matched, end)) = match_char_class(&pat[pi..], txt[ti], nocase)
                 && matched
             {
                 pi += end;
@@ -53,7 +58,7 @@ fn glob_match_inner(pat: &[u8], txt: &[u8]) -> bool {
             star_ti = ti;
             pi += 1;
             continue;
-        } else if pi < pat.len() && pat[pi] == txt[ti] {
+        } else if pi < pat.len() && bytes_eq(pat[pi], txt[ti], nocase) {
             pi += 1;
             ti += 1;
             continue;
@@ -79,9 +84,18 @@ fn glob_match_inner(pat: &[u8], txt: &[u8]) -> bool {
     pi == pat.len()
 }
 
+/// Compare two bytes, optionally case-insensitive (ASCII only).
+fn bytes_eq(a: u8, b: u8, nocase: bool) -> bool {
+    if nocase {
+        a.eq_ignore_ascii_case(&b)
+    } else {
+        a == b
+    }
+}
+
 /// Attempt to match a character class `[...]` at the start of `pat`.
 /// Returns `(matched, bytes_consumed)` or `None` if not a valid class.
-fn match_char_class(pat: &[u8], ch: u8) -> Option<(bool, usize)> {
+fn match_char_class(pat: &[u8], ch: u8, nocase: bool) -> Option<(bool, usize)> {
     if pat.is_empty() || pat[0] != b'[' {
         return None;
     }
@@ -96,7 +110,7 @@ fn match_char_class(pat: &[u8], ch: u8) -> Option<(bool, usize)> {
     let mut matched = false;
     // Allow ] as first char in class
     if i < pat.len() && pat[i] == b']' {
-        if ch == b']' {
+        if bytes_eq(ch, b']', nocase) {
             matched = true;
         }
         i += 1;
@@ -106,12 +120,17 @@ fn match_char_class(pat: &[u8], ch: u8) -> Option<(bool, usize)> {
         if i + 2 < pat.len() && pat[i + 1] == b'-' && pat[i + 2] != b']' {
             let lo = pat[i];
             let hi = pat[i + 2];
-            if ch >= lo && ch <= hi {
+            if nocase {
+                let ch_lower = ch.to_ascii_lowercase();
+                if ch_lower >= lo.to_ascii_lowercase() && ch_lower <= hi.to_ascii_lowercase() {
+                    matched = true;
+                }
+            } else if ch >= lo && ch <= hi {
                 matched = true;
             }
             i += 3;
         } else {
-            if pat[i] == ch {
+            if bytes_eq(pat[i], ch, nocase) {
                 matched = true;
             }
             i += 1;

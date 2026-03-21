@@ -74,7 +74,7 @@ Comparison tests verify that rust-bash produces the same stdout, stderr, and exi
 
 **Runner**: `tests/comparison.rs` uses `datatest-stable` to discover all `.toml` fixture files and generate one `#[test]` per file. Within each file, all cases run sequentially; failures are collected and reported together.
 
-**What's covered** (157 test cases across 19 fixture files):
+**What's covered** (269 test cases across 34 fixture files):
 - Quoting (single, double, backslash escaping)
 - Parameter expansion (defaults, alternatives, substitution, length, case modification)
 - Command substitution, arithmetic expansion, brace expansion, tilde expansion
@@ -84,6 +84,16 @@ Comparison tests verify that rust-bash produces the same stdout, stderr, and exi
 - Pipelines (simple and multi-stage)
 - Control flow (`if`, `for`, `while`, `case`, logical operators)
 - Functions (definition, local variables, return values)
+- Arrays (indexed, associative, sparse, append, keys, length, unset)
+- `PIPESTATUS` and `BASH_REMATCH`
+- `declare` attributes (`-i`, `-l`, `-u`, `-n`, `-a`, `-A`, `-p`)
+- `read` flags (`-r`, `-a`, `-d`, `-n`, `-N`, `-s`, `-t`)
+- Parameter transforms (`${x@Q}`, `${!ref}`, `${!prefix*}`)
+- Special variables (`SECONDS`, `PPID`, `EUID`)
+- `set` options (`-v`, `-a`, `-o posix`)
+- Advanced redirections (`|&`)
+
+The suite uses a three-state model: **pass** (must match), **xfail** (known product gap, expected to mismatch), and **skip** (harness/platform blocker). Of the 269 cases, 205 are pass, 63 are xfail, and 1 is skip. The runner prints per-milestone summaries (pass/xfail/skip/unexpected-pass counts) and treats unexpected passes as failures to force promotion.
 
 ### Differential Testing — Spec Tests
 
@@ -93,7 +103,7 @@ Spec tests verify command implementations (`grep`, `sed`, `awk`, `jq`) against m
 
 **Runner**: `tests/spec_tests.rs` — structurally identical to the comparison runner but reads from `tests/fixtures/spec/` and does not support recording.
 
-**What's covered** (197 test cases across 14 fixture files):
+**What's covered** (200 test cases across 14 fixture files):
 - **grep**: literal matching, regex, flags (`-i`, `-v`, `-c`, `-n`, `-l`, `-r`, `-E`, `-F`, `-w`, `-o`, `-q`, `-A`/`-B`/`-C`, `-e`, `-x`, `-m`, `-h`)
 - **sed**: substitution, address ranges, delete/print/append/insert/change, transliterate (`y///`), hold space, in-place edit (`-i`), branching
 - **awk**: field splitting, patterns, built-in functions, arithmetic, associative arrays

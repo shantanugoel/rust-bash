@@ -1,0 +1,101 @@
+# M6.2 — PIPESTATUS and BASH_REMATCH as arrays
+
+[[cases]]
+name = "pipestatus_single_command"
+script = '''
+true
+echo "${PIPESTATUS[0]}"
+'''
+stdout = "0\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.2"
+feature = "PIPESTATUS"
+
+[[cases]]
+name = "pipestatus_multi_stage_pipeline"
+script = '''
+false | true | false
+echo "${PIPESTATUS[0]} ${PIPESTATUS[1]} ${PIPESTATUS[2]}"
+'''
+stdout = "1 0 1\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.2"
+feature = "PIPESTATUS"
+
+[[cases]]
+name = "pipestatus_overwrite_after_simple_command"
+script = '''
+false | true | false
+saved="${PIPESTATUS[0]} ${PIPESTATUS[1]} ${PIPESTATUS[2]}"
+echo ok
+echo "$saved"
+echo "${PIPESTATUS[0]}"
+'''
+stdout = "ok\n1 0 1\n0\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.2"
+feature = "PIPESTATUS"
+
+[[cases]]
+name = "bash_rematch_whole_match"
+script = '''
+[[ "hello123world" =~ [0-9]+ ]]
+echo "${BASH_REMATCH[0]}"
+'''
+stdout = "123\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.2"
+feature = "BASH_REMATCH"
+
+[[cases]]
+name = "bash_rematch_capture_group_1"
+script = '''
+[[ "abc-def" =~ ^([a-z]+)-([a-z]+)$ ]]
+echo "${BASH_REMATCH[1]}"
+'''
+stdout = "abc\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.2"
+feature = "BASH_REMATCH"
+
+[[cases]]
+name = "bash_rematch_capture_group_2"
+script = '''
+[[ "abc-def" =~ ^([a-z]+)-([a-z]+)$ ]]
+echo "${BASH_REMATCH[2]}"
+'''
+stdout = "def\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.2"
+feature = "BASH_REMATCH"
+
+[[cases]]
+name = "bash_rematch_array_length"
+script = '''
+[[ "abc-def" =~ ^([a-z]+)-([a-z]+)$ ]]
+echo "${#BASH_REMATCH[@]}"
+'''
+stdout = "3\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.2"
+feature = "BASH_REMATCH"
+
+[[cases]]
+name = "bash_rematch_empty_on_no_match"
+script = '''
+[[ "abc" =~ [0-9]+ ]]
+echo "len=${#BASH_REMATCH[@]}"
+echo "val=${BASH_REMATCH[0]}"
+'''
+stdout = "len=0\nval=\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.2"
+feature = "BASH_REMATCH"

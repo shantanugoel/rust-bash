@@ -171,9 +171,9 @@ Framework-agnostic tool definitions (JSON Schema + handler functions) exported f
 
 **Goal**: Close remaining bash language gaps so AI-generated scripts that use arrays, shopt, advanced builtins, and process substitution work without modification.
 
-### M6.1 — Indexed and Associative Arrays
+### M6.1 — Indexed and Associative Arrays ✅
 
-Extend `Variable` to hold array data (`Option<Box<ArrayData>>` with `Indexed(BTreeMap<usize, String>)` and `Associative(HashMap<String, String>)` variants). Handle `AssignmentValue::Array` and `ArrayElementName` from brush-parser (currently dropped). Implement `${arr[@]}`, `${arr[*]}`, `${#arr[@]}`, `${!arr[@]}`, `${arr[@]:offset:length}`, array `+=()` append, and `unset arr[n]` (sparse — no reindexing). Add `maxArrayElements` execution limit (default 100,000) to prevent OOM from unbounded array growth — enforce on every array insert/append.
+Implemented `VariableValue` enum (`Scalar`/`IndexedArray(BTreeMap<usize, String>)`/`AssociativeArray(BTreeMap<String, String>)`), `VariableAttrs` bitflags, array assignment/expansion/arithmetic, `declare -a`/`-A`, `unset arr[n]`, `${arr[@]}`, `${arr[*]}`, `${#arr[@]}`, `${!arr[@]}`, array `+=()` append, and `maxArrayElements` execution limit. 31 integration tests.
 
 **Why first in M6**: Arrays are the critical path — `$PIPESTATUS`, `BASH_REMATCH`, `mapfile`, `read -a`, and `declare -A` all depend on this.
 
@@ -181,7 +181,7 @@ Extend `Variable` to hold array data (`Option<Box<ArrayData>>` with `Indexed(BTr
 
 Expose the `exit_codes` vector already collected in `execute_pipeline` as the `$PIPESTATUS` indexed array variable. Migrate `BASH_REMATCH_N` flat variables (from `=~` regex matching) to a proper `BASH_REMATCH` indexed array with capture group support.
 
-### M6.3 — Shopt Options
+### M6.3 — Shopt Options ✅
 
 Add `ShoptOpts` struct to interpreter state and `shopt` builtin. Implement behavioral wiring for: `nullglob` (non-matching globs expand to nothing), `globstar` (`**` matches recursively), `dotglob` (globs include dot-files), `extglob` (extended patterns `+(...)` etc. — parser already enables this), `failglob` (error on no match), `nocaseglob` (case-insensitive glob), `nocasematch` (case-insensitive `[[ =~ ]]` and `case`), `lastpipe` (last pipeline command runs in current shell — requires changing pipeline execution to avoid subshell for the final command when enabled), `expand_aliases` (enable alias expansion), `xpg_echo` (make `echo` interpret backslash escapes by default, like `echo -e`), `globskipdots` (don't match `.` and `..` with glob patterns — bash 5.2+ default).
 
@@ -189,16 +189,16 @@ Add `ShoptOpts` struct to interpreter state and `shopt` builtin. Implement behav
 
 Implement missing builtins that AI-generated scripts commonly use:
 
-- `getopts optstring name [args]` — argument parsing with `OPTIND`/`OPTARG`/`OPTERR` state.
-- `mapfile`/`readarray` — populate indexed array from stdin. Support `-t` (strip newline), `-d` (delimiter), `-n` (max lines), `-s` (skip lines), `-C` (callback).
-- `type [-t|-a|-p] name` — identify whether name is builtin, function, command, or alias. Common pattern: `if type jq &>/dev/null; then ...`.
-- `command [-pVv] name` — run command bypassing functions, or describe a command. `command -v git` is the most common tool-detection pattern in bash. `-p` uses default PATH.
-- `builtin name [args]` — force execution of a builtin, bypassing same-named functions.
-- `pushd [-n] [dir | +N | -N]` / `popd [-n] [+N | -N]` / `dirs [-clpv] [+N | -N]` — full directory stack. ~260 lines in just-bash. Very common in build scripts and CI.
-- `alias name=value` / `unalias name` — define and remove aliases. Requires pre-expansion token rewriting before command execution. Lower priority than other builtins due to architectural complexity with brush-parser.
-- `select var in list; do ... done` — menu selection loop. Low priority (interactive feature, rarely used by AI agents), but completes the control-flow set.
-- `hash [-r] [name]` — command path caching with real hash table. Maintain `HashMap<String, PathBuf>` in interpreter state. `hash name` resolves and caches the PATH lookup; subsequent invocations skip PATH search. `hash -r` clears the table. `hash` with no args lists cached entries. just-bash implements this with a real `hashTable: Map`; matching that behavior avoids silent divergence in scripts that use `hash -r` to force re-resolution after PATH changes.
-- `wait [pid|jobspec]` — no-op stub that returns 0 immediately. Prevents scripts from failing when they include `wait`.
+- ✅ `getopts optstring name [args]` — argument parsing with `OPTIND`/`OPTARG`/`OPTERR` state.
+- ✅ `mapfile`/`readarray` — populate indexed array from stdin. Support `-t` (strip newline), `-d` (delimiter), `-n` (max lines), `-s` (skip lines), `-C` (callback).
+- ✅ `type [-t|-a|-p] name` — identify whether name is builtin, function, command, or alias. Common pattern: `if type jq &>/dev/null; then ...`.
+- ✅ `command [-pVv] name` — run command bypassing functions, or describe a command. `command -v git` is the most common tool-detection pattern in bash. `-p` uses default PATH.
+- ✅ `builtin name [args]` — force execution of a builtin, bypassing same-named functions.
+- ✅ `pushd [-n] [dir | +N | -N]` / `popd [-n] [+N | -N]` / `dirs [-clpv] [+N | -N]` — full directory stack. ~260 lines in just-bash. Very common in build scripts and CI.
+- ✅ `alias name=value` / `unalias name` — define and remove aliases. Requires pre-expansion token rewriting before command execution. Lower priority than other builtins due to architectural complexity with brush-parser.
+- `select var in list; do ... done` — menu selection loop. Low priority (interactive feature, rarely used by AI agents), but completes the control-flow set. Blocked: brush-parser 0.3.0 has no `Select` variant in `CompoundCommand`.
+- ✅ `hash [-r] [name]` — command path caching with real hash table. Maintain `HashMap<String, PathBuf>` in interpreter state. `hash name` resolves and caches the PATH lookup; subsequent invocations skip PATH search. `hash -r` clears the table. `hash` with no args lists cached entries. just-bash implements this with a real `hashTable: Map`; matching that behavior avoids silent divergence in scripts that use `hash -r` to force re-resolution after PATH changes.
+- ✅ `wait [pid|jobspec]` — no-op stub that returns 0 immediately. Prevents scripts from failing when they include `wait`.
 
 ### M6.5 — Full `read` Flags
 
@@ -269,7 +269,7 @@ Also add `printf` format specifiers `%b` (interpret backslash escapes) and `%q` 
 
 ### M6.12 — Differential Testing Against Real Bash ✅
 
-Fixture-based comparison test suite that records expected output from real `/bin/bash` and replays it against rust-bash on every `cargo test`. Delivered: 157 comparison test cases across 19 fixture files covering shell language features (quoting, expansion, word splitting, globbing, redirections, pipes, control flow, functions, here-documents), plus 197 spec test cases across 14 fixture files for `grep`, `sed`, `awk`, and `jq`. Recording mode (`RECORD_FIXTURES=1`) re-captures ground truth from real bash. Infrastructure uses `datatest-stable` for per-file test discovery and `toml_edit` for round-trip fixture updates.
+Fixture-based comparison test suite that records expected output from real `/bin/bash` and replays it against rust-bash on every `cargo test`. Delivered: 269 comparison test cases across 34 fixture files covering shell language features (quoting, expansion, word splitting, globbing, redirections, pipes, control flow, functions, here-documents, arrays, PIPESTATUS, BASH_REMATCH, declare attributes, read flags, parameter transforms, special variables, set options, advanced redirections) plus 200 spec test cases across 14 fixture files for `grep`, `sed`, `awk`, and `jq`. Recording mode (`RECORD_FIXTURES=1`) re-captures ground truth from real bash. Infrastructure uses `datatest-stable` for per-file test discovery and `toml_edit` for round-trip fixture updates. Of the 269 comparison cases, 205 pass, 63 are xfail (expected failures for unimplemented M6 features), and 1 is skip (harness limitation). The runner uses a three-state model (pass/xfail/skip) with per-milestone summary output and treats unexpected passes as failures to force fixture promotion.
 
 ---
 

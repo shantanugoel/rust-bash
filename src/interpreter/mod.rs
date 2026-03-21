@@ -12,8 +12,9 @@ use crate::error::RustBashError;
 use crate::network::NetworkPolicy;
 use crate::platform::Instant;
 use crate::vfs::VirtualFs;
+use bitflags::bitflags;
 use brush_parser::ast;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -38,15 +39,70 @@ pub struct ExecResult {
     pub exit_code: i32,
 }
 
+// ── Variable types ──────────────────────────────────────────────────
+
+/// The value stored in a shell variable: scalar, indexed array, or associative array.
+#[derive(Debug, Clone, PartialEq)]
+pub enum VariableValue {
+    Scalar(String),
+    IndexedArray(BTreeMap<usize, String>),
+    AssociativeArray(BTreeMap<String, String>),
+}
+
+impl VariableValue {
+    /// Return the scalar value, or element [0] for indexed arrays,
+    /// or empty string for associative arrays (matches bash behavior).
+    pub fn as_scalar(&self) -> &str {
+        match self {
+            VariableValue::Scalar(s) => s,
+            VariableValue::IndexedArray(map) => map.get(&0).map(|s| s.as_str()).unwrap_or(""),
+            VariableValue::AssociativeArray(_) => "",
+        }
+    }
+
+    /// Return element count for arrays, or 1 for non-empty scalars.
+    pub fn count(&self) -> usize {
+        match self {
+            VariableValue::Scalar(s) => usize::from(!s.is_empty()),
+            VariableValue::IndexedArray(map) => map.len(),
+            VariableValue::AssociativeArray(map) => map.len(),
+        }
+    }
+}
+
+bitflags! {
+    /// Attribute flags for a shell variable.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct VariableAttrs: u8 {
+        const EXPORTED  = 0b0000_0001;
+        const READONLY  = 0b0000_0010;
+        const INTEGER   = 0b0000_0100;
+        const LOWERCASE = 0b0000_1000;
+        const UPPERCASE = 0b0001_0000;
+        const NAMEREF   = 0b0010_0000;
+    }
+}
+
 /// A shell variable with metadata.
 #[derive(Debug, Clone)]
 pub struct Variable {
-    pub value: String,
-    pub exported: bool,
-    pub readonly: bool,
+    pub value: VariableValue,
+    pub attrs: VariableAttrs,
 }
 
-/// Execution limits (no enforcement in Phase 1A).
+impl Variable {
+    /// Convenience: is this variable exported?
+    pub fn exported(&self) -> bool {
+        self.attrs.contains(VariableAttrs::EXPORTED)
+    }
+
+    /// Convenience: is this variable readonly?
+    pub fn readonly(&self) -> bool {
+        self.attrs.contains(VariableAttrs::READONLY)
+    }
+}
+
+/// Execution limits.
 #[derive(Debug, Clone)]
 pub struct ExecutionLimits {
     pub max_call_depth: usize,
@@ -59,6 +115,7 @@ pub struct ExecutionLimits {
     pub max_substitution_depth: usize,
     pub max_heredoc_size: usize,
     pub max_brace_expansion: usize,
+    pub max_array_elements: usize,
 }
 
 impl Default for ExecutionLimits {
@@ -74,6 +131,7 @@ impl Default for ExecutionLimits {
             max_substitution_depth: 50,
             max_heredoc_size: 10 * 1024 * 1024,
             max_brace_expansion: 10_000,
+            max_array_elements: 100_000,
         }
     }
 }
@@ -115,6 +173,40 @@ pub struct ShellOpts {
     pub xtrace: bool,
 }
 
+/// Shopt options (`shopt -s`/`-u` flags).
+#[derive(Debug, Clone)]
+pub struct ShoptOpts {
+    pub nullglob: bool,
+    pub globstar: bool,
+    pub dotglob: bool,
+    pub globskipdots: bool,
+    pub failglob: bool,
+    pub nocaseglob: bool,
+    pub nocasematch: bool,
+    pub lastpipe: bool,
+    pub expand_aliases: bool,
+    pub xpg_echo: bool,
+    pub extglob: bool,
+}
+
+impl Default for ShoptOpts {
+    fn default() -> Self {
+        Self {
+            nullglob: false,
+            globstar: false,
+            dotglob: false,
+            globskipdots: true,
+            failglob: false,
+            nocaseglob: false,
+            nocasematch: false,
+            lastpipe: false,
+            expand_aliases: false,
+            xpg_echo: false,
+            extglob: true, // on by default in non-POSIX mode
+        }
+    }
+}
+
 /// Stub for function definitions (execution in a future phase).
 #[derive(Debug, Clone)]
 pub struct FunctionDef {
@@ -130,6 +222,7 @@ pub struct InterpreterState {
     pub last_exit_code: i32,
     pub commands: HashMap<String, Box<dyn VirtualCommand>>,
     pub shell_opts: ShellOpts,
+    pub shopt_opts: ShoptOpts,
     pub limits: ExecutionLimits,
     pub counters: ExecutionCounters,
     pub network_policy: NetworkPolicy,
@@ -154,6 +247,12 @@ pub struct InterpreterState {
     /// Byte offset into the current stdin stream, used by `read` to consume
     /// successive lines from piped input across loop iterations.
     pub(crate) stdin_offset: usize,
+    /// Directory stack for `pushd`/`popd`/`dirs`.
+    pub(crate) dir_stack: Vec<String>,
+    /// Cached command-name → resolved-path mappings for `hash`.
+    pub(crate) command_hash: HashMap<String, String>,
+    /// Alias name → expansion string for `alias`/`unalias`.
+    pub(crate) aliases: HashMap<String, String>,
 }
 
 // ── Parsing ──────────────────────────────────────────────────────────
@@ -187,7 +286,8 @@ pub fn parse(input: &str) -> Result<ast::Program, RustBashError> {
         .map_err(|e| RustBashError::Parse(e.to_string()))
 }
 
-/// Set a variable in the interpreter state, respecting readonly.
+/// Set a variable in the interpreter state, respecting readonly, nameref,
+/// and attribute transforms (INTEGER, LOWERCASE, UPPERCASE).
 pub(crate) fn set_variable(
     state: &mut InterpreterState,
     name: &str,
@@ -200,24 +300,198 @@ pub(crate) fn set_variable(
             actual_value: value.len(),
         });
     }
-    if let Some(var) = state.env.get(name)
-        && var.readonly
+
+    // Resolve nameref chain to find the actual target variable.
+    let target = resolve_nameref(name, state)?;
+
+    if let Some(var) = state.env.get(&target)
+        && var.readonly()
     {
         return Err(RustBashError::Execution(format!(
-            "{name}: readonly variable"
+            "{target}: readonly variable"
         )));
     }
-    match state.env.get_mut(name) {
-        Some(var) => var.value = value,
+
+    // Get attributes of target for transforms.
+    let attrs = state
+        .env
+        .get(&target)
+        .map(|v| v.attrs)
+        .unwrap_or(VariableAttrs::empty());
+
+    // INTEGER: evaluate value as arithmetic expression.
+    let value = if attrs.contains(VariableAttrs::INTEGER) {
+        let result = crate::interpreter::arithmetic::eval_arithmetic(&value, state)?;
+        result.to_string()
+    } else {
+        value
+    };
+
+    // Case transforms (lowercase takes precedence if both set, but both shouldn't be).
+    let value = if attrs.contains(VariableAttrs::LOWERCASE) {
+        value.to_lowercase()
+    } else if attrs.contains(VariableAttrs::UPPERCASE) {
+        value.to_uppercase()
+    } else {
+        value
+    };
+
+    match state.env.get_mut(&target) {
+        Some(var) => match &mut var.value {
+            VariableValue::IndexedArray(map) => {
+                map.insert(0, value);
+            }
+            VariableValue::AssociativeArray(map) => {
+                map.insert("0".to_string(), value);
+            }
+            VariableValue::Scalar(s) => *s = value,
+        },
         None => {
             state.env.insert(
-                name.to_string(),
+                target,
                 Variable {
-                    value,
-                    exported: false,
-                    readonly: false,
+                    value: VariableValue::Scalar(value),
+                    attrs: VariableAttrs::empty(),
                 },
             );
+        }
+    }
+    Ok(())
+}
+
+/// Set an array element in the interpreter state, creating the array if needed.
+/// Resolves nameref before operating.
+pub(crate) fn set_array_element(
+    state: &mut InterpreterState,
+    name: &str,
+    index: usize,
+    value: String,
+) -> Result<(), RustBashError> {
+    let target = resolve_nameref(name, state)?;
+    if let Some(var) = state.env.get(&target)
+        && var.readonly()
+    {
+        return Err(RustBashError::Execution(format!(
+            "{target}: readonly variable"
+        )));
+    }
+
+    // Apply attribute transforms (INTEGER, LOWERCASE, UPPERCASE).
+    let attrs = state
+        .env
+        .get(&target)
+        .map(|v| v.attrs)
+        .unwrap_or(VariableAttrs::empty());
+    let value = if attrs.contains(VariableAttrs::INTEGER) {
+        crate::interpreter::arithmetic::eval_arithmetic(&value, state)?.to_string()
+    } else {
+        value
+    };
+    let value = if attrs.contains(VariableAttrs::LOWERCASE) {
+        value.to_lowercase()
+    } else if attrs.contains(VariableAttrs::UPPERCASE) {
+        value.to_uppercase()
+    } else {
+        value
+    };
+
+    let limit = state.limits.max_array_elements;
+    match state.env.get_mut(&target) {
+        Some(var) => match &mut var.value {
+            VariableValue::IndexedArray(map) => {
+                if !map.contains_key(&index) && map.len() >= limit {
+                    return Err(RustBashError::LimitExceeded {
+                        limit_name: "max_array_elements",
+                        limit_value: limit,
+                        actual_value: map.len() + 1,
+                    });
+                }
+                map.insert(index, value);
+            }
+            VariableValue::Scalar(_) => {
+                let mut map = BTreeMap::new();
+                map.insert(index, value);
+                var.value = VariableValue::IndexedArray(map);
+            }
+            VariableValue::AssociativeArray(_) => {
+                return Err(RustBashError::Execution(format!(
+                    "{target}: cannot use numeric index on associative array"
+                )));
+            }
+        },
+        None => {
+            let mut map = BTreeMap::new();
+            map.insert(index, value);
+            state.env.insert(
+                target,
+                Variable {
+                    value: VariableValue::IndexedArray(map),
+                    attrs: VariableAttrs::empty(),
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Set an associative array element. Resolves nameref before operating.
+pub(crate) fn set_assoc_element(
+    state: &mut InterpreterState,
+    name: &str,
+    key: String,
+    value: String,
+) -> Result<(), RustBashError> {
+    let target = resolve_nameref(name, state)?;
+    if let Some(var) = state.env.get(&target)
+        && var.readonly()
+    {
+        return Err(RustBashError::Execution(format!(
+            "{target}: readonly variable"
+        )));
+    }
+
+    // Apply attribute transforms (INTEGER, LOWERCASE, UPPERCASE).
+    let attrs = state
+        .env
+        .get(&target)
+        .map(|v| v.attrs)
+        .unwrap_or(VariableAttrs::empty());
+    let value = if attrs.contains(VariableAttrs::INTEGER) {
+        crate::interpreter::arithmetic::eval_arithmetic(&value, state)?.to_string()
+    } else {
+        value
+    };
+    let value = if attrs.contains(VariableAttrs::LOWERCASE) {
+        value.to_lowercase()
+    } else if attrs.contains(VariableAttrs::UPPERCASE) {
+        value.to_uppercase()
+    } else {
+        value
+    };
+
+    let limit = state.limits.max_array_elements;
+    match state.env.get_mut(&target) {
+        Some(var) => match &mut var.value {
+            VariableValue::AssociativeArray(map) => {
+                if !map.contains_key(&key) && map.len() >= limit {
+                    return Err(RustBashError::LimitExceeded {
+                        limit_name: "max_array_elements",
+                        limit_value: limit,
+                        actual_value: map.len() + 1,
+                    });
+                }
+                map.insert(key, value);
+            }
+            _ => {
+                return Err(RustBashError::Execution(format!(
+                    "{target}: not an associative array"
+                )));
+            }
+        },
+        None => {
+            return Err(RustBashError::Execution(format!(
+                "{target}: not an associative array"
+            )));
         }
     }
     Ok(())
@@ -234,6 +508,33 @@ pub(crate) fn next_random(state: &mut InterpreterState) -> u16 {
     s ^= s << 5;
     state.random_seed = s;
     (s & 0x7FFF) as u16
+}
+
+/// Resolve a nameref chain: follow NAMEREF attributes until a non-nameref variable
+/// (or missing variable) is found. Returns the final target name.
+/// Errors on circular references (chain longer than 10).
+pub(crate) fn resolve_nameref(
+    name: &str,
+    state: &InterpreterState,
+) -> Result<String, RustBashError> {
+    let mut current = name.to_string();
+    for _ in 0..10 {
+        match state.env.get(&current) {
+            Some(var) if var.attrs.contains(VariableAttrs::NAMEREF) => {
+                current = var.value.as_scalar().to_string();
+            }
+            _ => return Ok(current),
+        }
+    }
+    Err(RustBashError::Execution(format!(
+        "{name}: circular name reference"
+    )))
+}
+
+/// Non-failing nameref resolution: returns the resolved name, or the original
+/// name if the chain is circular.
+pub(crate) fn resolve_nameref_or_self(name: &str, state: &InterpreterState) -> String {
+    resolve_nameref(name, state).unwrap_or_else(|_| name.to_string())
 }
 
 /// Execute a trap handler string, preventing recursive re-trigger of the same trap type.
@@ -339,6 +640,7 @@ mod tests {
             last_exit_code: 0,
             commands: HashMap::new(),
             shell_opts: ShellOpts::default(),
+            shopt_opts: ShoptOpts::default(),
             limits: ExecutionLimits::default(),
             counters: ExecutionCounters::default(),
             network_policy: NetworkPolicy::default(),
@@ -354,6 +656,9 @@ mod tests {
             in_trap: false,
             errexit_suppressed: 0,
             stdin_offset: 0,
+            dir_stack: Vec::new(),
+            command_hash: HashMap::new(),
+            aliases: HashMap::new(),
         }
     }
 }

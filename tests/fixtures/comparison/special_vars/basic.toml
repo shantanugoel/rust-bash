@@ -1,0 +1,82 @@
+# M6.8 — Special variables: basic (mixed pass/xfail)
+
+[[cases]]
+name = "lineno_tracks_statements"
+script = '''
+echo $LINENO
+echo $LINENO
+echo $LINENO
+'''
+stdout = "1\n2\n3\n"
+stderr = ""
+exit_code = 0
+status = "xfail"
+milestone = "M6.8"
+feature = "LINENO"
+reason = "LINENO is hardcoded to 0"
+
+[[cases]]
+name = "seconds_increments"
+script = '''
+SECONDS=0
+echo $SECONDS
+'''
+stdout = "0\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.8"
+feature = "SECONDS"
+
+[[cases]]
+name = "underscore_last_argument"
+script = '''
+echo hello world
+echo "$_"
+'''
+stdout = "hello world\nworld\n"
+stderr = ""
+exit_code = 0
+status = "xfail"
+milestone = "M6.8"
+feature = "underscore"
+reason = "$_ not implemented"
+
+[[cases]]
+name = "ppid_default"
+script = 'echo "$PPID" | grep -q "^[0-9]*$" && echo numeric || echo not'
+stdout = "numeric\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.8"
+feature = "PPID"
+
+[[cases]]
+name = "euid_default"
+script = 'echo "$EUID" | grep -q "^[0-9]*$" && echo numeric || echo not'
+stdout = "numeric\n"
+stderr = ""
+exit_code = 0
+milestone = "M6.8"
+feature = "EUID"
+
+[[cases]]
+name = "machtype_default"
+script = 'test -n "$MACHTYPE" && echo set || echo empty'
+stdout = "set\n"
+stderr = ""
+exit_code = 0
+status = "xfail"
+milestone = "M6.8"
+feature = "MACHTYPE"
+reason = "MACHTYPE not implemented"
+
+[[cases]]
+name = "hosttype_default"
+script = 'test -n "$HOSTTYPE" && echo set || echo empty'
+stdout = "set\n"
+stderr = ""
+exit_code = 0
+status = "xfail"
+milestone = "M6.8"
+feature = "HOSTTYPE"
+reason = "HOSTTYPE not implemented"

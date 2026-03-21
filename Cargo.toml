@@ -23,6 +23,7 @@ required-features = ["cli"]
 
 [dependencies]
 base64 = "0.22"
+bitflags = "2.11.0"
 brush-parser = "0.3.0"
 chrono = "0.4"
 clap = { version = "4.6.0", features = ["derive"], optional = true }

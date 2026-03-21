@@ -503,6 +503,8 @@ impl VirtualFs for MountableFs {
         }
     }
 
+    // TODO: MountableFs::glob does not yet honor GlobOptions (dotglob, nocaseglob, globstar).
+    // Its glob_walk traversal needs refactoring to accept options.
     fn glob(&self, pattern: &str, cwd: &Path) -> Result<Vec<PathBuf>, VfsError> {
         let is_absolute = pattern.starts_with('/');
         let abs_pattern = if is_absolute {

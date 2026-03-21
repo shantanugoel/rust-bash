@@ -41,7 +41,10 @@ stderr = """
 error
 """
 exit_code = 0
-skip = "rust-bash processes redirect order differently for >&2 2>/dev/null"
+status = "xfail"
+milestone = "M6.10"
+feature = "redirect_ordering"
+reason = "rust-bash processes redirect order differently for >&2 2>/dev/null"
 
 [[cases]]
 name = "redirect_both_stdout_stderr"

@@ -6,7 +6,7 @@ use crate::platform::SystemTime;
 
 use parking_lot::RwLock;
 
-use super::{DirEntry, FsNode, Metadata, NodeType, VirtualFs};
+use super::{DirEntry, FsNode, GlobOptions, Metadata, NodeType, VirtualFs};
 use crate::error::VfsError;
 
 const MAX_SYMLINK_DEPTH: u32 = 40;
@@ -801,6 +801,24 @@ impl VirtualFs for InMemoryFs {
     }
 
     fn glob(&self, pattern: &str, cwd: &Path) -> Result<Vec<PathBuf>, VfsError> {
+        // VFS-level glob always supports ** recursion; the shell expansion layer
+        // controls whether ** is sent as a pattern based on `shopt -s globstar`.
+        self.glob_with_opts(
+            pattern,
+            cwd,
+            &GlobOptions {
+                globstar: true,
+                ..GlobOptions::default()
+            },
+        )
+    }
+
+    fn glob_with_opts(
+        &self,
+        pattern: &str,
+        cwd: &Path,
+        opts: &GlobOptions,
+    ) -> Result<Vec<PathBuf>, VfsError> {
         let is_absolute = pattern.starts_with('/');
         let abs_pattern = if is_absolute {
             pattern.to_string()
@@ -820,6 +838,7 @@ impl VirtualFs for InMemoryFs {
             &mut results,
             &tree,
             max,
+            opts,
         );
         results.sort();
         results.dedup();
@@ -843,7 +862,7 @@ impl VirtualFs for InMemoryFs {
 // Glob tree walk
 // ---------------------------------------------------------------------------
 
-use crate::interpreter::pattern::glob_match;
+use crate::interpreter::pattern::{glob_match, glob_match_nocase};
 
 /// Recursively collect filesystem paths matching a glob pattern.
 ///
@@ -857,6 +876,7 @@ fn glob_collect(
     results: &mut Vec<PathBuf>,
     tree_root: &FsNode,
     max: usize,
+    opts: &GlobOptions,
 ) {
     if results.len() >= max {
         return;
@@ -874,7 +894,7 @@ fn glob_collect(
     let pattern = components[0];
     let rest = &components[1..];
 
-    if pattern == "**" {
+    if pattern == "**" && opts.globstar {
         // Zero directories — advance past **
         glob_collect(
             resolved,
@@ -883,36 +903,47 @@ fn glob_collect(
             results,
             tree_root,
             max,
+            opts,
         );
 
-        // One or more directories — recurse into children, skipping hidden entries
+        // One or more directories — recurse into children
         if let FsNode::Directory { children, .. } = resolved {
             for (name, child) in children {
                 if results.len() >= max {
                     return;
                 }
-                if name.starts_with('.') {
+                if name.starts_with('.') && !opts.dotglob {
                     continue;
                 }
                 let child_path = current_path.join(name);
-                glob_collect(child, components, child_path, results, tree_root, max);
+                glob_collect(child, components, child_path, results, tree_root, max, opts);
             }
         }
-    } else if let FsNode::Directory { children, .. } = resolved {
-        for (name, child) in children {
-            if results.len() >= max {
-                return;
-            }
-            // Skip hidden files unless the pattern explicitly starts with '.'
-            if name.starts_with('.') && !pattern.starts_with('.') {
-                continue;
-            }
-            if glob_match(pattern, name) {
-                let child_path = current_path.join(name);
-                if rest.is_empty() {
-                    results.push(child_path);
+    } else {
+        // When globstar is off, treat ** as *
+        let effective_pattern = if pattern == "**" { "*" } else { pattern };
+
+        if let FsNode::Directory { children, .. } = resolved {
+            for (name, child) in children {
+                if results.len() >= max {
+                    return;
+                }
+                // Skip hidden files unless dotglob is on or pattern explicitly starts with '.'
+                if name.starts_with('.') && !effective_pattern.starts_with('.') && !opts.dotglob {
+                    continue;
+                }
+                let matched = if opts.nocaseglob {
+                    glob_match_nocase(effective_pattern, name)
                 } else {
-                    glob_collect(child, rest, child_path, results, tree_root, max);
+                    glob_match(effective_pattern, name)
+                };
+                if matched {
+                    let child_path = current_path.join(name);
+                    if rest.is_empty() {
+                        results.push(child_path);
+                    } else {
+                        glob_collect(child, rest, child_path, results, tree_root, max, opts);
+                    }
                 }
             }
         }

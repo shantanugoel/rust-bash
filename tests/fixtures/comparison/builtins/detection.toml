@@ -1,0 +1,32 @@
+# M6.4 — Builtin detection: type, command, builtin
+
+[[cases]]
+name = "type_builtin"
+script = 'type echo'
+stdout = "echo is a shell builtin\n"
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "type_t_builtin"
+script = 'type -t echo'
+stdout = "builtin\n"
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "command_v_builtin"
+script = 'command -v echo'
+stdout = "echo\n"
+stderr = ""
+exit_code = 0
+
+[[cases]]
+name = "builtin_bypasses_function"
+script = '''
+echo() { printf "custom: %s\n" "$1"; }
+builtin echo "real"
+'''
+stdout = "real\n"
+stderr = ""
+exit_code = 0

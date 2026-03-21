@@ -116,6 +116,14 @@ The interpreter evaluates these `brush_parser::word::WordPiece` variants:
 | Substitution | `${VAR/pattern/string}` | Replace first/all matches |
 | Substring | `${VAR:offset:length}` | Substring extraction |
 | Case modification | `${VAR^}`, `${VAR,}` | Uppercase/lowercase first or all |
+| Array element | `${arr[N]}` | Value at index N |
+| All elements | `${arr[@]}`, `${arr[*]}` | All values; `[@]` separate words, `[*]` joined by IFS |
+| Array length | `${#arr[@]}` | Number of elements |
+| Array keys | `${!arr[@]}` | All indices/keys |
+
+### Variables
+
+Variables use the `Variable` struct with `VariableValue` (Scalar, IndexedArray, or AssociativeArray) and `VariableAttrs` bitflags (EXPORTED, READONLY, etc.). Scalars accessed with `[0]` return their value. Arrays are sparse (BTreeMap-backed) — `unset arr[N]` removes an element without reindexing. `declare -a` creates indexed arrays; `declare -A` creates associative arrays.
 
 ### Special Variables
 

@@ -6,3 +6,4 @@ expression: r.stdout
 HOME='/home/user'
 LANG='en_US.UTF-8'
 LOCAL_VAR='local_value'
+PIPESTATUS='0'

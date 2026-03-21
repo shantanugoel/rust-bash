@@ -74,6 +74,8 @@ enum TokenKind {
     Colon,      // :
     LParen,     // (
     RParen,     // )
+    LBracket,   // [
+    RBracket,   // ]
     Comma,      // ,
 }
 
@@ -503,6 +505,22 @@ fn tokenize(input: &str) -> Result<Vec<Token>, RustBashError> {
                 });
                 i += 1;
             }
+            (b'[', _, _) => {
+                tokens.push(Token {
+                    kind: TokenKind::LBracket,
+                    start,
+                    len: 1,
+                });
+                i += 1;
+            }
+            (b']', _, _) => {
+                tokens.push(Token {
+                    kind: TokenKind::RBracket,
+                    start,
+                    len: 1,
+                });
+                i += 1;
+            }
             (b',', _, _) => {
                 tokens.push(Token {
                     kind: TokenKind::Comma,
@@ -625,18 +643,32 @@ impl<'a> Parser<'a> {
     // Right-to-left associative
     fn parse_assignment(&mut self, state: &mut InterpreterState) -> Result<i64, RustBashError> {
         // Look ahead: if current is Ident followed by assignment op, handle it.
-        // Otherwise fall through to ternary.
+        // Also handle Ident[expr] = ... for array element assignment.
         if let Some(TokenKind::Ident) = self.peek() {
             let saved = self.pos;
             let ident_tok = self.advance();
             let name = self.ident_name(ident_tok).to_string();
+
+            // Check for array subscript
+            let array_idx = if self.peek() == Some(TokenKind::LBracket) {
+                self.advance(); // consume [
+                let idx = self.parse_comma(state)?;
+                self.expect(TokenKind::RBracket)?;
+                Some(idx)
+            } else {
+                None
+            };
 
             if let Some(op) = self.peek() {
                 match op {
                     TokenKind::Eq => {
                         self.advance();
                         let val = self.parse_assignment(state)?;
-                        set_variable(state, &name, val.to_string())?;
+                        if let Some(idx) = array_idx {
+                            write_array_element(state, &name, idx, val)?;
+                        } else {
+                            set_variable(state, &name, val.to_string())?;
+                        }
                         return Ok(val);
                     }
                     TokenKind::PlusEq
@@ -651,9 +683,17 @@ impl<'a> Parser<'a> {
                     | TokenKind::CaretEq => {
                         self.advance();
                         let rhs = self.parse_assignment(state)?;
-                        let lhs = read_var(state, &name);
+                        let lhs = if let Some(idx) = array_idx {
+                            read_array_element(state, &name, idx)
+                        } else {
+                            read_var(state, &name)
+                        };
                         let val = apply_compound_op(op, lhs, rhs)?;
-                        set_variable(state, &name, val.to_string())?;
+                        if let Some(idx) = array_idx {
+                            write_array_element(state, &name, idx, val)?;
+                        } else {
+                            set_variable(state, &name, val.to_string())?;
+                        }
                         return Ok(val);
                     }
                     _ => {
@@ -959,8 +999,16 @@ impl<'a> Parser<'a> {
             }
             Some(TokenKind::Ident) => {
                 let tok = self.advance();
-                let name = self.ident_name(tok);
-                Ok(read_var(state, name))
+                let name = self.ident_name(tok).to_string();
+                // Check for array subscript: ident[expr]
+                if self.peek() == Some(TokenKind::LBracket) {
+                    self.advance(); // consume [
+                    let idx = self.parse_comma(state)?;
+                    self.expect(TokenKind::RBracket)?;
+                    Ok(read_array_element(state, &name, idx))
+                } else {
+                    Ok(read_var(state, &name))
+                }
             }
             Some(TokenKind::LParen) => {
                 self.advance();
@@ -1007,11 +1055,52 @@ fn read_var(state: &InterpreterState, name: &str) -> i64 {
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(0);
     }
+    let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
     state
         .env
-        .get(name)
-        .map(|v| v.value.parse::<i64>().unwrap_or(0))
+        .get(&resolved)
+        .map(|v| v.value.as_scalar().parse::<i64>().unwrap_or(0))
         .unwrap_or(0)
+}
+
+/// Read a specific array element by numeric index.
+fn read_array_element(state: &InterpreterState, name: &str, index: i64) -> i64 {
+    use crate::interpreter::VariableValue;
+    let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
+    let Some(var) = state.env.get(&resolved) else {
+        return 0;
+    };
+    let idx = index as usize;
+    let val_str = match &var.value {
+        VariableValue::IndexedArray(map) => map.get(&idx).map(|s| s.as_str()).unwrap_or(""),
+        VariableValue::AssociativeArray(map) => map
+            .get(&index.to_string())
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        VariableValue::Scalar(s) => {
+            if idx == 0 {
+                s.as_str()
+            } else {
+                ""
+            }
+        }
+    };
+    val_str.parse::<i64>().unwrap_or(0)
+}
+
+/// Write a value to a specific array element by numeric index.
+fn write_array_element(
+    state: &mut InterpreterState,
+    name: &str,
+    index: i64,
+    value: i64,
+) -> Result<(), RustBashError> {
+    if index < 0 {
+        return Err(RustBashError::Execution(format!(
+            "negative array subscript: {index}"
+        )));
+    }
+    crate::interpreter::set_array_element(state, name, index as usize, value.to_string())
 }
 
 fn wrapping_pow(mut base: i64, mut exp: i64) -> i64 {
@@ -1064,7 +1153,9 @@ fn apply_compound_op(op: TokenKind, lhs: i64, rhs: i64) -> Result<i64, RustBashE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interpreter::{ExecutionCounters, ExecutionLimits, InterpreterState, ShellOpts};
+    use crate::interpreter::{
+        ExecutionCounters, ExecutionLimits, InterpreterState, ShellOpts, ShoptOpts,
+    };
     use crate::network::NetworkPolicy;
     use crate::vfs::InMemoryFs;
     use std::collections::HashMap;
@@ -1079,6 +1170,7 @@ mod tests {
             last_exit_code: 0,
             commands: HashMap::new(),
             shell_opts: ShellOpts::default(),
+            shopt_opts: ShoptOpts::default(),
             limits: ExecutionLimits::default(),
             counters: ExecutionCounters::default(),
             network_policy: NetworkPolicy::default(),
@@ -1094,6 +1186,9 @@ mod tests {
             in_trap: false,
             errexit_suppressed: 0,
             stdin_offset: 0,
+            dir_stack: Vec::new(),
+            command_hash: HashMap::new(),
+            aliases: HashMap::new(),
         }
     }
 
@@ -1257,7 +1352,7 @@ mod tests {
         let mut state = make_state();
         let result = eval_with("x = 5", &mut state);
         assert_eq!(result, 5);
-        assert_eq!(state.env.get("x").unwrap().value, "5");
+        assert_eq!(state.env.get("x").unwrap().value.as_scalar(), "5");
     }
 
     #[test]
@@ -1265,7 +1360,7 @@ mod tests {
         let mut state = make_state();
         set_variable(&mut state, "x", "10".into()).unwrap();
         assert_eq!(eval_with("x += 5", &mut state), 15);
-        assert_eq!(state.env.get("x").unwrap().value, "15");
+        assert_eq!(state.env.get("x").unwrap().value.as_scalar(), "15");
     }
 
     #[test]
@@ -1273,7 +1368,7 @@ mod tests {
         let mut state = make_state();
         set_variable(&mut state, "x", "5".into()).unwrap();
         assert_eq!(eval_with("++x", &mut state), 6);
-        assert_eq!(state.env.get("x").unwrap().value, "6");
+        assert_eq!(state.env.get("x").unwrap().value.as_scalar(), "6");
     }
 
     #[test]
@@ -1281,7 +1376,7 @@ mod tests {
         let mut state = make_state();
         set_variable(&mut state, "x", "5".into()).unwrap();
         assert_eq!(eval_with("x++", &mut state), 5);
-        assert_eq!(state.env.get("x").unwrap().value, "6");
+        assert_eq!(state.env.get("x").unwrap().value.as_scalar(), "6");
     }
 
     #[test]
@@ -1289,7 +1384,7 @@ mod tests {
         let mut state = make_state();
         set_variable(&mut state, "x", "5".into()).unwrap();
         assert_eq!(eval_with("--x", &mut state), 4);
-        assert_eq!(state.env.get("x").unwrap().value, "4");
+        assert_eq!(state.env.get("x").unwrap().value.as_scalar(), "4");
     }
 
     #[test]
@@ -1297,7 +1392,7 @@ mod tests {
         let mut state = make_state();
         set_variable(&mut state, "x", "5".into()).unwrap();
         assert_eq!(eval_with("x--", &mut state), 5);
-        assert_eq!(state.env.get("x").unwrap().value, "4");
+        assert_eq!(state.env.get("x").unwrap().value.as_scalar(), "4");
     }
 
     #[test]

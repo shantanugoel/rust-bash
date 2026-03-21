@@ -46,8 +46,16 @@ fn record_fixture(path: &Path, fixture: &FixtureFile) -> datatest_stable::Result
     );
 
     for (i, case) in fixture.cases.iter().enumerate() {
-        if case.skip.is_some() {
-            eprintln!("SKIP recording for {}: skipped", case.name);
+        if case.skip.is_some()
+            || case.status == common::CaseStatus::Xfail
+            || case.status == common::CaseStatus::Skip
+        {
+            let reason = case
+                .skip
+                .as_deref()
+                .or(case.reason.as_deref())
+                .unwrap_or("xfail");
+            eprintln!("SKIP recording for {}: {reason}", case.name);
             continue;
         }
 
