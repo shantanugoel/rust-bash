@@ -20,6 +20,7 @@ import {
 
 const PROMPT = '\x1b[32m🦀  rust-bash\x1b[0m:\x1b[36m~\x1b[0m$ ';
 const GITHUB_REPO_URL = 'https://github.com/shantanugoel/rust-bash';
+const INITIAL_AGENT_COMMAND = 'agent "is this the matrix?"';
 
 function hyperlink(label: string, url: string): string {
   return `\x1b]8;;${url}\x1b\\${label}\x1b]8;;\x1b\\`;
@@ -55,6 +56,7 @@ export class TerminalUI {
   private savedBuffer = '';
   private isProcessing = false;
   private interruptFn: (() => void) | null = null;
+  private cachedInitialAvailable = true;
 
   constructor(container: HTMLElement) {
     const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -104,7 +106,7 @@ export class TerminalUI {
     this.setupResize();
   }
 
-  /** Boot sequence: init bash → welcome screen → auto-type → cached response. */
+  /** Boot sequence: init bash → welcome screen → prefill initial command. */
   async boot(): Promise<void> {
     try {
       this.bash = await createBash({
@@ -126,15 +128,7 @@ export class TerminalUI {
     this.showPrompt();
 
     // Auto-type the initial command
-    const initialCommand = 'agent "is this the matrix?"';
-    await this.typeText(initialCommand, 50);
-    await sleep(200);
-
-    // "Press enter" and run cached response
-    this.term.write('\r\n');
-    await this.runCachedInitial();
-
-    this.showPrompt();
+    await this.typeText(INITIAL_AGENT_COMMAND, 50);
   }
 
   /** Focus the terminal. */
@@ -336,7 +330,10 @@ export class TerminalUI {
     this.isProcessing = true;
 
     try {
-      if (line.startsWith('agent ') || line === 'agent') {
+      if (this.cachedInitialAvailable && line === INITIAL_AGENT_COMMAND) {
+        this.cachedInitialAvailable = false;
+        await this.runCachedInitial({ animate: false });
+      } else if (line.startsWith('agent ') || line === 'agent') {
         const query = line.slice(6).trim().replace(/^["']|["']$/g, '');
         if (!query) {
           this.term.writeln(
@@ -413,12 +410,13 @@ export class TerminalUI {
     }
   }
 
-  private async runCachedInitial(): Promise<void> {
+  private async runCachedInitial(options: { animate: boolean }): Promise<void> {
     this.term.writeln('');
 
     for await (const event of replayCache(
       CACHED_INITIAL_RESPONSE,
       this.bash,
+      options,
     )) {
       // Capture the interrupt handler
       if ('interrupt' in event && event.interrupt) {

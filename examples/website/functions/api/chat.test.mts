@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  buildUpstreamRequestBody,
   getChatCompletionsUrl,
   isAllowedOrigin,
   resolveUpstreamConfig,
@@ -85,5 +86,54 @@ test('throws when no API key is configured', () => {
   assert.throws(
     () => resolveUpstreamConfig({}),
     /LLM_API_KEY or GEMINI_API_KEY is not configured/,
+  );
+});
+
+test('preserves non-streaming requests for SDK tool runners', () => {
+  assert.deepEqual(
+    buildUpstreamRequestBody(
+      {
+        messages: [{ role: 'user', content: 'hello' }],
+        stream: false,
+      },
+      'gemini-2.5-flash-lite',
+    ),
+    {
+      model: 'gemini-2.5-flash-lite',
+      messages: [{ role: 'user', content: 'hello' }],
+      tools: [
+        {
+          type: 'function',
+          function: {
+            name: 'bash',
+            description: 'Execute bash commands in the sandboxed rust-bash environment.',
+            parameters: {
+              type: 'object',
+              properties: {
+                command: {
+                  type: 'string',
+                  description: 'The bash command to execute',
+                },
+              },
+              required: ['command'],
+            },
+          },
+        },
+      ],
+      stream: false,
+    },
+  );
+});
+
+test('allows explicitly streamed requests when requested', () => {
+  assert.equal(
+    buildUpstreamRequestBody(
+      {
+        messages: [],
+        stream: true,
+      },
+      'gemini-2.5-flash-lite',
+    ).stream,
+    true,
   );
 });

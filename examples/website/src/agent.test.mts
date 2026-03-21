@@ -2,50 +2,49 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { runAgentLoop } from './agent.ts';
 
-function makeStream(chunks) {
-  return (async function* () {
-    for (const chunk of chunks) {
-      yield chunk;
-    }
-  })();
-}
+function createMockClient(run) {
+  return {
+    runTools(params) {
+      const contentListeners = [];
 
-test('falls back to non-streaming text when a streamed turn is empty', async () => {
-  const bash = {
-    exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
-  };
-
-  let fallbackCalls = 0;
-  const client = {
-    async createStreamingCompletion() {
-      return makeStream([{ choices: [{ delta: {} }] }]);
-    },
-    async createCompletion() {
-      fallbackCalls += 1;
       return {
-        choices: [
-          {
-            message: {
-              content: 'Recovered final response',
+        on(event, listener) {
+          if (event === 'content') {
+            contentListeners.push(listener);
+          }
+          return this;
+        },
+        async done() {
+          await run({
+            params,
+            emitContent(content) {
+              for (const listener of contentListeners) {
+                listener(content);
+              }
             },
-          },
-        ],
+            async invokeTool(rawArgs) {
+              const tool = params.tools[0];
+              const parsed = tool.function.parse(rawArgs);
+              return await tool.function.function(parsed);
+            },
+          });
+        },
       };
     },
   };
+}
 
+async function collectEvents(userMessage, bash, client) {
   const events = [];
-  for await (const event of runAgentLoop('hello', bash, client)) {
+
+  for await (const event of runAgentLoop(userMessage, bash, client)) {
     events.push(event);
   }
 
-  assert.equal(fallbackCalls, 1);
-  assert.deepEqual(events, [
-    { type: 'text', content: 'Recovered final response' },
-  ]);
-});
+  return events;
+}
 
-test('falls back to non-streaming tool calls when a streamed turn is empty', async () => {
+test('uses the SDK tool runner to execute bash tool calls and emit assistant content', async () => {
   const executedCommands = [];
   const bash = {
     async exec(command) {
@@ -54,53 +53,12 @@ test('falls back to non-streaming tool calls when a streamed turn is empty', asy
     },
   };
 
-  let streamingCalls = 0;
-  const client = {
-    async createStreamingCompletion() {
-      streamingCalls += 1;
-      if (streamingCalls === 1) {
-        return makeStream([{ choices: [{ delta: {} }] }]);
-      }
+  const client = createMockClient(async ({ emitContent, invokeTool }) => {
+    await invokeTool('{"command":"ls"}');
+    emitContent('Listed the files for you.');
+  });
 
-      return makeStream([
-        {
-          choices: [
-            {
-              delta: {
-                content: 'Listed the files for you.',
-              },
-            },
-          ],
-        },
-      ]);
-    },
-    async createCompletion() {
-      return {
-        choices: [
-          {
-            message: {
-              content: null,
-              tool_calls: [
-                {
-                  id: 'call_1',
-                  type: 'function',
-                  function: {
-                    name: 'bash',
-                    arguments: '{"command":"ls"}',
-                  },
-                },
-              ],
-            },
-          },
-        ],
-      };
-    },
-  };
-
-  const events = [];
-  for await (const event of runAgentLoop('can you list files', bash, client)) {
-    events.push(event);
-  }
+  const events = await collectEvents('can you list files', bash, client);
 
   assert.deepEqual(executedCommands, ['ls']);
   assert.deepEqual(events, [
@@ -112,6 +70,71 @@ test('falls back to non-streaming tool calls when a streamed turn is empty', asy
     {
       type: 'text',
       content: 'Listed the files for you.',
+    },
+  ]);
+});
+
+test('accepts raw string tool arguments from partially compatible providers', async () => {
+  const executedCommands = [];
+  const bash = {
+    async exec(command) {
+      executedCommands.push(command);
+      return { stdout: 'ok\n', stderr: '', exitCode: 0 };
+    },
+  };
+
+  const client = createMockClient(async ({ invokeTool }) => {
+    await invokeTool('pwd');
+  });
+
+  const events = await collectEvents('where am i', bash, client);
+
+  assert.deepEqual(executedCommands, ['pwd']);
+  assert.deepEqual(events, [
+    {
+      type: 'tool_call',
+      command: 'pwd',
+      result: { stdout: 'ok\n', stderr: '', exitCode: 0 },
+    },
+  ]);
+});
+
+test('warns when the runner produces no visible content or tool calls', async () => {
+  const bash = {
+    exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
+  };
+
+  const client = createMockClient(async ({ emitContent }) => {
+    emitContent('\n\n');
+  });
+
+  const events = await collectEvents('list files', bash, client);
+
+  assert.deepEqual(events, [
+    {
+      type: 'text',
+      content:
+        '\n⚠️ Agent returned an empty response. Try again, or use the shell directly.\n',
+    },
+  ]);
+});
+
+test('formats rate limit errors as a busy message', async () => {
+  const bash = {
+    exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
+  };
+
+  const client = createMockClient(async () => {
+    throw new Error('429 rate limit exceeded');
+  });
+
+  const events = await collectEvents('hello', bash, client);
+
+  assert.deepEqual(events, [
+    {
+      type: 'text',
+      content:
+        '\n⚠️ The demo is currently busy. Try again in a moment, or explore the shell directly — all commands work without the AI agent.\n',
     },
   ]);
 });

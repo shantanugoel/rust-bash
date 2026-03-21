@@ -177,8 +177,8 @@ appends `chat/completions` to it.
 2. After 1.5s, matrix fades out, terminal fades in
 3. Welcome screen with ASCII art and example commands
 4. Auto-types `agent "is this the matrix?"` with typewriter effect
-5. Plays cached response (no API call needed)
-6. User takes control
+5. User can press Enter to run that exact prompt instantly using the cached response
+6. User takes control immediately and can edit the prompt before pressing Enter
 
 ### Agent
 
@@ -192,8 +192,10 @@ The `agent` command intercepts input before it reaches the bash interpreter:
 
 ### Cached Initial Response
 
-The first `agent` query uses a hand-crafted `AgentEvent[]` array baked into
-the bundle. This ensures:
+The first `agent "is this the matrix?"` query uses a hand-crafted
+`AgentEvent[]` array baked into the bundle. The command is prefilled on load,
+but the user decides when to run it. When they press Enter on that exact
+prefilled prompt, the cached response appears immediately. This ensures:
 
 - Zero API cost on first load
 - Perfect, deterministic first impression

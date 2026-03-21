@@ -91,6 +91,59 @@ export function resolveUpstreamConfig(env: Env): {
   };
 }
 
+export function buildUpstreamRequestBody(
+  parsed: { messages?: unknown; stream?: unknown },
+  model: string,
+): {
+  model: string;
+  messages: unknown[];
+  tools: Array<{
+    type: 'function';
+    function: {
+      name: 'bash';
+      description: string;
+      parameters: {
+        type: 'object';
+        properties: {
+          command: {
+            type: 'string';
+            description: string;
+          };
+        };
+        required: ['command'];
+      };
+    };
+  }>;
+  stream: boolean;
+} {
+  const MAX_MESSAGES = 20;
+  const messages = Array.isArray(parsed.messages)
+    ? parsed.messages.slice(-MAX_MESSAGES)
+    : [];
+
+  return {
+    model,
+    messages,
+    tools: [
+      {
+        type: 'function',
+        function: {
+          name: 'bash',
+          description: 'Execute bash commands in the sandboxed rust-bash environment.',
+          parameters: {
+            type: 'object',
+            properties: {
+              command: { type: 'string', description: 'The bash command to execute' },
+            },
+            required: ['command'],
+          },
+        },
+      },
+    ],
+    stream: parsed.stream === true,
+  };
+}
+
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown';
 
@@ -129,9 +182,12 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   }
 
   // Parse and reconstruct the request body — never forward raw user input
-  let parsed: { messages?: unknown };
+  let parsed: { messages?: unknown; stream?: unknown };
   try {
-    parsed = JSON.parse(await request.text()) as { messages?: unknown };
+    parsed = JSON.parse(await request.text()) as {
+      messages?: unknown;
+      stream?: unknown;
+    };
   } catch {
     return new Response(
       JSON.stringify({ error: 'Invalid JSON' }),
@@ -139,32 +195,9 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     );
   }
 
-  const MAX_MESSAGES = 20;
-  const messages = Array.isArray(parsed.messages)
-    ? parsed.messages.slice(-MAX_MESSAGES)
-    : [];
-
-  const sanitizedBody = JSON.stringify({
-    model: upstreamConfig.model,
-    messages,
-    tools: [
-      {
-        type: 'function',
-        function: {
-          name: 'bash',
-          description: 'Execute bash commands in the sandboxed rust-bash environment.',
-          parameters: {
-            type: 'object',
-            properties: {
-              command: { type: 'string', description: 'The bash command to execute' },
-            },
-            required: ['command'],
-          },
-        },
-      },
-    ],
-    stream: true,
-  });
+  const sanitizedBody = JSON.stringify(
+    buildUpstreamRequestBody(parsed, upstreamConfig.model),
+  );
 
   const response = await fetch(upstreamConfig.chatCompletionsUrl, {
     method: 'POST',

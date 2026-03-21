@@ -47,8 +47,164 @@ function createClient(): OpenAI {
   });
 }
 
-const tools: OpenAI.ChatCompletionTool[] = [
-  {
+const MAX_TURNS = 8;
+const MAX_STDOUT = 5000;
+const MAX_STDERR = 2000;
+const MODEL = 'gemini-2.5-flash';
+
+type BashToolArgs = {
+  command: string;
+};
+
+type BashTool = {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: {
+      type: 'object';
+      properties: {
+        command: {
+          type: 'string';
+          description: string;
+        };
+      };
+      required: ['command'];
+    };
+    parse: (input: string) => BashToolArgs;
+    function: (args: BashToolArgs) => Promise<string>;
+  };
+};
+
+type AgentClient = {
+  runTools(
+    params: {
+      model: string;
+      messages: OpenAI.ChatCompletionMessageParam[];
+      tools: [BashTool];
+    },
+    options: { maxChatCompletions: number },
+  ): {
+    on(event: 'content', listener: (content: string) => void): unknown;
+    done(): Promise<void>;
+  };
+};
+
+function createAgentApi(client: OpenAI): AgentClient {
+  return {
+    runTools(params, options) {
+      return client.chat.completions.runTools(params, options);
+    },
+  };
+}
+
+function hasVisibleContent(content: string): boolean {
+  return content.trim().length > 0;
+}
+
+class AsyncEventQueue<T> implements AsyncIterable<T>, AsyncIterator<T> {
+  private items: T[] = [];
+  private waiters: Array<(value: IteratorResult<T>) => void> = [];
+  private closed = false;
+
+  push(item: T): void {
+    if (this.closed) {
+      return;
+    }
+
+    const waiter = this.waiters.shift();
+    if (waiter) {
+      waiter({ value: item, done: false });
+      return;
+    }
+
+    this.items.push(item);
+  }
+
+  close(): void {
+    if (this.closed) {
+      return;
+    }
+
+    this.closed = true;
+    while (this.waiters.length > 0) {
+      const waiter = this.waiters.shift();
+      waiter?.({ value: undefined as T, done: true });
+    }
+  }
+
+  async next(): Promise<IteratorResult<T>> {
+    const item = this.items.shift();
+    if (item !== undefined) {
+      return { value: item, done: false };
+    }
+
+    if (this.closed) {
+      return { value: undefined as T, done: true };
+    }
+
+    return await new Promise<IteratorResult<T>>((resolve) => {
+      this.waiters.push(resolve);
+    });
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<T> {
+    return this;
+  }
+}
+
+function parseBashToolArgs(input: string): BashToolArgs {
+  try {
+    const parsed = JSON.parse(input) as unknown;
+    if (typeof parsed === 'string') {
+      return { command: parsed };
+    }
+
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      'command' in parsed &&
+      typeof parsed.command === 'string'
+    ) {
+      return { command: parsed.command };
+    }
+  } catch {
+    // Fall back to the raw input for partially compatible providers.
+  }
+
+  return { command: input };
+}
+
+function formatToolResult(result: ExecResult): string {
+  return JSON.stringify({
+    stdout: result.stdout.slice(0, MAX_STDOUT),
+    stderr: result.stderr.slice(0, MAX_STDERR),
+    exitCode: result.exitCode,
+  });
+}
+
+function formatAgentError(err: unknown): AgentEvent {
+  const message = err instanceof Error ? err.message : 'Unknown error';
+
+  if (message.includes('429') || message.includes('rate')) {
+    return {
+      type: 'text',
+      content:
+        '\n⚠️ The demo is currently busy. Try again in a moment, or explore the shell directly — all commands work without the AI agent.\n',
+    };
+  }
+
+  return {
+    type: 'text',
+    content: `\n⚠️ Agent error: ${message}\n`,
+  };
+}
+
+function createBashTool(
+  bash: BashInstance,
+  pushEvent: (event: AgentEvent) => void,
+): BashTool {
+  return {
     type: 'function',
     function: {
       name: 'bash',
@@ -56,7 +212,7 @@ const tools: OpenAI.ChatCompletionTool[] = [
         'Execute bash commands in the sandboxed rust-bash environment. ' +
         'Supports pipes, redirects, and 80+ commands.',
       parameters: {
-        type: 'object' as const,
+        type: 'object',
         properties: {
           command: {
             type: 'string',
@@ -65,148 +221,13 @@ const tools: OpenAI.ChatCompletionTool[] = [
         },
         required: ['command'],
       },
-    },
-  },
-];
-
-const MAX_TURNS = 8;
-const MAX_STDOUT = 5000;
-const MAX_STDERR = 2000;
-const MODEL = 'gemini-2.5-flash';
-
-type PendingToolCall = {
-  id: string;
-  function: { name: string; arguments: string };
-};
-
-type TurnData = {
-  content: string;
-  textChunks: string[];
-  toolCalls: PendingToolCall[];
-};
-
-type AgentClient = {
-  createStreamingCompletion(
-    params: Omit<OpenAI.ChatCompletionCreateParamsStreaming, 'stream'>,
-  ): Promise<AsyncIterable<OpenAI.ChatCompletionChunk>>;
-  createCompletion(
-    params: OpenAI.ChatCompletionCreateParamsNonStreaming,
-  ): Promise<OpenAI.ChatCompletion>;
-};
-
-function createAgentApi(client: OpenAI): AgentClient {
-  return {
-    createStreamingCompletion(params) {
-      return client.chat.completions.create({
-        ...params,
-        stream: true,
-      });
-    },
-    createCompletion(params) {
-      return client.chat.completions.create({
-        ...params,
-        stream: false,
-      });
-    },
-  };
-}
-
-function appendToolCallDelta(
-  toolCalls: PendingToolCall[],
-  deltaToolCalls: OpenAI.ChatCompletionChunk.Choice.Delta.ToolCall[],
-): void {
-  for (const tc of deltaToolCalls) {
-    toolCalls[tc.index] = toolCalls[tc.index] ?? {
-      id: '',
-      function: { name: '', arguments: '' },
-    };
-    if (tc.id) toolCalls[tc.index]!.id = tc.id;
-    if (tc.function?.name) {
-      toolCalls[tc.index]!.function.name = tc.function.name;
-    }
-    if (tc.function?.arguments) {
-      toolCalls[tc.index]!.function.arguments += tc.function.arguments;
-    }
-  }
-}
-
-function collectMessageContent(
-  content: unknown,
-): string {
-  if (typeof content === 'string') {
-    return content;
-  }
-
-  if (!Array.isArray(content)) {
-    return '';
-  }
-
-  return content
-    .map((part) => {
-      if (
-        part &&
-        typeof part === 'object' &&
-        'type' in part &&
-        part.type === 'text' &&
-        'text' in part &&
-        typeof part.text === 'string'
-      ) {
-        return part.text;
-      }
-
-      return '';
-    })
-    .join('');
-}
-
-function collectMessageToolCalls(
-  toolCalls: OpenAI.ChatCompletionMessage['tool_calls'],
-): PendingToolCall[] {
-  if (!toolCalls) {
-    return [];
-  }
-
-  return toolCalls
-    .filter((toolCall) => toolCall.type === 'function')
-    .map((toolCall) => ({
-      id: toolCall.id,
-      function: {
-        name: toolCall.function.name,
-        arguments: toolCall.function.arguments,
+      parse: parseBashToolArgs,
+      async function(args) {
+        const result = await bash.exec(args.command);
+        pushEvent({ type: 'tool_call', command: args.command, result });
+        return formatToolResult(result);
       },
-    }));
-}
-
-async function collectStreamedTurn(
-  stream: AsyncIterable<OpenAI.ChatCompletionChunk>,
-): Promise<TurnData> {
-  let content = '';
-  const textChunks: string[] = [];
-  const toolCalls: PendingToolCall[] = [];
-
-  for await (const chunk of stream) {
-    const delta = chunk.choices[0]?.delta;
-    if (delta?.content) {
-      content += delta.content;
-      textChunks.push(delta.content);
-    }
-    if (delta?.tool_calls) {
-      appendToolCallDelta(toolCalls, delta.tool_calls);
-    }
-  }
-
-  return { content, textChunks, toolCalls };
-}
-
-function collectCompletionTurn(
-  completion: OpenAI.ChatCompletion,
-): TurnData {
-  const message = completion.choices[0]?.message;
-
-  return {
-    content: collectMessageContent(message?.content ?? null),
-    textChunks: [],
-    toolCalls: collectMessageToolCalls(message?.tool_calls),
+    },
   };
 }
 
@@ -219,95 +240,52 @@ export async function* runAgentLoop(
     { role: 'system', content: SYSTEM_INSTRUCTIONS },
     { role: 'user', content: userMessage },
   ];
+  const events = new AsyncEventQueue<AgentEvent>();
+  let emittedEvents = 0;
+  const pushEvent = (event: AgentEvent): void => {
+    emittedEvents += 1;
+    events.push(event);
+  };
 
-  for (let turn = 0; turn < MAX_TURNS; turn++) {
-    const request = {
-      model: MODEL,
-      messages,
-      tools,
-    } satisfies Omit<OpenAI.ChatCompletionCreateParamsStreaming, 'stream'>;
+  let runner: ReturnType<AgentClient['runTools']>;
+  try {
+    runner = agentClient.runTools(
+      {
+        model: MODEL,
+        messages,
+        tools: [createBashTool(bash, pushEvent)],
+      },
+      { maxChatCompletions: MAX_TURNS },
+    );
+  } catch (err: unknown) {
+    yield formatAgentError(err);
+    return;
+  }
 
-    let turnData: TurnData;
+  runner.on('content', (content) => {
+    if (hasVisibleContent(content)) {
+      pushEvent({ type: 'text', content });
+    }
+  });
+
+  void (async () => {
     try {
-      const stream = await agentClient.createStreamingCompletion(request);
-      turnData = await collectStreamedTurn(stream);
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : 'Unknown error';
-      if (message.includes('429') || message.includes('rate')) {
-        yield {
+      await runner.done();
+      if (emittedEvents === 0) {
+        pushEvent({
           type: 'text',
           content:
-            '\n⚠️ The demo is currently busy. Try again in a moment, or explore the shell directly — all commands work without the AI agent.\n',
-        };
-      } else {
-        yield {
-          type: 'text',
-          content: `\n⚠️ Agent error: ${message}\n`,
-        };
-      }
-      return;
-    }
-
-    for (const chunk of turnData.textChunks) {
-      yield { type: 'text', content: chunk };
-    }
-
-    if (!turnData.content && turnData.toolCalls.length === 0) {
-      try {
-        const completion = await agentClient.createCompletion(request);
-        turnData = collectCompletionTurn(completion);
-      } catch (err: unknown) {
-        const message =
-          err instanceof Error ? err.message : 'Unknown error';
-        yield {
-          type: 'text',
-          content: `\n⚠️ Agent error: ${message}\n`,
-        };
-        return;
-      }
-
-      if (turnData.content) {
-        yield { type: 'text', content: turnData.content };
-      }
-    }
-
-    if (turnData.toolCalls.length > 0) {
-      messages.push({
-        role: 'assistant',
-        content: turnData.content || null,
-        tool_calls: turnData.toolCalls.map((tc) => ({
-          id: tc.id,
-          type: 'function' as const,
-          function: tc.function,
-        })),
-      });
-
-      for (const tc of turnData.toolCalls) {
-        let args: { command: string };
-        try {
-          args = JSON.parse(tc.function.arguments) as {
-            command: string;
-          };
-        } catch {
-          args = { command: tc.function.arguments };
-        }
-
-        const result = await bash.exec(args.command);
-        yield { type: 'tool_call', command: args.command, result };
-
-        messages.push({
-          role: 'tool',
-          tool_call_id: tc.id,
-          content: JSON.stringify({
-            stdout: result.stdout.slice(0, MAX_STDOUT),
-            stderr: result.stderr.slice(0, MAX_STDERR),
-            exitCode: result.exitCode,
-          }),
+            '\n⚠️ Agent returned an empty response. Try again, or use the shell directly.\n',
         });
       }
-    } else {
-      break;
+    } catch (err: unknown) {
+      pushEvent(formatAgentError(err));
+    } finally {
+      events.close();
     }
+  })();
+
+  for await (const event of events) {
+    yield event;
   }
 }

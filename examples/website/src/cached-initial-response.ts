@@ -56,6 +56,10 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+export type ReplayCacheOptions = {
+  animate?: boolean;
+};
+
 /**
  * Replay a cached AgentEvent[] with typewriter animation.
  *
@@ -66,7 +70,9 @@ function sleep(ms: number): Promise<void> {
 export async function* replayCache(
   events: AgentEvent[],
   bash?: BashInstance,
+  options: ReplayCacheOptions = {},
 ): AsyncGenerator<AgentEvent & { interrupt?: () => void }> {
+  const animate = options.animate ?? true;
   let interrupted = false;
   const onInterrupt = () => {
     interrupted = true;
@@ -76,6 +82,28 @@ export async function* replayCache(
   let first = true;
 
   for (const event of events) {
+    if (!animate) {
+      if (event.type === 'tool_call' && bash) {
+        const realResult = await bash.exec(event.command);
+        const realEvent: AgentEvent & { interrupt?: () => void } = {
+          type: 'tool_call',
+          command: event.command,
+          result: realResult,
+        };
+        if (first) {
+          realEvent.interrupt = onInterrupt;
+          first = false;
+        }
+        yield realEvent;
+      } else if (first) {
+        yield { ...event, interrupt: onInterrupt };
+        first = false;
+      } else {
+        yield event;
+      }
+      continue;
+    }
+
     if (event.type === 'text') {
       if (interrupted) {
         // Skip animation, dump rest instantly
@@ -123,13 +151,11 @@ export async function* replayCache(
           first = false;
         }
         yield realEvent;
+      } else if (first) {
+        yield { ...event, interrupt: onInterrupt };
+        first = false;
       } else {
-        if (first) {
-          yield { ...event, interrupt: onInterrupt };
-          first = false;
-        } else {
-          yield event;
-        }
+        yield event;
       }
 
       if (!interrupted) await sleep(300);
