@@ -192,10 +192,10 @@ The `agent` command intercepts input before it reaches the bash interpreter:
 
 ### Cached Initial Response
 
-The first `agent "is this the matrix?"` query uses a hand-crafted
+The exact command `agent "is this the matrix?"` uses a hand-crafted
 `AgentEvent[]` array baked into the bundle. The command is prefilled on load,
-but the user decides when to run it. When they press Enter on that exact
-prefilled prompt, the cached response appears immediately. This ensures:
+but the user decides when to run it. Any time they press Enter on that exact
+command, the cached response appears immediately. This ensures:
 
 - Zero API cost on first load
 - Perfect, deterministic first impression

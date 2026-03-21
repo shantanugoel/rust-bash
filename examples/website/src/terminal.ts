@@ -56,7 +56,6 @@ export class TerminalUI {
   private savedBuffer = '';
   private isProcessing = false;
   private interruptFn: (() => void) | null = null;
-  private cachedInitialAvailable = true;
 
   constructor(container: HTMLElement) {
     const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -330,8 +329,7 @@ export class TerminalUI {
     this.isProcessing = true;
 
     try {
-      if (this.cachedInitialAvailable && line === INITIAL_AGENT_COMMAND) {
-        this.cachedInitialAvailable = false;
+      if (line === INITIAL_AGENT_COMMAND) {
         await this.runCachedInitial({ animate: false });
       } else if (line.startsWith('agent ') || line === 'agent') {
         const query = line.slice(6).trim().replace(/^["']|["']$/g, '');

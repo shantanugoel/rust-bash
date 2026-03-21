@@ -1,5 +1,5 @@
 /**
- * Hand-crafted cached response for the initial "is this the matrix?" query.
+ * Hand-crafted cached response for the exact "is this the matrix?" query.
  *
  * Same AgentEvent[] type as live agent events — zero branching in rendering.
  * Tool calls are executed for real against the bash instance during replay
