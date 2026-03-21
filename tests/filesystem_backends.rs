@@ -1,3 +1,4 @@
+#![cfg(feature = "native-fs")]
 //! Integration tests for filesystem backends through the `RustBash` API.
 //!
 //! These tests exercise OverlayFs, ReadWriteFs, and MountableFs end-to-end,

@@ -3750,7 +3750,7 @@ mod tests {
 
     #[test]
     fn grep_recursive_search() {
-        let (fs, env, limits, np) = setup();
+        let (fs, env, limits, _np) = setup();
         fs.mkdir_p(Path::new("/project/src")).unwrap();
         fs.write_file(Path::new("/project/src/main.rs"), b"fn main() {}\n")
             .unwrap();
@@ -3777,7 +3777,7 @@ mod tests {
 
     #[test]
     fn grep_recursive_with_include() {
-        let (fs, env, limits, np) = setup();
+        let (fs, env, limits, _np) = setup();
         fs.mkdir_p(Path::new("/proj/src")).unwrap();
         fs.write_file(Path::new("/proj/src/main.rs"), b"fn hello() {}\n")
             .unwrap();
@@ -3801,7 +3801,7 @@ mod tests {
 
     #[test]
     fn grep_recursive_with_exclude() {
-        let (fs, env, limits, np) = setup();
+        let (fs, env, limits, _np) = setup();
         fs.mkdir_p(Path::new("/proj2/logs")).unwrap();
         fs.write_file(Path::new("/proj2/data.txt"), b"error found\n")
             .unwrap();
@@ -4043,7 +4043,7 @@ mod tests {
 
     #[test]
     fn grep_combined_recursive_insensitive_line_numbers() {
-        let (fs, env, limits, np) = setup();
+        let (fs, env, limits, _np) = setup();
         fs.mkdir_p(Path::new("/rtest")).unwrap();
         fs.write_file(Path::new("/rtest/a.txt"), b"Hello\nworld\n")
             .unwrap();
@@ -4234,7 +4234,7 @@ mod tests {
 
     #[test]
     fn grep_recursive_no_matches_exit_1() {
-        let (fs, env, limits, np) = setup();
+        let (fs, env, limits, _np) = setup();
         fs.mkdir_p(Path::new("/nomatch")).unwrap();
         fs.write_file(Path::new("/nomatch/a.txt"), b"hello\n")
             .unwrap();

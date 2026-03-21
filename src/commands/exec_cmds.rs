@@ -818,7 +818,7 @@ fn shell_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::{CommandContext, CommandResult, VirtualCommand};
+    use crate::commands::{CommandContext, CommandResult, ExecCallback, VirtualCommand};
     use crate::interpreter::ExecutionLimits;
     use crate::network::NetworkPolicy;
     use crate::vfs::{InMemoryFs, VirtualFs};
@@ -851,7 +851,7 @@ mod tests {
         limits: &'a ExecutionLimits,
         network_policy: &'a NetworkPolicy,
         stdin: &'a str,
-        exec: Option<&'a dyn Fn(&str) -> Result<CommandResult, crate::error::RustBashError>>,
+        exec: Option<ExecCallback<'a>>,
     ) -> CommandContext<'a> {
         CommandContext {
             fs,
@@ -898,9 +898,9 @@ mod tests {
         let mut args = Vec::new();
         let mut current = String::new();
         let mut in_single_quote = false;
-        let mut chars = cmd.chars().peekable();
+        let chars = cmd.chars();
 
-        while let Some(c) = chars.next() {
+        for c in chars {
             if in_single_quote {
                 if c == '\'' {
                     in_single_quote = false;

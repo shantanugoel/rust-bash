@@ -374,6 +374,7 @@ pub struct FfiLimits {
     pub max_substitution_depth: Option<usize>,
     pub max_heredoc_size: Option<usize>,
     pub max_brace_expansion: Option<usize>,
+    pub max_array_elements: Option<usize>,
 }
 
 /// Network-policy overrides. Unset fields inherit from [`NetworkPolicy::default()`].
@@ -410,6 +411,9 @@ impl FfiLimits {
             max_brace_expansion: self
                 .max_brace_expansion
                 .unwrap_or(defaults.max_brace_expansion),
+            max_array_elements: self
+                .max_array_elements
+                .unwrap_or(defaults.max_array_elements),
         }
     }
 }

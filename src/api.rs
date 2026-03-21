@@ -1126,7 +1126,7 @@ mod tests {
         let mut shell = shell();
         shell.exec("FOO=bar").unwrap();
         shell.exec("unset FOO").unwrap();
-        assert!(shell.state.env.get("FOO").is_none());
+        assert!(!shell.state.env.contains_key("FOO"));
     }
 
     #[test]

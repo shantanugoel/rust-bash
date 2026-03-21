@@ -3892,6 +3892,7 @@ fn limit_here_string_size_checked() {
 
 // ── Network policy integration tests ─────────────────────────────
 
+#[cfg(feature = "network")]
 #[test]
 fn network_disabled_by_default_curl_errors() {
     let mut sh = shell();
@@ -3904,6 +3905,7 @@ fn network_disabled_by_default_curl_errors() {
     );
 }
 
+#[cfg(feature = "network")]
 #[test]
 fn network_enabled_but_url_not_in_allowlist() {
     use rust_bash::{NetworkPolicy, RustBashBuilder};
@@ -3926,6 +3928,7 @@ fn network_enabled_but_url_not_in_allowlist() {
     );
 }
 
+#[cfg(feature = "network")]
 #[test]
 fn network_url_normalization_attack_rejected() {
     use rust_bash::{NetworkPolicy, RustBashBuilder};
@@ -3949,6 +3952,7 @@ fn network_url_normalization_attack_rejected() {
     );
 }
 
+#[cfg(feature = "network")]
 #[test]
 fn network_method_restriction_rejects_disallowed() {
     use rust_bash::{NetworkPolicy, RustBashBuilder};

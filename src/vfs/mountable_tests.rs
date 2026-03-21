@@ -10,10 +10,10 @@ fn make_memory_fs(files: &[(&str, &[u8])]) -> Arc<InMemoryFs> {
     let fs = InMemoryFs::new();
     for (path, content) in files {
         let p = Path::new(path);
-        if let Some(parent) = p.parent() {
-            if parent != Path::new("/") {
-                fs.mkdir_p(parent).unwrap();
-            }
+        if let Some(parent) = p.parent()
+            && parent != Path::new("/")
+        {
+            fs.mkdir_p(parent).unwrap();
         }
         fs.write_file(p, content).unwrap();
     }
@@ -262,6 +262,7 @@ fn deep_clone_isolation() {
 // 4i.9 deep_clone with ReadWriteFs mount
 // -----------------------------------------------------------------------
 
+#[cfg(feature = "native-fs")]
 #[test]
 fn deep_clone_with_readwrite_fs_mount() {
     use crate::vfs::ReadWriteFs;

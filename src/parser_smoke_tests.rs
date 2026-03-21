@@ -9,7 +9,6 @@
 ///   Each element has a `.piece` field containing the `WordPiece`.
 /// - The arithmetic variant is `ArithmeticExpression`, not `ArithmeticExpansion`.
 /// - `parse_tokens()` takes 3 args: `(&Vec<Token>, &ParserOptions, &SourceInfo)`.
-
 fn default_parser_options() -> brush_parser::ParserOptions {
     brush_parser::ParserOptions {
         sh_mode: false,

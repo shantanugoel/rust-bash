@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod readwrite_tests {
+mod tests {
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 

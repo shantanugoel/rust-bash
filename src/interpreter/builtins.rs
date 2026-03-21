@@ -3083,7 +3083,7 @@ mod tests {
         let mut state = make_state();
         set_variable(&mut state, "FOO", "bar".to_string()).unwrap();
         builtin_unset(&["FOO".to_string()], &mut state).unwrap();
-        assert!(state.env.get("FOO").is_none());
+        assert!(!state.env.contains_key("FOO"));
     }
 
     #[test]
