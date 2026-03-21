@@ -38,27 +38,98 @@
 html, body {
   height: 100%;
   overflow: hidden;
-  background: #111;
+  background: #222;
   color: var(--fg);
   font-family: var(--font-mono);
 }
 
-/* ── CRT Frame ────────────────────────────────────────────────────── */
+/* ── CRT Monitor Bezel ────────────────────────────────────────────── */
 
-#crt-frame {
+#crt-bezel {
   position: fixed;
   inset: 8px;
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(
+    170deg,
+    #e8e4dc 0%,
+    #d5d0c8 40%,
+    #c8c3ba 100%
+  );
+  border-radius: 18px;
+  box-shadow:
+    /* outer drop shadow */
+    0 4px 30px rgba(0, 0, 0, 0.6),
+    0 0 60px rgba(0, 0, 0, 0.3),
+    /* 3-D highlight on top/left */
+    inset 2px 2px 4px rgba(255, 255, 255, 0.5),
+    /* 3-D shadow on bottom/right */
+    inset -2px -2px 4px rgba(0, 0, 0, 0.25);
+  border: 1px solid #aaa;
+}
+
+/* Bezel model label (top-left) */
+.bezel-label {
+  position: absolute;
+  top: 10px;
+  left: 20px;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: #888;
+  text-transform: uppercase;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Bezel bottom strip with power LED */
+.bezel-bottom {
+  flex-shrink: 0;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.power-led {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #00cc44;
+  box-shadow: 0 0 6px #00ff41, 0 0 12px rgba(0, 255, 65, 0.3);
+}
+
+/* ── Screen (recessed glass area) ─────────────────────────────────── */
+
+#crt-screen {
+  flex: 1;
+  position: relative;
+  margin: 28px 24px 0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #0a0a0a;
+  box-shadow:
+    /* deep recess */
+    inset 0 0 20px 6px rgba(0, 0, 0, 0.8),
+    inset 0 4px 12px rgba(0, 0, 0, 0.6),
+    /* subtle bevel around the glass edge */
+    0 0 0 2px #555,
+    0 0 0 3px #333;
+}
+
+/* ── CRT Overlay Effects (inside screen) ──────────────────────────── */
+
+#crt-frame {
+  position: absolute;
+  inset: 0;
   z-index: 100;
   pointer-events: none;
-  border-radius: 16px;
-  border: 3px solid #2a2a2a;
+  border-radius: 10px;
   box-shadow:
-    /* outer glow */
-    0 0 15px rgba(0, 255, 65, 0.06),
-    0 0 40px rgba(0, 0, 0, 0.8),
     /* inner vignette */
-    inset 0 0 120px 40px rgba(0, 0, 0, 0.5),
-    inset 0 0 30px rgba(0, 0, 0, 0.3);
+    inset 0 0 120px 40px rgba(0, 0, 0, 0.45),
+    inset 0 0 30px rgba(0, 0, 0, 0.25);
 }
 
 /* Scanline overlay */
@@ -66,13 +137,13 @@ html, body {
   content: '';
   position: absolute;
   inset: 0;
-  border-radius: 14px;
+  border-radius: 10px;
   background: repeating-linear-gradient(
     0deg,
     transparent,
     transparent 1px,
-    rgba(0, 0, 0, 0.25) 1px,
-    rgba(0, 0, 0, 0.25) 2px
+    rgba(0, 0, 0, 0.2) 1px,
+    rgba(0, 0, 0, 0.2) 2px
   );
 }
 
@@ -81,10 +152,10 @@ html, body {
   content: '';
   position: absolute;
   inset: 0;
-  border-radius: 14px;
+  border-radius: 10px;
   background: radial-gradient(
     ellipse at 30% 20%,
-    rgba(255, 255, 255, 0.03) 0%,
+    rgba(255, 255, 255, 0.04) 0%,
     transparent 60%
   );
 }
@@ -92,14 +163,14 @@ html, body {
 /* ── Intro ("Wake up, Neo...") ────────────────────────────────────── */
 
 #intro {
-  position: fixed;
-  inset: 8px;
+  position: absolute;
+  inset: 0;
   z-index: 50;
   display: flex;
   align-items: center;
   justify-content: center;
   background: var(--bg);
-  border-radius: 14px;
+  border-radius: 10px;
   transition: opacity 0.4s ease-out;
 }
 
@@ -135,10 +206,10 @@ html, body {
 #app {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 16px);
+  position: absolute;
+  inset: 0;
   background: var(--bg);
-  margin: 8px;
-  border-radius: 14px;
+  border-radius: 10px;
   opacity: 0;
   transition: opacity 0.5s ease-in;
   overflow: hidden;
@@ -205,6 +276,26 @@ html, body {
 /* xterm.js overrides for theme consistency */
 .xterm {
   padding: 0.25rem;
+}
+
+/* Scrollbar — green thumb, no track background */
+.xterm .xterm-viewport::-webkit-scrollbar {
+  width: 8px;
+}
+.xterm .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+.xterm .xterm-viewport::-webkit-scrollbar-thumb {
+  background: rgba(0, 255, 65, 0.35);
+  border-radius: 4px;
+}
+.xterm .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 255, 65, 0.55);
+}
+/* Firefox */
+.xterm .xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 255, 65, 0.35) transparent;
 }
 
 /* ── Footer ───────────────────────────────────────────────────────── */
