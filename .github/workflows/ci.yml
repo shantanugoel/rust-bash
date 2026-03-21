@@ -59,10 +59,10 @@ jobs:
       - name: Build WASM
         run: |
           cargo build --target wasm32-unknown-unknown \
-            --features wasm --no-default-features --release
+            --features wasm --no-default-features --profile release-wasm
       - name: Check WASM binary size
         run: |
-          WASM_FILE="target/wasm32-unknown-unknown/release/rust_bash.wasm"
+          WASM_FILE="target/wasm32-unknown-unknown/release-wasm/rust_bash.wasm"
           RAW_SIZE=$(stat -c%s "$WASM_FILE")
           GZIP_SIZE=$(gzip -c "$WASM_FILE" | wc -c)
           RAW_MB=$(echo "scale=2; $RAW_SIZE / 1048576" | bc)

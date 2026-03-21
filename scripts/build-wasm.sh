@@ -25,7 +25,7 @@ cargo build \
     --target wasm32-unknown-unknown \
     --features wasm \
     --no-default-features \
-    --release
+    --profile release-wasm
 
 # Run wasm-bindgen
 OUT_DIR="${PROJECT_DIR}/pkg"
@@ -33,7 +33,7 @@ mkdir -p "$OUT_DIR"
 
 echo "Running wasm-bindgen..."
 wasm-bindgen \
-    "${PROJECT_DIR}/target/wasm32-unknown-unknown/release/rust_bash.wasm" \
+    "${PROJECT_DIR}/target/wasm32-unknown-unknown/release-wasm/rust_bash.wasm" \
     --out-dir "$OUT_DIR" \
     --target web
 

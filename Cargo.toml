@@ -70,3 +70,10 @@ harness = false
 [[test]]
 name = "spec_tests"
 harness = false
+
+[profile.release-wasm]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
