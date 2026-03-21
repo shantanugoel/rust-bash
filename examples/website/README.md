@@ -48,7 +48,8 @@ Interactive demo of rust-bash running in the browser via WASM.
 | `src/cached-initial-response.ts` | Hand-crafted first demo response |
 | `src/wasm-mock.ts` | Development mock for bash (used until WASM binary is built) |
 | `src/content.ts` | Preloaded VFS file content |
-| `functions/api/chat.ts` | Cloudflare Pages Function — configurable OpenAI-compatible LLM proxy |
+| `functions/api/chat.ts` | Shared Cloudflare Pages Function logic for the LLM proxy |
+| `functions/api/chat/completions.ts` | Pages route entrypoint for the OpenAI-compatible `chat/completions` API |
 
 ## Development
 

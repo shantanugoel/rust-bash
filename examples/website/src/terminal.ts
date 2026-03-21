@@ -19,6 +19,11 @@ import {
 } from './cached-initial-response.js';
 
 const PROMPT = '\x1b[32m🦀  rust-bash\x1b[0m:\x1b[36m~\x1b[0m$ ';
+const GITHUB_REPO_URL = 'https://github.com/shantanugoel/rust-bash';
+
+function hyperlink(label: string, url: string): string {
+  return `\x1b]8;;${url}\x1b\\${label}\x1b]8;;\x1b\\`;
+}
 
 const WELCOME = `\x1b[38;2;247;76;0m
                     __  __               __
@@ -27,7 +32,10 @@ const WELCOME = `\x1b[38;2;247;76;0m
  / /  / /_/ (__  ) /_/ /_/ / /_/ (__  ) / / /
 /_/   \\__,_/____/\\__/_.___/\\__,_/____/_/ /_/
 \x1b[0m
- 🦀  A sandboxed bash interpreter for AI Agents. Built in Rust, to run anywhere.
+${hyperlink(
+  ' 🦀  A sandboxed bash interpreter for AI Agents. Built in Rust, to run anywhere.',
+  GITHUB_REPO_URL,
+)}
 
  \x1b[33m80+ commands\x1b[0m · \x1b[33mVirtual filesystem\x1b[0m · \x1b[33mExecution limits\x1b[0m · \x1b[33mNetwork sandboxing\x1b[0m
 
