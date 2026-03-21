@@ -4,7 +4,7 @@
  * Loading sequence:
  * T=0.0s  Page load. CRT frame visible. Black screen, cursor blinks.
  * T=1.0s  Types "Wake up, Neo..." one character at a time.
- * T=2.5s  Pause. Then reverse-deletes the text.
+ * T=1.0s after typing finishes  Brief pause. Then reverse-deletes the text.
  * T=3.5s  Intro fades out, terminal fades in.
  * T=4.0s  Welcome screen + typing animation begins.
  */
@@ -27,8 +27,8 @@ async function playIntro(): Promise<void> {
     await sleep(80 + Math.random() * 60);
   }
 
-  // Pause to let the message sink in
-  await sleep(1800);
+  // Brief pause before reverse-deleting the message
+  await sleep(1000);
 
   // Reverse-delete one character at a time
   for (let i = message.length; i > 0; i--) {
