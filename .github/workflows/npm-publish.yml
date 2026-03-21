@@ -39,14 +39,14 @@ jobs:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - name: Install wasm-bindgen-cli
-        run: cargo install wasm-bindgen-cli
+        run: cargo install --locked wasm-bindgen-cli --version 0.2.114
       - name: Build WASM
         run: ./scripts/build-wasm.sh
       - name: Upload WASM artifact
         uses: actions/upload-artifact@v4
         with:
           name: wasm-artifact
-          path: packages/core/wasm/
+          path: pkg/
           retention-days: 1
 
   build-native:
@@ -96,7 +96,7 @@ jobs:
         with:
           name: native-${{ matrix.settings.target }}
           path: packages/core/native/*.node
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 1
 
   publish:
@@ -123,7 +123,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: native-*
-          path: packages/core/native/artifacts/
+          path: packages/core/native/
           merge-multiple: true
 
       - name: Install dependencies and build

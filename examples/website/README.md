@@ -74,17 +74,43 @@ npm run preview    # preview production build
 
 ## Deployment
 
-### Cloudflare Pages
+### Automated (GitHub Actions)
 
-1. Connect GitHub repo to Cloudflare Pages
-2. Set build command: `cd examples/website && npm install && npm run build`
-3. Set build output directory: `examples/website/dist`
-4. Add secret: `GEMINI_API_KEY` (Google AI Studio API key)
+A workflow at `.github/workflows/deploy-website.yml` automatically builds the
+WASM binary and deploys to Cloudflare Pages on **any `v*` tag push**.
 
-Or deploy manually:
+**One-time setup:**
+
+1. Create a Cloudflare Pages project:
+   ```bash
+   npx wrangler pages project create rust-bash-website --production-branch main
+   ```
+2. Add these GitHub repository secrets (`Settings → Secrets and variables → Actions`):
+   | Secret | Where to get it |
+   |--------|----------------|
+   | `CLOUDFLARE_API_TOKEN` | [Cloudflare dashboard → API Tokens](https://dash.cloudflare.com/profile/api-tokens) — create a token with **Cloudflare Pages: Edit** permission |
+   | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare dashboard → any domain → **Overview** sidebar |
+   | `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/apikey) |
+3. Set the `GEMINI_API_KEY` secret on the Pages project:
+   ```bash
+   npx wrangler pages secret put GEMINI_API_KEY --project-name rust-bash-website
+   ```
+4. Deploy by pushing any tag:
+   ```bash
+   git tag v0.1.0
+   git push origin v0.1.0
+   ```
+
+### Manual deploy
 
 ```bash
-npx wrangler pages deploy dist/
+# From repo root — build WASM first
+./scripts/build-wasm.sh
+
+# Then build and deploy the website
+cd examples/website
+npm install && npm run build
+npx wrangler pages deploy dist/ --project-name rust-bash-website
 ```
 
 ### Environment Variables
