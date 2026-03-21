@@ -31,11 +31,21 @@ Guidelines:
 - When asked about rust-bash, explore the actual files in the VFS
 - Be creative with demonstrations`;
 
-const client = new OpenAI({
-  baseURL: '/api',
-  apiKey: 'unused', // Worker handles auth
-  dangerouslyAllowBrowser: true,
-});
+export function getApiBaseUrl(origin = globalThis.location?.origin): string {
+  if (!origin) {
+    throw new Error('Browser location is unavailable');
+  }
+
+  return new URL('/api/', origin).toString();
+}
+
+function createClient(): OpenAI {
+  return new OpenAI({
+    baseURL: getApiBaseUrl(),
+    apiKey: 'unused', // Worker handles auth
+    dangerouslyAllowBrowser: true,
+  });
+}
 
 const tools: OpenAI.ChatCompletionTool[] = [
   {
@@ -67,6 +77,7 @@ export async function* runAgentLoop(
   userMessage: string,
   bash: BashInstance,
 ): AsyncGenerator<AgentEvent> {
+  const client = createClient();
   const messages: OpenAI.ChatCompletionMessageParam[] = [
     { role: 'system', content: SYSTEM_INSTRUCTIONS },
     { role: 'user', content: userMessage },

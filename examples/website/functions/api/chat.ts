@@ -1,20 +1,27 @@
 /**
  * Cloudflare Pages Function — LLM proxy.
  *
- * Proxies requests to Google Gemini 2.5 Flash (OpenAI-compatible endpoint).
- * API key stored as Worker secret. Rate limited to 10 req/min/IP.
+ * Proxies requests to a configurable OpenAI-compatible endpoint.
+ * Defaults to Google Gemini 2.5 Flash. Rate limited to 10 req/min/IP.
  */
 
 /// <reference types="@cloudflare/workers-types" />
 
 interface Env {
-  GEMINI_API_KEY: string;
+  GEMINI_API_KEY?: string;
+  LLM_API_KEY?: string;
+  LLM_BASE_URL?: string;
+  LLM_MODEL?: string;
 }
 
 // Simple in-memory rate limiter (resets on Worker cold start)
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMIT = 10;
 const RATE_WINDOW_MS = 60_000;
+const LOCALHOST_HOSTNAMES = new Set(['localhost', '127.0.0.1']);
+const DEFAULT_LLM_BASE_URL =
+  'https://generativelanguage.googleapis.com/v1beta/openai/';
+const DEFAULT_LLM_MODEL = 'gemini-2.5-flash-lite';
 
 function isRateLimited(ip: string): boolean {
   const now = Date.now();
@@ -29,6 +36,61 @@ function isRateLimited(ip: string): boolean {
   return entry.count > RATE_LIMIT;
 }
 
+export function isAllowedOrigin(
+  originHeader: string | null,
+  requestUrl: string,
+): boolean {
+  if (!originHeader) {
+    return false;
+  }
+
+  let origin: URL;
+  let requestOrigin: URL;
+  try {
+    origin = new URL(originHeader);
+    requestOrigin = new URL(requestUrl);
+  } catch {
+    return false;
+  }
+
+  if (LOCALHOST_HOSTNAMES.has(origin.hostname)) {
+    return true;
+  }
+
+  return (
+    origin.protocol === requestOrigin.protocol &&
+    origin.host === requestOrigin.host
+  );
+}
+
+export function getChatCompletionsUrl(baseUrl: string): string {
+  const normalizedBaseUrl = baseUrl.endsWith('/')
+    ? baseUrl
+    : `${baseUrl}/`;
+
+  return new URL('chat/completions', normalizedBaseUrl).toString();
+}
+
+export function resolveUpstreamConfig(env: Env): {
+  apiKey: string;
+  chatCompletionsUrl: string;
+  model: string;
+} {
+  const apiKey = env.LLM_API_KEY ?? env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('LLM_API_KEY or GEMINI_API_KEY is not configured');
+  }
+
+  const baseUrl = env.LLM_BASE_URL ?? DEFAULT_LLM_BASE_URL;
+  const model = env.LLM_MODEL ?? DEFAULT_LLM_MODEL;
+
+  return {
+    apiKey,
+    chatCompletionsUrl: getChatCompletionsUrl(baseUrl),
+    model,
+  };
+}
+
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   const ip = request.headers.get('CF-Connecting-IP') ?? 'unknown';
 
@@ -40,21 +102,28 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   }
 
   // Origin check: only allow requests from our site or localhost
-  const origin = request.headers.get('Origin') ?? '';
-  if (
-    !origin.includes('rustbash.dev') &&
-    !origin.includes('localhost') &&
-    !origin.includes('127.0.0.1')
-  ) {
+  if (!isAllowedOrigin(request.headers.get('Origin'), request.url)) {
     return new Response(
       JSON.stringify({ error: 'Forbidden' }),
       { status: 403, headers: { 'Content-Type': 'application/json' } },
     );
   }
 
-  if (!env.GEMINI_API_KEY) {
+  let upstreamConfig:
+    | {
+        apiKey: string;
+        chatCompletionsUrl: string;
+        model: string;
+      }
+    | undefined;
+  try {
+    upstreamConfig = resolveUpstreamConfig(env);
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Invalid upstream configuration';
+
     return new Response(
-      JSON.stringify({ error: 'API key not configured' }),
+      JSON.stringify({ error: message }),
       { status: 500, headers: { 'Content-Type': 'application/json' } },
     );
   }
@@ -76,7 +145,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     : [];
 
   const sanitizedBody = JSON.stringify({
-    model: 'gemini-2.5-flash',
+    model: upstreamConfig.model,
     messages,
     tools: [
       {
@@ -97,14 +166,11 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     stream: true,
   });
 
-  const geminiUrl =
-    'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions';
-
-  const response = await fetch(geminiUrl, {
+  const response = await fetch(upstreamConfig.chatCompletionsUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${env.GEMINI_API_KEY}`,
+      Authorization: `Bearer ${upstreamConfig.apiKey}`,
     },
     body: sanitizedBody,
   });

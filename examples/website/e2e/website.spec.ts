@@ -125,4 +125,28 @@ test.describe('rust-bash website', () => {
     const twitterImage = await page.locator('meta[name="twitter:image"]').getAttribute('content');
     expect(twitterImage).toBe('https://rustbash.dev/og-image.png');
   });
+
+  test('agent requests use the preview origin API endpoint', async ({ page }) => {
+    await page.route('**/api/chat/completions', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body:
+          'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":0,"model":"gemini-2.5-flash","choices":[{"index":0,"delta":{"content":"stubbed agent reply"},"finish_reason":null}]}\n\n' +
+          'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":0,"model":"gemini-2.5-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n' +
+          'data: [DONE]\n\n',
+      });
+    });
+
+    await waitForBoot(page);
+
+    const terminal = page.locator('.xterm-helper-textarea');
+    await terminal.focus();
+    await terminal.pressSequentially('agent "hello"', { delay: 30 });
+    await terminal.press('Enter');
+
+    await expect.poll(() => getTerminalText(page), { timeout: 10000 }).toContain(
+      'stubbed agent reply',
+    );
+  });
 });

@@ -27,14 +27,14 @@ Interactive demo of rust-bash running in the browser via WASM.
 +------------------------------------------------------------------+
 |                    CLOUDFLARE WORKER (~30 lines)                  |
 |  +----------------+    +------------------+                      |
-|  | Rate limiter   |--->| Proxy to Gemini  |                      |
+|  | Rate limiter   |--->| Proxy to LLM     |                      |
 |  | (10 req/min/IP)|    | API (streaming)  |                      |
 |  +----------------+    +------------------+                      |
 +------------------------------------------------------------------+
                                |
                                v
 +------------------------------------------------------------------+
-|              GOOGLE GEMINI 2.5 FLASH (free tier)                 |
+|       OPENAI-COMPATIBLE LLM (Gemini default, configurable)       |
 +------------------------------------------------------------------+
 ```
 
@@ -48,7 +48,7 @@ Interactive demo of rust-bash running in the browser via WASM.
 | `src/cached-initial-response.ts` | Hand-crafted first demo response |
 | `src/wasm-mock.ts` | Development mock for bash (used until WASM binary is built) |
 | `src/content.ts` | Preloaded VFS file content |
-| `functions/api/chat.ts` | Cloudflare Pages Function — Gemini proxy |
+| `functions/api/chat.ts` | Cloudflare Pages Function — configurable OpenAI-compatible LLM proxy |
 
 ## Development
 
@@ -64,6 +64,9 @@ a Cloudflare Worker running locally:
 ```bash
 npx wrangler pages dev dist/ --binding GEMINI_API_KEY=your-key-here
 ```
+
+To test another provider locally, add `LLM_API_KEY` and optionally `LLM_BASE_URL`
+and `LLM_MODEL` bindings to the same command.
 
 ## Build
 
@@ -91,10 +94,12 @@ WASM binary and deploys to Cloudflare Pages on **any `v*` tag push**.
    | `CLOUDFLARE_API_TOKEN` | [Cloudflare dashboard → API Tokens](https://dash.cloudflare.com/profile/api-tokens) — create a token with **Cloudflare Pages: Edit** permission |
    | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare dashboard → any domain → **Overview** sidebar |
    | `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/apikey) |
-3. Set the `GEMINI_API_KEY` secret on the Pages project:
+3. Set the `GEMINI_API_KEY` secret on the Pages project for the default Gemini setup:
    ```bash
    npx wrangler pages secret put GEMINI_API_KEY --project-name rust-bash-website
    ```
+   To switch providers later without code changes, set `LLM_API_KEY` instead and
+   optionally configure `LLM_BASE_URL` and `LLM_MODEL` in the Pages dashboard.
 4. Deploy by pushing any tag:
    ```bash
    git tag v0.1.0
@@ -117,7 +122,13 @@ npx wrangler pages deploy dist/ --project-name rust-bash-website
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `GEMINI_API_KEY` | Yes | Google Gemini API key (set as Worker secret) |
+| `GEMINI_API_KEY` | Yes, by default | Default Google Gemini API key. Used when `LLM_API_KEY` is not set. |
+| `LLM_API_KEY` | Optional | API key for another OpenAI-compatible provider. Overrides `GEMINI_API_KEY` when set. |
+| `LLM_BASE_URL` | Optional | OpenAI-compatible API base URL. Defaults to `https://generativelanguage.googleapis.com/v1beta/openai/`. |
+| `LLM_MODEL` | Optional | Upstream model name. Defaults to `gemini-2.5-flash`. |
+
+`LLM_BASE_URL` should be the provider's OpenAI-compatible base URL; the function
+appends `chat/completions` to it.
 
 ## How It Works
 
@@ -134,7 +145,7 @@ npx wrangler pages deploy dist/ --project-name rust-bash-website
 
 The `agent` command intercepts input before it reaches the bash interpreter:
 
-- `agent "query"` sends the query to the Gemini API via the CF Worker
+- `agent "query"` sends the query to the configured LLM API via the CF Worker
 - The LLM can request tool calls (bash commands)
 - Tool calls are executed **locally** via the WASM bash instance
 - Results are sent back to the LLM for the next turn
@@ -155,6 +166,6 @@ the bundle. This ensures:
 - **Vite** — Static site bundler
 - **xterm.js** — Terminal emulator (`@xterm/xterm`, `@xterm/addon-fit`, `@xterm/addon-web-links`)
 - **Tailwind CSS** — Utility styling
-- **OpenAI SDK** — Chat completions client (pointed at Gemini via proxy)
+- **OpenAI SDK** — Chat completions client (pointed at the configured proxy)
 - **Cloudflare Pages** — Hosting + Functions (Workers)
-- **Google Gemini 2.5 Flash** — LLM (free tier)
+- **Google Gemini 2.5 Flash** — default LLM (free tier)

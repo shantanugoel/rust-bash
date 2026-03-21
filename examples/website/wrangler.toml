@@ -4,3 +4,7 @@ pages_build_output_dir = "dist"
 
 # Secrets (set via `wrangler secret put GEMINI_API_KEY`):
 # - GEMINI_API_KEY: Google Gemini API key
+# Optional secrets / vars for other OpenAI-compatible providers:
+# - LLM_API_KEY: Overrides GEMINI_API_KEY when set
+# - LLM_BASE_URL: Defaults to https://generativelanguage.googleapis.com/v1beta/openai/
+# - LLM_MODEL: Defaults to gemini-2.5-flash
