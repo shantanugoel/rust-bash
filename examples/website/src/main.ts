@@ -10,6 +10,7 @@
  */
 
 import { TerminalUI } from './terminal.js';
+import { preloadWasm } from './bash-loader.js';
 
 // ── Intro Sequence ───────────────────────────────────────────────────
 
@@ -47,6 +48,9 @@ async function playIntro(): Promise<void> {
 // ── Boot Sequence ────────────────────────────────────────────────────
 
 async function boot() {
+  // Kick off WASM download immediately so it loads during the intro animation
+  preloadWasm();
+
   const app = document.getElementById('app')!;
   const terminalContainer = document.getElementById('terminal')!;
 
