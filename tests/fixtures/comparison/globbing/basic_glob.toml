@@ -51,8 +51,8 @@ exit_code = 0
 
 [[cases]]
 name = "dotfiles_not_matched_by_star"
-script = 'echo *'
-files = { "/.hidden" = "", "/visible" = "" }
+script = 'cd /test_dir && echo *'
+files = { "/test_dir/.hidden" = "", "/test_dir/visible" = "" }
 stdout = """
 visible
 """

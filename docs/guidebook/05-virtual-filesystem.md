@@ -236,6 +236,34 @@ The VFS glob walks the in-memory tree and matches paths against shell glob patte
 
 Glob results are limited by `ExecutionLimits::max_glob_results` to prevent patterns like `/**/*` from generating unbounded results.
 
+## Default Filesystem Layout
+
+When `RustBashBuilder::build()` creates a shell instance, it populates the VFS with a standard Unix-like directory structure so that AI agents and scripts encounter the layout they expect:
+
+```
+/
+├── bin/          # Stub files for every registered command and builtin
+│   ├── ls        # #!/bin/bash\n# built-in: ls
+│   ├── grep
+│   ├── cd        # Builtin stubs too
+│   └── ...
+├── usr/
+│   └── bin/
+├── tmp/
+├── dev/
+│   ├── null
+│   ├── zero
+│   ├── stdin
+│   ├── stdout
+│   └── stderr
+└── home/
+    └── user/     # Derived from $HOME if provided
+```
+
+**Command stubs**: Every registered command and shell builtin gets a stub file in `/bin/` containing `#!/bin/bash\n# built-in: <name>`. This makes `ls /bin` list available commands, `test -f /bin/grep` return true, and PATH-based resolution work for the `which` command.
+
+**Non-clobbering**: `setup_default_filesystem()` only creates directories and files that don't already exist. User-seeded files from `.files()` and caller-provided VFS content are never overwritten.
+
 ## Design Decisions
 
 **Why `&self` instead of `&mut self` on mutating methods?** Using `&self` allows a single `VirtualFs` instance to be shared by reference across the interpreter and command contexts without requiring exclusive borrow tracking at the call site. Implementations use interior mutability (`parking_lot::RwLock`) internally. The trade-off is that custom `VirtualFs` implementors must also use interior mutability.

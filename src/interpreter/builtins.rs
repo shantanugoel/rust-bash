@@ -56,46 +56,51 @@ pub(crate) fn execute_builtin(
 }
 
 /// Check if a name is a known shell builtin.
+/// Derives from `builtin_names()` to keep a single source of truth.
 pub(crate) fn is_builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "exit"
-            | "cd"
-            | "export"
-            | "unset"
-            | "set"
-            | "shift"
-            | "readonly"
-            | "declare"
-            | "read"
-            | "eval"
-            | "source"
-            | "."
-            | "break"
-            | "continue"
-            | ":"
-            | "colon"
-            | "let"
-            | "local"
-            | "return"
-            | "trap"
-            | "shopt"
-            | "type"
-            | "command"
-            | "builtin"
-            | "getopts"
-            | "mapfile"
-            | "readarray"
-            | "pushd"
-            | "popd"
-            | "dirs"
-            | "hash"
-            | "wait"
-            | "alias"
-            | "unalias"
-            | "printf"
-            | "exec"
-    )
+    builtin_names().contains(&name)
+}
+
+/// Return the list of known shell builtin names.
+pub(crate) fn builtin_names() -> &'static [&'static str] {
+    &[
+        "exit",
+        "cd",
+        "export",
+        "unset",
+        "set",
+        "shift",
+        "readonly",
+        "declare",
+        "read",
+        "eval",
+        "source",
+        ".",
+        "break",
+        "continue",
+        ":",
+        "colon",
+        "let",
+        "local",
+        "return",
+        "trap",
+        "shopt",
+        "type",
+        "command",
+        "builtin",
+        "getopts",
+        "mapfile",
+        "readarray",
+        "pushd",
+        "popd",
+        "dirs",
+        "hash",
+        "wait",
+        "alias",
+        "unalias",
+        "printf",
+        "exec",
+    ]
 }
 
 // ── exit ─────────────────────────────────────────────────────────────
@@ -3426,5 +3431,17 @@ mod tests {
         assert_eq!(resolve_path("/home/user", "docs"), "/home/user/docs");
         assert_eq!(resolve_path("/home/user", ".."), "/home");
         assert_eq!(resolve_path("/home/user", "/tmp"), "/tmp");
+    }
+
+    #[test]
+    fn builtin_names_is_nonempty() {
+        assert!(
+            !builtin_names().is_empty(),
+            "builtin_names() should list at least one builtin"
+        );
+        // is_builtin() derives from builtin_names(), so consistency is guaranteed.
+        for &name in builtin_names() {
+            assert!(is_builtin(name));
+        }
     }
 }

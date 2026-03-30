@@ -31,10 +31,11 @@ feature = "shopt.failglob"
 [[cases]]
 name = "dotglob_includes_hidden"
 script = '''
+cd /test_dir
 shopt -s dotglob
 echo *
 '''
-files = { "/.hidden" = "", "/visible" = "" }
+files = { "/test_dir/.hidden" = "", "/test_dir/visible" = "" }
 stdout = ".hidden visible\n"
 stderr = ""
 exit_code = 0

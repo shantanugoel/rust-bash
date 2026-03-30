@@ -1,6 +1,6 @@
 ---
 source: tests/integration.rs
-assertion_line: 654
+assertion_line: 737
 expression: r.stdout
 ---
 -rw-r--r-- alpha.txt

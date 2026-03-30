@@ -376,9 +376,10 @@ fn ls_shows_created_files() {
 #[test]
 fn ls_one_per_line() {
     let mut sh = shell();
-    sh.exec("touch /alpha").unwrap();
-    sh.exec("touch /beta").unwrap();
-    let r = sh.exec("ls -1 /").unwrap();
+    sh.exec("mkdir /test_dir").unwrap();
+    sh.exec("touch /test_dir/alpha").unwrap();
+    sh.exec("touch /test_dir/beta").unwrap();
+    let r = sh.exec("ls -1 /test_dir").unwrap();
     assert_eq!(r.stdout, "alpha\nbeta\n");
 }
 
@@ -730,20 +731,22 @@ fn double_quoted_expansion() {
 #[test]
 fn snapshot_ls_long() {
     let mut sh = shell();
-    sh.exec("touch /alpha.txt").unwrap();
-    sh.exec("touch /beta.txt").unwrap();
-    sh.exec("mkdir /docs").unwrap();
-    let r = sh.exec("ls -l /").unwrap();
+    sh.exec("mkdir /work").unwrap();
+    sh.exec("touch /work/alpha.txt").unwrap();
+    sh.exec("touch /work/beta.txt").unwrap();
+    sh.exec("mkdir /work/docs").unwrap();
+    let r = sh.exec("ls -l /work").unwrap();
     insta::assert_snapshot!("ls_long", r.stdout);
 }
 
 #[test]
 fn snapshot_ls_long_all() {
     let mut sh = shell();
-    sh.exec("touch /alpha.txt").unwrap();
-    sh.exec("touch /beta.txt").unwrap();
-    sh.exec("mkdir /docs").unwrap();
-    let r = sh.exec("ls -la /").unwrap();
+    sh.exec("mkdir /work").unwrap();
+    sh.exec("touch /work/alpha.txt").unwrap();
+    sh.exec("touch /work/beta.txt").unwrap();
+    sh.exec("mkdir /work/docs").unwrap();
+    let r = sh.exec("ls -la /work").unwrap();
     insta::assert_snapshot!("ls_long_all", r.stdout);
 }
 
@@ -5644,4 +5647,121 @@ fn noclobber_allows_append_output_and_error() {
         .exec("set -C; echo hi &>> /tmp/existing.txt; cat /tmp/existing.txt")
         .unwrap();
     assert_eq!(r.stdout, "old\nhi\n");
+}
+
+// ── M7.7: Default filesystem layout and command resolution ────────
+
+#[test]
+fn default_dirs_exist() {
+    let mut sh = shell();
+    let r = sh
+        .exec("test -d /bin && test -d /usr/bin && test -d /tmp && test -d /dev && echo ok")
+        .unwrap();
+    assert_eq!(r.stdout, "ok\n");
+}
+
+#[test]
+fn default_home_dir_exists() {
+    let mut sh = shell();
+    let r = sh.exec("test -d /home/user && echo ok").unwrap();
+    assert_eq!(r.stdout, "ok\n");
+}
+
+#[test]
+fn custom_home_preserved() {
+    let mut env = HashMap::new();
+    env.insert("HOME".into(), "/custom/home".into());
+    let mut sh = RustBashBuilder::new().env(env).build().unwrap();
+    let r = sh.exec("echo $HOME").unwrap();
+    assert_eq!(r.stdout, "/custom/home\n");
+    let r = sh.exec("test -d /custom/home && echo ok").unwrap();
+    assert_eq!(r.stdout, "ok\n");
+}
+
+#[test]
+fn default_env_path() {
+    let mut sh = shell();
+    let r = sh.exec("echo $PATH").unwrap();
+    assert_eq!(r.stdout, "/usr/bin:/bin\n");
+}
+
+#[test]
+fn default_env_home() {
+    let mut sh = shell();
+    let r = sh.exec("echo $HOME").unwrap();
+    assert_eq!(r.stdout, "/home/user\n");
+}
+
+#[test]
+fn default_env_not_overwritten() {
+    let mut env = HashMap::new();
+    env.insert("HOME".into(), "/root".into());
+    env.insert("USER".into(), "testuser".into());
+    env.insert("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into());
+    let mut sh = RustBashBuilder::new().env(env).build().unwrap();
+    let r = sh.exec("echo $HOME $USER $PATH").unwrap();
+    assert_eq!(r.stdout, "/root testuser /usr/local/bin:/usr/bin:/bin\n");
+}
+
+#[test]
+fn dev_special_files_exist() {
+    let mut sh = shell();
+    let r = sh
+        .exec("test -f /dev/null && test -f /dev/zero && echo ok")
+        .unwrap();
+    assert_eq!(r.stdout, "ok\n");
+}
+
+#[test]
+fn ls_bin_lists_commands() {
+    let mut sh = shell();
+    let r = sh.exec("ls /bin").unwrap();
+    assert!(r.stdout.contains("ls"));
+    assert!(r.stdout.contains("grep"));
+    assert!(r.stdout.contains("cat"));
+}
+
+#[test]
+fn which_resolves_via_path() {
+    let mut sh = shell();
+    let r = sh.exec("which ls").unwrap();
+    assert_eq!(r.stdout.trim(), "/bin/ls");
+    assert_eq!(r.exit_code, 0);
+}
+
+#[test]
+fn which_builtin_reports_builtin() {
+    let mut sh = shell();
+    let r = sh.exec("which cd").unwrap();
+    assert!(r.stdout.contains("shell built-in command"));
+}
+
+#[test]
+fn test_executable_bin() {
+    let mut sh = shell();
+    let r = sh.exec("test -f /bin/grep && echo ok").unwrap();
+    assert_eq!(r.stdout, "ok\n");
+}
+
+#[test]
+fn default_bash_version() {
+    let mut sh = shell();
+    let r = sh.exec("echo $BASH_VERSION").unwrap();
+    assert!(!r.stdout.trim().is_empty());
+}
+
+#[test]
+fn default_shell_var() {
+    let mut sh = shell();
+    let r = sh.exec("echo $SHELL").unwrap();
+    assert_eq!(r.stdout, "/bin/bash\n");
+}
+
+#[test]
+fn user_seeded_bin_file_not_clobbered() {
+    let mut files = HashMap::new();
+    files.insert("/bin/custom".into(), b"custom content".to_vec());
+    let mut sh = RustBashBuilder::new().files(files).build().unwrap();
+    let r = sh.exec("cat /bin/custom").unwrap();
+    assert_eq!(r.stdout, "custom content");
 }

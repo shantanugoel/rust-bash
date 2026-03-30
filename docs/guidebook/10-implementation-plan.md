@@ -325,7 +325,7 @@ Commands for inspecting file contents and types:
 - `clear` — output ANSI clear-screen escape sequence.
 - `history` — display command history. Integrates with existing REPL history tracking.
 
-### M7.7 — Default Filesystem Layout and Command Resolution
+### ✅ M7.7 — Default Filesystem Layout and Command Resolution
 
 Currently `RustBashBuilder::build()` creates an empty VFS with only the cwd. `which ls` returns a hardcoded `/usr/bin/ls` without checking the VFS, and that path doesn't exist. Fix:
 

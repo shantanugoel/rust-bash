@@ -66,6 +66,37 @@ When the interpreter encounters a command name, it resolves in this order:
 
 External process execution is impossible by design — there is no fallback to `std::process::Command`.
 
+## `which` Command — PATH-Based Resolution
+
+The `which` command resolves command names using actual VFS-based PATH lookup, matching real bash behavior:
+
+1. **Check builtins** — if the name is a shell builtin (via `is_builtin()`), output `{name}: shell built-in command`
+2. **Search PATH** — split `$PATH` on `:`, check each directory in the VFS for a matching file
+3. **Return first hit** — output the full path (e.g., `/bin/ls`)
+4. **Exit 1** if not found
+
+This works because `RustBashBuilder::build()` creates stub files in `/bin/` for every registered command and builtin. The stub files contain `#!/bin/bash\n# built-in: <name>`, making them visible to `ls /bin`, `test -f /bin/ls`, and PATH-based resolution.
+
+## Default Environment Variables
+
+The builder sets sensible defaults for variables not already provided by the caller:
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `PATH` | `/usr/bin:/bin` | |
+| `HOME` | `/home/user` | |
+| `USER` | `user` | |
+| `PWD` | CWD value | |
+| `OLDPWD` | (empty) | |
+| `SHELL` | `/bin/bash` | |
+| `BASH` | `/bin/bash` | |
+| `BASH_VERSION` | crate version | |
+| `HOSTNAME` | `rust-bash` | |
+| `OSTYPE` | `linux-gnu` | |
+| `TERM` | `xterm-256color` | |
+
+Caller-provided env vars via `.env()` always take precedence — defaults are only set for keys not already present.
+
 ## Command Categories
 
 ### Shell Builtins (Interpreter-Handled)
@@ -153,7 +184,7 @@ Pure computation or environment lookups:
 | `seq` | Generate number sequences |
 | `expr` | Evaluate expressions |
 | `env` / `printenv` | Display environment |
-| `which` | Show command path (always "builtin" for registered commands) |
+| `which` | Show command path via PATH-based VFS resolution |
 | `xargs` | Build and execute commands from stdin |
 | `test` / `[` | Conditional expressions |
 | `base64` | Encode/decode |

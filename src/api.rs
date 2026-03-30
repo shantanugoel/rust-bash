@@ -328,8 +328,37 @@ impl RustBashBuilder {
             fs.write_file(p, content)?;
         }
 
-        let env: HashMap<String, Variable> = self
-            .env
+        let mut commands = commands::register_default_commands();
+        for cmd in self.custom_commands {
+            commands.insert(cmd.name().to_string(), cmd);
+        }
+
+        // Insert default environment variables (caller-provided values take precedence)
+        let mut env_map = self.env;
+        let defaults: &[(&str, &str)] = &[
+            ("PATH", "/usr/bin:/bin"),
+            ("HOME", "/home/user"),
+            ("USER", "user"),
+            ("HOSTNAME", "rust-bash"),
+            ("OSTYPE", "linux-gnu"),
+            ("SHELL", "/bin/bash"),
+            ("BASH", "/bin/bash"),
+            ("BASH_VERSION", env!("CARGO_PKG_VERSION")),
+            ("OLDPWD", ""),
+            ("TERM", "xterm-256color"),
+        ];
+        for &(key, value) in defaults {
+            env_map
+                .entry(key.to_string())
+                .or_insert_with(|| value.to_string());
+        }
+        env_map
+            .entry("PWD".to_string())
+            .or_insert_with(|| cwd.clone());
+
+        setup_default_filesystem(fs.as_ref(), &env_map, &commands)?;
+
+        let env: HashMap<String, Variable> = env_map
             .into_iter()
             .map(|(k, v)| {
                 (
@@ -341,11 +370,6 @@ impl RustBashBuilder {
                 )
             })
             .collect();
-
-        let mut commands = commands::register_default_commands();
-        for cmd in self.custom_commands {
-            commands.insert(cmd.name().to_string(), cmd);
-        }
 
         let state = InterpreterState {
             fs,
@@ -388,6 +412,60 @@ impl RustBashBuilder {
 
         Ok(RustBash { state })
     }
+}
+
+/// Create standard directories and command stubs in the VFS.
+///
+/// Directories and files are only created when they don't already exist,
+/// so user-seeded content is never clobbered.
+fn setup_default_filesystem(
+    fs: &dyn VirtualFs,
+    env: &HashMap<String, String>,
+    commands: &HashMap<String, Box<dyn commands::VirtualCommand>>,
+) -> Result<(), RustBashError> {
+    // Standard directories
+    for dir in &["/bin", "/usr/bin", "/tmp", "/dev"] {
+        let _ = fs.mkdir_p(Path::new(dir));
+    }
+
+    // HOME directory
+    if let Some(home) = env.get("HOME") {
+        let _ = fs.mkdir_p(Path::new(home));
+    }
+
+    // /dev special files
+    for name in &["null", "zero", "stdin", "stdout", "stderr"] {
+        let path_str = format!("/dev/{name}");
+        let p = Path::new(&path_str);
+        if !fs.exists(p) {
+            fs.write_file(p, b"")?;
+        }
+    }
+
+    // Command stubs in /bin/ for each registered command
+    for name in commands.keys() {
+        let path_str = format!("/bin/{name}");
+        let p = Path::new(&path_str);
+        if !fs.exists(p) {
+            let content = format!("#!/bin/bash\n# built-in: {name}\n");
+            fs.write_file(p, content.as_bytes())?;
+        }
+    }
+
+    // Builtin stubs in /bin/ (skip names unsuitable as filenames)
+    for &name in interpreter::builtins::builtin_names() {
+        if matches!(name, "." | ":" | "colon") {
+            continue;
+        }
+        let path_str = format!("/bin/{name}");
+        let p = Path::new(&path_str);
+        if !fs.exists(p) {
+            let content = format!("#!/bin/bash\n# built-in: {name}\n");
+            fs.write_file(p, content.as_bytes())?;
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1553,9 +1631,10 @@ mod tests {
     #[test]
     fn ls_one_per_line() {
         let mut shell = shell();
-        shell.exec("touch /aaa").unwrap();
-        shell.exec("touch /bbb").unwrap();
-        let result = shell.exec("ls -1 /").unwrap();
+        shell.exec("mkdir /test_dir").unwrap();
+        shell.exec("touch /test_dir/aaa").unwrap();
+        shell.exec("touch /test_dir/bbb").unwrap();
+        let result = shell.exec("ls -1 /test_dir").unwrap();
         assert_eq!(result.stdout, "aaa\nbbb\n");
     }
 

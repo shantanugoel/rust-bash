@@ -573,116 +573,12 @@ impl super::VirtualCommand for PrintenvCommand {
 
 pub struct WhichCommand;
 
-const SHELL_BUILTINS: &[&str] = &[
-    "cd",
-    "export",
-    "unset",
-    "source",
-    ".",
-    "eval",
-    "exec",
-    "set",
-    "shift",
-    "return",
-    "exit",
-    "trap",
-    "readonly",
-    "declare",
-    "local",
-    "typeset",
-    "let",
-    "read",
-    "mapfile",
-    "readarray",
-    "getopts",
-    "hash",
-    "type",
-    "builtin",
-    "command",
-    "enable",
-    "help",
-    "logout",
-    "times",
-    "umask",
-    "alias",
-    "unalias",
-    "bind",
-    "complete",
-    "compgen",
-    "compopt",
-    "dirs",
-    "pushd",
-    "popd",
-    "shopt",
-    "caller",
-    "coproc",
-    "wait",
-    "jobs",
-    "fg",
-    "bg",
-    "disown",
-    "suspend",
-    "kill",
-];
-
-const REGISTERED_COMMANDS: &[&str] = &[
-    "echo",
-    "true",
-    "false",
-    "cat",
-    "pwd",
-    "touch",
-    "mkdir",
-    "ls",
-    "test",
-    "[",
-    "cp",
-    "mv",
-    "rm",
-    "tee",
-    "stat",
-    "chmod",
-    "ln",
-    "grep",
-    "sort",
-    "uniq",
-    "cut",
-    "head",
-    "tail",
-    "wc",
-    "tr",
-    "rev",
-    "fold",
-    "nl",
-    "printf",
-    "paste",
-    "od",
-    "realpath",
-    "basename",
-    "dirname",
-    "tree",
-    "expr",
-    "date",
-    "sleep",
-    "seq",
-    "env",
-    "printenv",
-    "which",
-    "base64",
-    "md5sum",
-    "sha256sum",
-    "whoami",
-    "hostname",
-    "uname",
-    "yes",
-];
-
 impl super::VirtualCommand for WhichCommand {
     fn name(&self) -> &str {
         "which"
     }
 
-    fn execute(&self, args: &[String], _ctx: &CommandContext) -> CommandResult {
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
         if args.is_empty() {
             return CommandResult {
                 stderr: "which: missing argument\n".into(),
@@ -694,13 +590,39 @@ impl super::VirtualCommand for WhichCommand {
         let mut stdout = String::new();
         let mut exit_code = 0;
 
+        let path_dirs: Vec<&str> = ctx
+            .env
+            .get("PATH")
+            .map(|p| p.split(':').collect())
+            .unwrap_or_default();
+
         for arg in args {
-            if SHELL_BUILTINS.contains(&arg.as_str()) {
+            if crate::interpreter::builtins::is_builtin(arg) {
                 stdout.push_str(&format!("{arg}: shell built-in command\n"));
-            } else if REGISTERED_COMMANDS.contains(&arg.as_str()) {
-                stdout.push_str(&format!("/usr/bin/{arg}\n"));
             } else {
-                exit_code = 1;
+                let mut found = false;
+                for dir in &path_dirs {
+                    let full = if dir.is_empty() {
+                        format!("./{arg}")
+                    } else {
+                        format!("{dir}/{arg}")
+                    };
+                    let p = std::path::Path::new(&full);
+                    if ctx.fs.exists(p)
+                        && ctx
+                            .fs
+                            .stat(p)
+                            .is_ok_and(|m| m.node_type != crate::vfs::NodeType::Directory)
+                    {
+                        stdout.push_str(&full);
+                        stdout.push('\n');
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    exit_code = 1;
+                }
             }
         }
 
@@ -1392,10 +1314,14 @@ mod tests {
 
     #[test]
     fn which_registered() {
-        let (fs, env, limits, np) = setup();
+        let (fs, mut env, limits, np) = setup();
+        env.insert("PATH".into(), "/usr/bin:/bin".into());
+        fs.mkdir_p(Path::new("/bin")).unwrap();
+        fs.write_file(Path::new("/bin/echo"), b"#!/bin/bash\n# built-in: echo\n")
+            .unwrap();
         let c = ctx(&*fs, &env, &limits, &np);
         let r = WhichCommand.execute(&["echo".into()], &c);
-        assert!(r.stdout.contains("/usr/bin/echo"));
+        assert!(r.stdout.contains("/bin/echo"));
     }
 
     #[test]
@@ -1412,6 +1338,20 @@ mod tests {
         let c = ctx(&*fs, &env, &limits, &np);
         let r = WhichCommand.execute(&[], &c);
         assert_eq!(r.exit_code, 1);
+    }
+
+    #[test]
+    fn which_multi_args_mixed() {
+        let (fs, mut env, limits, np) = setup();
+        env.insert("PATH".into(), "/bin".into());
+        fs.mkdir_p(Path::new("/bin")).unwrap();
+        fs.write_file(Path::new("/bin/echo"), b"#!/bin/bash\n# built-in: echo\n")
+            .unwrap();
+        let c = ctx(&*fs, &env, &limits, &np);
+        let r = WhichCommand.execute(&["cd".into(), "echo".into(), "nonexistent".into()], &c);
+        assert!(r.stdout.contains("shell built-in"));
+        assert!(r.stdout.contains("/bin/echo"));
+        assert_eq!(r.exit_code, 1); // at least one not found
     }
 
     // ── base64 tests ─────────────────────────────────────────────────

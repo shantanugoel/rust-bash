@@ -2,7 +2,7 @@
 
 pub(crate) mod arithmetic;
 pub(crate) mod brace;
-mod builtins;
+pub(crate) mod builtins;
 mod expansion;
 pub(crate) mod pattern;
 mod walker;

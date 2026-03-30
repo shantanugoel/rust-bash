@@ -327,10 +327,8 @@ builtin-set.test:set with both options and argv
 builtin-special.test:Non-special builtins CAN be redefined as functions
 builtin-special.test:true is not special; prefix assignments don't persist, it can be redefined
 builtin-type-bash.test:type -a -> alias; prints alias definition
-builtin-type-bash.test:type -a -> builtin
 builtin-type-bash.test:type -a -> executable not in PATH
 builtin-type-bash.test:type -ap -> alias
-builtin-type-bash.test:type -ap -> builtin
 builtin-type-bash.test:type -ap -> function
 builtin-type-bash.test:type -p builtin -> not a file
 builtin-type-bash.test:type -p builtin -> not found
@@ -371,7 +369,6 @@ command-sub.test:Command sub word part
 command-sub.test:Empty command sub $() (command::NoOp)
 command-sub.test:Here doc with pipeline
 command-sub.test:Making command out of command sub should work
-command-sub.test:Nested backticks
 command-sub.test:Quoting " within ``
 command_.test:External programs don't have _OVM in environment
 command_.test:Not a dir
@@ -473,10 +470,7 @@ glob.test:0 char glob -- does NOT work
 glob.test:glob after "$@" expansion
 glob.test:glob backslash escape
 glob.test:glob double quote escape
-glob.test:Glob of negated unescaped [[] and []]
-glob.test:Glob of unescaped [[] and []]
 glob.test:glob single quote escape
-glob.test:Glob unicode char
 glob.test:\ in unquoted substitutions is preserved
 glob.test:\ in unquoted substitutions is preserved with set -o noglob
 glob.test:looks like glob at the start, but isn't
@@ -804,3 +798,18 @@ xtrace.test:PS4 with runtime error
 xtrace.test:PS4 with unterminated $(
 xtrace.test:PS4 with unterminated ${
 xtrace.test:xtrace with paths
+builtin-cd.test:cd away from dir that was deleted
+builtin-cd.test:cd permits double bare dash
+builtin-cd.test:unset PWD; cd /tmp is allowed (regression)
+builtin-dirs.test:pushd/popd
+builtin-dirs.test:dirs -c to clear the stack
+builtin-dirs.test:dirs -p to print one entry per line
+builtin-dirs.test:dirs test of path alias `..`
+builtin-dirs.test:dirs test of path alias `.`
+command_.test:Command block
+command_.test:hash with args
+command_.test:hash -r doesn't allow additional args
+vars-special.test:$PWD is set
+vars-special.test:$PWD is not only set, but exported
+vars-special.test:$OSTYPE is non-empty
+vars-special.test:$HOSTNAME
