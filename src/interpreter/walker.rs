@@ -595,6 +595,27 @@ fn apply_assignment(
     Ok(())
 }
 
+/// Apply an assignment, converting `Execution` errors to shell errors (stderr +
+/// exit code 1) instead of propagating them as fatal `Err`. This matches bash
+/// behavior where assignment errors (e.g. nameref cycles, readonly) in bare
+/// assignment context print an error and set `$?` but do not abort the script.
+fn apply_assignment_shell_error(
+    assignment: Assignment,
+    state: &mut InterpreterState,
+    result: &mut ExecResult,
+) -> Result<(), RustBashError> {
+    match apply_assignment(assignment, state) {
+        Ok(()) => Ok(()),
+        Err(RustBashError::Execution(msg)) => {
+            result.stderr.push_str(&format!("rust-bash: {msg}\n"));
+            result.exit_code = 1;
+            state.last_exit_code = 1;
+            Ok(())
+        }
+        Err(other) => Err(other),
+    }
+}
+
 fn execute_simple_command(
     cmd: &ast::SimpleCommand,
     state: &mut InterpreterState,
@@ -717,30 +738,32 @@ fn execute_simple_command(
                 .collect();
             let trace_line = format!("{}{}\n", ps4, trace_parts.join(" "));
             // Bare assignments produce no output, but emit xtrace to stderr
-            let result = ExecResult {
+            let mut result = ExecResult {
                 stderr: trace_line,
                 ..ExecResult::default()
             };
             for a in assignments {
-                apply_assignment(a, state)?;
+                apply_assignment_shell_error(a, state, &mut result)?;
             }
             return Ok(result);
         }
+        let mut result = ExecResult::default();
         for a in assignments {
-            apply_assignment(a, state)?;
+            apply_assignment_shell_error(a, state, &mut result)?;
         }
-        return Ok(ExecResult::default());
+        return Ok(result);
     };
 
     // 4b. Empty command name (e.g. from `$(false)`) → no command, persist assignments
     if cmd_name.is_empty() && args.is_empty() {
-        for a in assignments {
-            apply_assignment(a, state)?;
-        }
-        return Ok(ExecResult {
+        let mut result = ExecResult {
             exit_code: state.last_exit_code,
             ..ExecResult::default()
-        });
+        };
+        for a in assignments {
+            apply_assignment_shell_error(a, state, &mut result)?;
+        }
+        return Ok(result);
     }
 
     // 4c. Alias expansion: if expand_aliases is on and the command name is an alias,
@@ -781,16 +804,28 @@ fn execute_simple_command(
             });
         }
         for a in &assignments {
-            apply_assignment(a.clone(), state)?;
+            let mut dummy = ExecResult::default();
+            apply_assignment_shell_error(a.clone(), state, &mut dummy)?;
+            if dummy.exit_code != 0 {
+                return Ok(dummy);
+            }
         }
         return execute_exec_builtin(&args, &redirects, state, stdin);
     }
 
     // 5. Apply temporary pre-command assignments
+    // On error (e.g. readonly): print the error but still execute the command.
+    // Bash skips the failing assignment but runs the command; $? is from the
+    // command, not the assignment error.
     let mut saved: Vec<(String, Option<Variable>)> = Vec::new();
+    let mut prefix_stderr = String::new();
     for a in &assignments {
         saved.push((a.name().to_string(), state.env.get(a.name()).cloned()));
-        apply_assignment(a.clone(), state)?;
+        let mut dummy = ExecResult::default();
+        apply_assignment_shell_error(a.clone(), state, &mut dummy)?;
+        if dummy.exit_code != 0 {
+            prefix_stderr.push_str(&dummy.stderr);
+        }
     }
 
     // 5b–8c are wrapped in an immediately-invoked closure so cleanup (8d) and
@@ -803,7 +838,7 @@ fn execute_simple_command(
     let last_arg = args.last().cloned().unwrap_or_else(|| cmd_name.clone());
     let should_trace = state.shell_opts.xtrace;
 
-    let inner_result = (|| -> Result<ExecResult, RustBashError> {
+    let mut inner_result = (|| -> Result<ExecResult, RustBashError> {
         // 5b. Pre-allocate ALL redirect process substitution temp files in one pass.
         //     This ensures allocation order matches redirect-list order, avoiding
         //     counter mismatch when Read and Write proc-subs are mixed in the same
@@ -917,6 +952,13 @@ fn execute_simple_command(
                 state.env.remove(&name);
             }
         }
+    }
+
+    // 9b. Prepend any prefix-assignment error messages to the result stderr.
+    if let Ok(ref mut r) = inner_result
+        && !prefix_stderr.is_empty()
+    {
+        r.stderr = format!("{prefix_stderr}{}", r.stderr);
     }
 
     inner_result

@@ -206,48 +206,96 @@ impl VirtualCommand for EchoCommand {
 
 fn interpret_echo_escapes(s: &str) -> (String, bool) {
     let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            match chars.peek() {
-                Some('n') => {
-                    chars.next();
-                    result.push('\n');
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\\' && i + 1 < chars.len() {
+            i += 1;
+            match chars[i] {
+                'n' => result.push('\n'),
+                't' => result.push('\t'),
+                '\\' => result.push('\\'),
+                'a' => result.push('\x07'),
+                'b' => result.push('\x08'),
+                'f' => result.push('\x0C'),
+                'r' => result.push('\r'),
+                'v' => result.push('\x0B'),
+                'e' | 'E' => result.push('\x1B'),
+                'c' => return (result, true),
+                '0' => {
+                    // \0NNN — octal (up to 3 octal digits after the 0)
+                    let mut val: u32 = 0;
+                    let mut count = 0;
+                    while count < 3
+                        && i + 1 < chars.len()
+                        && chars[i + 1] >= '0'
+                        && chars[i + 1] <= '7'
+                    {
+                        i += 1;
+                        val = val * 8 + (chars[i] as u32 - '0' as u32);
+                        count += 1;
+                    }
+                    if let Some(c) = char::from_u32(val) {
+                        result.push(c);
+                    }
                 }
-                Some('t') => {
-                    chars.next();
-                    result.push('\t');
+                'x' => {
+                    // \xHH — hex escape (up to 2 hex digits)
+                    let mut hex = String::new();
+                    while hex.len() < 2 && i + 1 < chars.len() && chars[i + 1].is_ascii_hexdigit() {
+                        i += 1;
+                        hex.push(chars[i]);
+                    }
+                    if hex.is_empty() {
+                        result.push('\\');
+                        result.push('x');
+                    } else if let Some(c) =
+                        u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
+                    {
+                        result.push(c);
+                    }
                 }
-                Some('\\') => {
-                    chars.next();
+                'u' => {
+                    // \uHHHH — unicode (up to 4 hex digits)
+                    let mut hex = String::new();
+                    while hex.len() < 4 && i + 1 < chars.len() && chars[i + 1].is_ascii_hexdigit() {
+                        i += 1;
+                        hex.push(chars[i]);
+                    }
+                    if hex.is_empty() {
+                        result.push('\\');
+                        result.push('u');
+                    } else if let Some(c) =
+                        u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
+                    {
+                        result.push(c);
+                    }
+                }
+                'U' => {
+                    // \UHHHHHHHH — unicode (up to 8 hex digits)
+                    let mut hex = String::new();
+                    while hex.len() < 8 && i + 1 < chars.len() && chars[i + 1].is_ascii_hexdigit() {
+                        i += 1;
+                        hex.push(chars[i]);
+                    }
+                    if hex.is_empty() {
+                        result.push('\\');
+                        result.push('U');
+                    } else if let Some(c) =
+                        u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
+                    {
+                        result.push(c);
+                    }
+                }
+                other => {
                     result.push('\\');
+                    result.push(other);
                 }
-                Some('a') => {
-                    chars.next();
-                    result.push('\x07');
-                }
-                Some('b') => {
-                    chars.next();
-                    result.push('\x08');
-                }
-                Some('f') => {
-                    chars.next();
-                    result.push('\x0C');
-                }
-                Some('r') => {
-                    chars.next();
-                    result.push('\r');
-                }
-                Some('v') => {
-                    chars.next();
-                    result.push('\x0B');
-                }
-                Some('c') => return (result, true),
-                _ => result.push('\\'),
             }
         } else {
-            result.push(c);
+            result.push(chars[i]);
         }
+        i += 1;
     }
     (result, false)
 }

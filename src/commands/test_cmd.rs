@@ -164,9 +164,37 @@ fn try_binary(left: &str, op: &str, right: &str, _ctx: &CommandContext) -> Optio
 }
 
 fn numeric_cmp(left: &str, right: &str, cmp: impl Fn(i64, i64) -> bool) -> Option<bool> {
-    let a = left.parse::<i64>().ok()?;
-    let b = right.parse::<i64>().ok()?;
+    // test/[ treats all numbers as plain decimal — no octal or hex.
+    let a = left.trim().parse::<i64>().ok()?;
+    let b = right.trim().parse::<i64>().ok()?;
     Some(cmp(a, b))
+}
+
+/// Parse an integer in bash style: decimal, 0x hex, or 0-prefixed octal.
+/// Returns None for invalid literals (e.g. "08" — looks octal but has invalid digits).
+fn parse_bash_int(s: &str) -> Option<i64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Some(0);
+    }
+    // Handle optional leading sign
+    let (negative, s) = if let Some(rest) = s.strip_prefix('-') {
+        (true, rest)
+    } else if let Some(rest) = s.strip_prefix('+') {
+        (false, rest)
+    } else {
+        (false, s)
+    };
+    let val = if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        i64::from_str_radix(hex, 16).ok()?
+    } else if s.starts_with('0') && s.len() > 1 && s[1..].chars().all(|c| c.is_ascii_digit()) {
+        // Starts with 0 and has more digits — must be valid octal.
+        // If any digit is 8 or 9, from_str_radix will fail → None (bash errors on "08").
+        i64::from_str_radix(s, 8).ok()?
+    } else {
+        s.parse::<i64>().ok()?
+    };
+    Some(if negative { -val } else { val })
 }
 
 // ── File test helpers ─────────────────────────────────────────────
@@ -322,7 +350,7 @@ pub(crate) fn eval_binary_predicate(
 }
 
 fn parse_nums(a: &str, b: &str) -> Option<(i64, i64)> {
-    Some((a.parse::<i64>().ok()?, b.parse::<i64>().ok()?))
+    Some((parse_bash_int(a)?, parse_bash_int(b)?))
 }
 
 // ── Result helpers ────────────────────────────────────────────────

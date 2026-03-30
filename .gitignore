@@ -1,6 +1,12 @@
 # Rust
 /target
 
+# Debug / ad-hoc test files
+/debug_test
+/debug_test.rs
+/test_ansi_parse.rs
+/test_brush.sh
+
 # Node.js / npm
 node_modules/
 dist/

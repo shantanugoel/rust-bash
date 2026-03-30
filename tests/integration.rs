@@ -268,8 +268,9 @@ fn export_marks_variable() {
 fn readonly_prevents_reassignment() {
     let mut sh = shell();
     sh.exec("readonly X=5").unwrap();
-    let r = sh.exec("X=6");
-    assert!(r.is_err());
+    let r = sh.exec("X=6").unwrap();
+    assert_eq!(r.exit_code, 1);
+    assert!(r.stderr.contains("readonly"));
 }
 
 #[test]
@@ -690,8 +691,9 @@ fn declare_readonly() {
     sh.exec("declare -r Y=99").unwrap();
     let r = sh.exec("echo $Y").unwrap();
     assert_eq!(r.stdout, "99\n");
-    let r = sh.exec("Y=100");
-    assert!(r.is_err());
+    let r = sh.exec("Y=100").unwrap();
+    assert_eq!(r.exit_code, 1);
+    assert!(r.stderr.contains("readonly"));
 }
 
 #[test]
@@ -4515,21 +4517,9 @@ fn source_runs_in_current_context() {
 fn readonly_variable_assignment_error() {
     let mut sh = shell();
     sh.exec("readonly X=fixed").unwrap();
-    let result = sh.exec("X=changed");
-    // Assignment to readonly should produce an error
-    match result {
-        Err(rust_bash::RustBashError::Execution(msg)) => {
-            assert!(
-                msg.contains("readonly"),
-                "expected readonly error, got: {msg}"
-            );
-        }
-        Ok(r) => {
-            assert_ne!(r.exit_code, 0);
-            assert!(r.stderr.contains("readonly"));
-        }
-        other => panic!("unexpected result: {other:?}"),
-    }
+    let result = sh.exec("X=changed").unwrap();
+    assert_ne!(result.exit_code, 0);
+    assert!(result.stderr.contains("readonly"));
 }
 
 // ── cd edge cases ───────────────────────────────────────────────
@@ -5235,8 +5225,9 @@ fn declare_indexed_array_with_value() {
 fn declare_integer_readonly_prevents_reassign() {
     let mut sh = shell();
     sh.exec("declare -ir x=5").unwrap();
-    let r = sh.exec("x=10");
-    assert!(r.is_err());
+    let r = sh.exec("x=10").unwrap();
+    assert_eq!(r.exit_code, 1);
+    assert!(r.stderr.contains("readonly"));
 }
 
 #[test]

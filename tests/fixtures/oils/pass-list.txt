@@ -1,7 +1,6 @@
 # Oils spec test pass-list
 # Generated from upstream commit 7789e21d81537a5b47bacbd4267edf7c659a9366
 # Format: file_stem:case_name (duplicate names get #N suffix)
-
 alias.test:alias can override builtin
 alias.test:Alias is respected inside eval
 alias.test:Alias name with punctuation
@@ -15,12 +14,14 @@ alias.test:alias with word of multiple lines
 alias.test:Dynamic alias definition
 alias.test:Invalid syntax of alias
 alias.test:List aliases by providing names
+alias.test:unalias -a
 alias.test:unalias not defined
 alias.test:unalias without args is a usage error
 alias.test:Usage of builtins
 append.test:Append string to string
 append.test:Append string to undefined variable
 append.test:Strings have value semantics, not reference semantics
+append.test:Type mismatching of lhs+=rhs should not cause a crash
 arith-context.test:Array index on LHS of assignment
 arith-context.test:Empty expression (( ))  $(( ))
 arith-context.test:Empty expression in ${a[@]: : }
@@ -70,6 +71,7 @@ array-assoc.test:declare -A A=() allowed
 array-assoc.test:length ${#a[@]}
 array-assoc.test:lookup by unquoted string doesn't work in OSH because it's a variable
 array-assoc.test:lookup with ${a[0]} -- "0" is a string
+array-assoc.test:readonly associative array can't be modified
 array-assoc.test:retrieve keys with !
 array-assoc.test:retrieve values with ${A[@]}
 array-compat.test:a[40] grows array
@@ -95,6 +97,7 @@ array.test:Singleton Array Copy and Assign.  OSH can't index strings with ints
 array.test:Tilde expansion within array
 array.test:Using an array itself as the index on RHS
 assign-extended.test:Multiple assignments / array assignments on a line
+assign-extended.test:typeset +r removes read-only attribute (TODO: documented in bash to do nothing)
 assign.test:declare -a arr does not remove existing arrays (OSH regression)
 assign.test:declare -A dict does not remove existing arrays (OSH regression)
 assign.test:declare in an if statement
@@ -103,6 +106,8 @@ assign.test:FOO=foo echo [foo]
 assign.test:FOO=foo fun
 assign.test:'local x' and then array assignment
 assign.test:Modify a temporary binding
+assign.test:readonly $x where x='b c'
+assign.test:readonly a=(1 2) no_value c=(3 4) makes 'no_value' readonly
 assign.test:"readonly -a arr" and "readonly -A dict" should not not remove existing arrays
 assign.test:Using ${x-default} after unsetting local shadowing a global
 bool-parse.test:Allowed: [[ = ]] and [[ == ]]
@@ -155,6 +160,7 @@ brace-expansion.test:Tilde expansion
 brace-expansion.test:Tilde expansion come before var expansion
 brace-expansion.test:triple expansion
 brace-expansion.test:triple nested brace expansion
+bugs.test:assign readonly -- multiple lines
 bugs.test:autoconf word split (#1449)
 bugs.test:Crash in {1..10} - issue #2296
 bugs.test:'echo' and printf fail on writing to full disk
@@ -172,6 +178,7 @@ builtin-bash.test:mapfile (array name): arr
 builtin-bash.test:mapfile (delimiter): -d delim
 builtin-bash.test:mapfile (input range): -s start -n count
 builtin-bash.test:mapfile / readarray stdin  TODO: Fix me.
+builtin-bash.test:mapfile -t bugs (ble.sh)
 builtin-bash.test:mapfile (truncate delim): -t
 builtin-bash.test:readarray (synonym for mapfile)
 builtin-bracket.test:( )
@@ -208,6 +215,8 @@ builtin-bracket.test:zero args: [ ]
 builtin-bracket.test:-z '>' implies two token lookahead
 builtin-cd.test:$OLDPWD
 builtin-cd.test:cd and $PWD
+builtin-cd.test:cd away from dir that was deleted
+builtin-cd.test:cd permits double bare dash
 builtin-cd.test:cd to nonexistent dir
 builtin-cd.test:cd with no arguments
 builtin-cd.test:cd - without OLDPWD
@@ -215,22 +224,36 @@ builtin-cd.test:chdir is a synonym for cd - busybox ash
 builtin-cd.test:pwd
 builtin-cd.test:pwd after cd ..
 builtin-cd.test:pwd errors out on args with strict_arg_parse
+builtin-cd.test:remove pwd dir
 builtin-cd.test:setting $PWD doesn't affect the value of 'pwd' builtin
 builtin-cd.test:Survey of getcwd() syscall
+builtin-cd.test:unset PWD; cd /tmp is allowed (regression)
 builtin-cd.test:unset PWD; then pwd
 builtin-dirs.test:cd replaces the lowest entry on the directory stack!
 builtin-dirs.test:dirs builtin
+builtin-dirs.test:dirs -c to clear the stack
 builtin-dirs.test:dirs -l to print in long format, no tilde prefix
+builtin-dirs.test:dirs -p to print one entry per line
 builtin-dirs.test:dirs test converting true home directory to tilde
+builtin-dirs.test:dirs test of path alias `..`
+builtin-dirs.test:dirs test of path alias `.`
 builtin-dirs.test:dirs tilde test when $HOME is exactly $PWD
 builtin-dirs.test:dirs to print using tilde-prefix format
+builtin-dirs.test:pushd/popd
+builtin-echo.test:\0
 builtin-echo.test:\c stops processing input
 builtin-echo.test:echo dashes
 builtin-echo.test:echo -e line continuation
 builtin-echo.test:echo -en
+builtin-echo.test:echo -e with 4 digit unicode escape
+builtin-echo.test:echo -e with 8 digit unicode escape
+builtin-echo.test:echo -e with C escapes
 builtin-echo.test:echo -e with embedded newline
+builtin-echo.test:echo -e with hex escape
+builtin-echo.test:echo -e with octal escape
 builtin-echo.test:echo -e with whitespace C escapes
 builtin-echo.test:echo -ez (invalid flag)
+builtin-echo.test:\u6
 builtin-eval-source.test:Eval
 builtin-eval-source.test:Eval in bash does tilde expansion in array
 builtin-eval-source.test:Eval in does tilde expansion
@@ -272,24 +295,31 @@ builtin-meta.test:command command seq 3
 builtin-meta.test:command command -v seq
 builtin-meta.test:command -p (hide tool in custom path)
 builtin-meta.test:command skips function lookup
+builtin-meta.test:command -V nonexistent
 builtin-misc.test:Invalid shift argument
 builtin-misc.test:shift
 builtin-misc.test:Shifting too far
 builtin-misc.test:time pipeline
+builtin-printf.test:%06d zero padding vs. %6.6d
 builtin-printf.test:%06s is no-op
 builtin-printf.test:%06x %06X %06o
 builtin-printf.test:dynamic declare instead of %q
 builtin-printf.test:empty string (osh is more strict)
 builtin-printf.test:No char after ' => zero code point
 builtin-printf.test:printf %6.0s and %0.0s
+builtin-printf.test:printf %6.4d -- "precision" does padding for integers
 builtin-printf.test:printf %6.4s does both truncation and padding
+builtin-printf.test:printf %6.4x X o
 builtin-printf.test:printf %6.s and %0.s
 builtin-printf.test:printf + and space flags
 builtin-printf.test:printf %b respects \c early return
 builtin-printf.test:printf %c ASCII
+builtin-printf.test:printf %d with + prefix (positive sign)
+builtin-printf.test:printf %d %X support hex 0x5 and octal 055
 builtin-printf.test:printf % escapes
 builtin-printf.test:printf floating point (not required, but they all implement it)
 builtin-printf.test:printf floating point with - and 0
+builtin-printf.test:printf integer
 builtin-printf.test:printf invalid backslash escape (is ignored)
 builtin-printf.test:printf %q
 builtin-printf.test:printf %*.*s (width/precision from args)
@@ -305,6 +335,7 @@ builtin-read.test:read /dev/null
 builtin-read.test:read does not respect C backslash escapes
 builtin-read.test:read line from here doc
 builtin-read.test:read -n from pipe
+builtin-read.test:read -N ignores delimiters
 builtin-read.test:read -n with invalid arg
 builtin-read.test:read -p (not fully tested)
 builtin-read.test:read -rd
@@ -337,9 +368,13 @@ builtin-type-bash.test:type -t -> builtin
 builtin-type-bash.test:type -t control flow
 builtin-type-bash.test:type -t -> function
 builtin-type.test:special builtins are called out
+builtin-type.test:type -> not found
+builtin-vars.test:assign to readonly variable
+builtin-vars.test:assign to readonly variable - errexit
 builtin-vars.test:Exporting a variable doesn't change it
 builtin-vars.test:export -n foo=bar not allowed
 builtin-vars.test:export -n undefined is ignored
+builtin-vars.test:Make an existing local variable readonly
 builtin-vars.test:Unset array member
 builtin-vars.test:Unset array member with dynamic parsing
 builtin-vars.test:unset assoc errors
@@ -370,7 +405,10 @@ command-sub.test:Empty command sub $() (command::NoOp)
 command-sub.test:Here doc with pipeline
 command-sub.test:Making command out of command sub should work
 command-sub.test:Quoting " within ``
+command_.test:Command block
 command_.test:External programs don't have _OVM in environment
+command_.test:hash -r doesn't allow additional args
+command_.test:hash with args
 command_.test:Not a dir
 comments.test:comment
 comments.test:not a comment without leading space x
@@ -382,13 +420,16 @@ dbracket.test:[[ compare with literal -f (compare with test-builtin.test.sh)
 dbracket.test:[[ compound expressions
 dbracket.test:empty ! is treated as literal
 dbracket.test:[[ empty string is false
+dbracket.test:-eq coercion produces weird results
 dbracket.test:[[ glob matching, [[ has no glob expansion
 dbracket.test:[[ glob matching with escapes
 dbracket.test:[[ glob matching with unquoted var
 dbracket.test:[[ has no word splitting
 dbracket.test:[[ has quote joining
+dbracket.test:Hex literals with -eq
 dbracket.test:[[ '(' ]] is treated as literal
 dbracket.test:more tilde expansion
+dbracket.test:Octal literals with -eq
 dbracket.test:!= on strings
 dbracket.test:> on strings
 dbracket.test:[[ over multiple lines is OK
@@ -497,6 +538,7 @@ here-doc.test:Here doc with quote expansion in terminator
 here-doc.test:Here doc with var sub, command sub, arith sub
 here-doc.test:Here redirect with explicit descriptor
 here-doc.test:Here string
+here-doc.test:Here string with $
 here-doc.test:Mixing << and <<-
 here-doc.test:Nested here docs which are indented
 here-doc.test:Redirect after here doc
@@ -548,6 +590,7 @@ parse-errors.test:$% is not a parse error
 parse-errors.test:bad var name globally isn't parsed like an assignment
 parse-errors.test:echo =word is allowed
 pipeline.test:Brace group in pipeline
+pipeline.test:Exit code is last status
 pipeline.test:For loop starts pipeline
 pipeline.test:! in if
 pipeline.test:! is not a command
@@ -567,6 +610,8 @@ process-sub.test:Process sub input
 quote.test:$''
 quote.test:$"" is a synonym for ""
 quote.test:$? split over multiple lines
+quote.test:$'' with newlines
+quote.test:$'' with quotes
 quote.test:Backslash escapes
 quote.test:Backslash escapes inside double quoted string
 quote.test:C-style backslash escapes inside double quoted string
@@ -647,6 +692,9 @@ regex.test:pattern @f(x)
 regex.test:Regex quoted with \ -- preferred in bash
 regex.test:regex with ?
 regex.test:Regex with |
+regex.test:regex with unprintable characters
+serialize.test:${var@Q}
+serialize.test:printf %q newline
 serialize.test:printf %q quotes
 serialize.test:printf %q spaces
 sh-func.test:Assign a local and global on same line
@@ -716,8 +764,10 @@ var-op-bash.test:${!prefix@} matches var name (regression)
 var-op-bash.test:${var@a} error conditions
 var-op-bash.test:${var@a} for attributes
 var-op-bash.test:${#var@X} is a parse error
+var-op-bash.test:${x@Q}
 var-op-bash.test:${x@u} U L - upper / lower case (bash 5.1 feature)
 var-op-bash.test:Case folding that depends on locale (not enabled, requires Turkish locale)
+var-op-bash.test:Case folding - Unicode characters
 var-op-bash.test:Lower Case with , and ,,
 var-op-bash.test:Upper Case with ^ and ^^
 var-op-len.test:Length of undefined variable
@@ -743,6 +793,8 @@ var-op-slice.test:Negative start index respects unicode#1
 var-op-slice.test:Negative start index respects unicode#2
 var-op-slice.test:Out of range string slice: begin
 var-op-slice.test:Out of range string slice: length
+var-op-slice.test:Slice string with invalid UTF-8 results in empty string and warning
+var-op-slice.test:Slice string with invalid UTF-8 with strict_word_eval
 var-op-slice.test:Slice UTF-8 String
 var-op-slice.test:Slice with an assoc array
 var-op-slice.test:String slice
@@ -770,16 +822,23 @@ var-op-test.test:Error when unset#2
 var-ref.test:var ref ${!a}
 var-ref.test:var ref doesn't need cycle detection
 vars-special.test:$#
+vars-special.test:$?
 vars-special.test:$$ doesn't change with subshell or command sub
+vars-special.test:$$ looks like a PID
 vars-special.test:$1 .. $9 are scoped, while $0 is not
 vars-special.test:$_ and ${_}
+vars-special.test:$HOSTNAME
 vars-special.test:$_ is not reset with (( and [[
 vars-special.test:$_ is not undefined on first use
 vars-special.test:$LINENO in ((
 vars-special.test:$LINENO in [[
 vars-special.test:$LINENO in case
 vars-special.test:$LINENO in other for loops
+vars-special.test:$OSTYPE is non-empty
+vars-special.test:$PWD is not only set, but exported
+vars-special.test:$PWD is set
 vars-special.test:$SECONDS
+vars-special.test:$UID and $EUID
 vars-special.test:$_ with && and ||
 vars-special.test:$_ with loop
 vars-special.test:$_ with simple command and evaluation
@@ -798,26 +857,3 @@ xtrace.test:PS4 with runtime error
 xtrace.test:PS4 with unterminated $(
 xtrace.test:PS4 with unterminated ${
 xtrace.test:xtrace with paths
-builtin-cd.test:cd away from dir that was deleted
-builtin-cd.test:cd permits double bare dash
-builtin-cd.test:unset PWD; cd /tmp is allowed (regression)
-builtin-dirs.test:pushd/popd
-builtin-dirs.test:dirs -c to clear the stack
-builtin-dirs.test:dirs -p to print one entry per line
-builtin-dirs.test:dirs test of path alias `..`
-builtin-dirs.test:dirs test of path alias `.`
-command_.test:Command block
-command_.test:hash with args
-command_.test:hash -r doesn't allow additional args
-vars-special.test:$PWD is set
-vars-special.test:$PWD is not only set, but exported
-vars-special.test:$OSTYPE is non-empty
-vars-special.test:$HOSTNAME
-alias.test:unalias -a
-builtin-cd.test:remove pwd dir
-builtin-meta.test:command -V nonexistent
-builtin-type.test:type -> not found
-pipeline.test:Exit code is last status
-vars-special.test:$$ looks like a PID
-vars-special.test:$UID and $EUID
-vars-special.test:$?

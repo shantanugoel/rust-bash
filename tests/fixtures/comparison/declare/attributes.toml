@@ -87,10 +87,6 @@ echo $?
 stdout = "1\n"
 stderr_ignore = true
 exit_code = 0
-status = "xfail"
-milestone = "M6.6"
-feature = "declare.nameref"
-reason = "nameref cycle returns Err instead of shell error"
 
 [[cases]]
 name = "declare_p_formats_flags"

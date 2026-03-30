@@ -1244,8 +1244,12 @@ mod tests {
         let var = shell.state.env.get("X").unwrap();
         assert_eq!(var.value.as_scalar(), "42");
         assert!(var.readonly());
-        let result = shell.exec("X=new");
-        assert!(result.is_err());
+        // Bash: assigning to readonly prints error to stderr & sets exit code 1
+        let result = shell.exec("X=new").unwrap();
+        assert_eq!(result.exit_code, 1);
+        assert!(result.stderr.contains("readonly"));
+        // Value unchanged
+        assert_eq!(shell.state.env.get("X").unwrap().value.as_scalar(), "42");
     }
 
     #[test]

@@ -302,8 +302,12 @@ fn expand_word_piece(
             // unless we are inside double quotes.
             push_segment(words, s, true, in_dq);
         }
-        WordPiece::SingleQuotedText(s) | WordPiece::AnsiCQuotedText(s) => {
+        WordPiece::SingleQuotedText(s) => {
             push_segment(words, s, true, true);
+        }
+        WordPiece::AnsiCQuotedText(s) => {
+            let expanded = expand_escape_sequences(s);
+            push_segment(words, &expanded, true, true);
         }
         WordPiece::DoubleQuotedSequence(pieces)
         | WordPiece::GettextDoubleQuotedSequence(pieces) => {
@@ -1188,11 +1192,16 @@ fn expand_escape_sequences(val: &str) -> String {
                         i += 1;
                         hex.push(chars[i]);
                     }
-                    if let Ok(n) = u32::from_str_radix(&hex, 16)
+                    if hex.is_empty() {
+                        // No hex digits followed — preserve as literal \x
+                        result.push('\\');
+                        result.push('x');
+                    } else if let Ok(n) = u32::from_str_radix(&hex, 16)
                         && let Some(c) = char::from_u32(n)
                     {
                         result.push(c);
                     }
+                    // Invalid codepoints (e.g. surrogates \uD800) silently produce nothing, matching bash.
                 }
                 'u' => {
                     // \uHHHH — unicode escape (up to 4 hex digits)
@@ -1201,7 +1210,10 @@ fn expand_escape_sequences(val: &str) -> String {
                         i += 1;
                         hex.push(chars[i]);
                     }
-                    if let Ok(n) = u32::from_str_radix(&hex, 16)
+                    if hex.is_empty() {
+                        result.push('\\');
+                        result.push('u');
+                    } else if let Ok(n) = u32::from_str_radix(&hex, 16)
                         && let Some(c) = char::from_u32(n)
                     {
                         result.push(c);
@@ -1214,7 +1226,10 @@ fn expand_escape_sequences(val: &str) -> String {
                         i += 1;
                         hex.push(chars[i]);
                     }
-                    if let Ok(n) = u32::from_str_radix(&hex, 16)
+                    if hex.is_empty() {
+                        result.push('\\');
+                        result.push('U');
+                    } else if let Ok(n) = u32::from_str_radix(&hex, 16)
                         && let Some(c) = char::from_u32(n)
                     {
                         result.push(c);

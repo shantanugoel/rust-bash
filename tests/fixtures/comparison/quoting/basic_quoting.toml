@@ -45,10 +45,6 @@ hello\tworld
 """
 stderr = ""
 exit_code = 0
-status = "xfail"
-milestone = "M6.3"
-feature = "ansi_c_quoting"
-reason = "rust-bash does not implement ANSI-C quoting ($'...')"
 
 [[cases]]
 name = "ansi_c_quoting_newline"
@@ -59,10 +55,6 @@ line2
 """
 stderr = ""
 exit_code = 0
-status = "xfail"
-milestone = "M6.3"
-feature = "ansi_c_quoting"
-reason = "rust-bash does not implement ANSI-C quoting ($'...')"
 
 [[cases]]
 name = "ansi_c_quoting_hex"
@@ -72,10 +64,6 @@ ABC
 """
 stderr = ""
 exit_code = 0
-status = "xfail"
-milestone = "M6.3"
-feature = "ansi_c_quoting"
-reason = "rust-bash does not implement ANSI-C quoting ($'...')"
 
 [[cases]]
 name = "mixed_adjacent_quoting"
