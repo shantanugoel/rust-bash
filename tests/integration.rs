@@ -6450,3 +6450,101 @@ fn gzip_empty_input() {
     assert_eq!(r.exit_code, 0);
     assert_eq!(r.stdout, "");
 }
+
+// ── AGENTS.npm.md validation ───────────────────────────────────────
+
+#[test]
+fn agents_npm_md_command_count_matches_registry() {
+    let commands = rust_bash::commands::register_default_commands();
+    let actual_count = commands.len();
+
+    let content = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("AGENTS.npm.md"),
+    )
+    .expect("AGENTS.npm.md should exist at repo root");
+
+    // The doc says "Available Commands (N)" — extract N and verify.
+    let re = regex::Regex::new(r"## Available Commands \((\d+)\)").unwrap();
+    let caps = re
+        .captures(&content)
+        .expect("AGENTS.npm.md should contain '## Available Commands (N)'");
+    let documented_count: usize = caps[1].parse().unwrap();
+
+    // Allow ±2 tolerance for feature-gated commands (e.g. curl).
+    assert!(
+        (actual_count as isize - documented_count as isize).unsigned_abs() <= 2,
+        "Command count mismatch: registry has {actual_count}, doc says {documented_count}",
+    );
+}
+
+#[test]
+fn agents_npm_md_documented_commands_exist_in_registry() {
+    let commands = rust_bash::commands::register_default_commands();
+
+    let content = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("AGENTS.npm.md"),
+    )
+    .expect("AGENTS.npm.md should exist at repo root");
+
+    // Extract command names from the table rows: "| `cmd` |"
+    let re = regex::Regex::new(r"(?m)^\| `([a-z0-9_\[\]-]+)`").unwrap();
+    let section_start = content
+        .find("## Available Commands")
+        .expect("missing Available Commands section");
+    let section_end = content
+        .find("## Shell Builtins")
+        .expect("missing Shell Builtins section");
+    let commands_section = &content[section_start..section_end];
+
+    let mut missing = Vec::new();
+    for caps in re.captures_iter(commands_section) {
+        let name = &caps[1];
+        // Skip curl — network-gated, not always in registry
+        if name == "curl" {
+            continue;
+        }
+        if !commands.contains_key(name) {
+            missing.push(name.to_string());
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "Commands documented in AGENTS.npm.md but missing from registry: {missing:?}",
+    );
+}
+
+#[test]
+fn agents_npm_md_documented_builtins_exist() {
+    let builtin_names: std::collections::HashSet<&str> =
+        rust_bash::builtin_names().iter().copied().collect();
+
+    let content = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("AGENTS.npm.md"),
+    )
+    .expect("AGENTS.npm.md should exist at repo root");
+
+    let section_start = content
+        .find("## Shell Builtins")
+        .expect("missing Shell Builtins section");
+    let section_end = content[section_start..]
+        .find("\n## ")
+        .map(|i| section_start + i)
+        .unwrap_or(content.len());
+    let builtins_section = &content[section_start..section_end];
+
+    // Extract builtin names from table rows: "| `name` |" or "| `a` / `b` |"
+    let re = regex::Regex::new(r"`([a-z_.]+)`").unwrap();
+    let mut missing = Vec::new();
+    for caps in re.captures_iter(builtins_section) {
+        let name = &caps[1];
+        if !builtin_names.contains(name) {
+            missing.push(name.to_string());
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "Builtins documented in AGENTS.npm.md but not in builtin_names(): {missing:?}",
+    );
+}

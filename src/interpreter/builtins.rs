@@ -88,7 +88,7 @@ fn check_help(name: &str, state: &InterpreterState) -> Option<ExecResult> {
 }
 
 /// Return the list of known shell builtin names.
-pub(crate) fn builtin_names() -> &'static [&'static str] {
+pub fn builtin_names() -> &'static [&'static str] {
     &[
         "exit",
         "cd",

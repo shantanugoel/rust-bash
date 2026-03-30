@@ -19,11 +19,12 @@
     "wasm/",
     "native/",
     "README.md",
+    "AGENTS.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "tsc",
-    "prepublishOnly": "npm run build",
+    "prepublishOnly": "cp ../../AGENTS.npm.md ./AGENTS.md && npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"

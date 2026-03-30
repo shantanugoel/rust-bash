@@ -53,7 +53,7 @@ pub use commands::{CommandContext, CommandResult, ExecCallback, VirtualCommand};
 pub use error::{RustBashError, VfsError};
 pub use interpreter::{
     ExecResult, ExecutionCounters, ExecutionLimits, InterpreterState, ShellOpts, Variable,
-    VariableAttrs, VariableValue,
+    VariableAttrs, VariableValue, builtin_names,
 };
 pub use network::NetworkPolicy;
 pub use vfs::{DirEntry, InMemoryFs, Metadata, MountableFs, NodeType, VirtualFs};

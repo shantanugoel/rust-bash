@@ -42,8 +42,11 @@ console.log(result.exitCode); // 0
 - **Sandboxed execution** — all filesystem operations are in-memory
 - **Native performance** — napi-rs addon for Node.js (near-native speed)
 - **Browser support** — WASM build for browsers and edge runtimes
-- **80+ commands** — echo, cat, grep, sed, awk, jq, find, sort, diff, curl, and more
+- **79 commands** — echo, cat, grep, sed, awk, jq, find, sort, diff, tar, gzip, rg, bc, and more
+- **40 shell builtins** — cd, export, source, trap, getopts, mapfile, pushd/popd, and more
 - **Full bash syntax** — pipelines, redirections, variables, control flow, functions, globs, arithmetic, heredocs
+- **Compression support** — gzip, gunzip, zcat, tar with binary pipeline support
+- **`--help` on every command** — built-in usage information with flag fidelity metadata
 - **Custom commands** — `defineCommand()` for extending the shell
 - **Lazy file loading** — functions as file values, resolved at `Bash.create()` time
 - **AI tool integration** — JSON Schema definitions for any AI framework
@@ -286,11 +289,15 @@ const bash = await Bash.create(createWasmBackend, { /* options */ });
 
 ## Supported Commands
 
-The interpreter supports 80+ commands including:
+The interpreter supports 79 commands including:
 
-`awk`, `base64`, `basename`, `cat`, `cd`, `chmod`, `comm`, `column`, `cp`, `cut`, `date`, `diff`, `dirname`, `echo`, `env`, `eval`, `exit`, `expand`, `export`, `expr`, `false`, `find`, `fmt`, `fold`, `grep`, `head`, `hostname`, `jq`, `join`, `ln`, `ls`, `md5sum`, `mkdir`, `mv`, `nl`, `paste`, `printf`, `printenv`, `pwd`, `read`, `realpath`, `rev`, `rm`, `sed`, `seq`, `set`, `sha256sum`, `sleep`, `sort`, `source`, `stat`, `tac`, `tail`, `tee`, `test`, `touch`, `tr`, `trap`, `tree`, `true`, `uniq`, `unexpand`, `unset`, `uname`, `wc`, `which`, `whoami`, `xargs`, `yes`
+`awk`, `base64`, `basename`, `bc`, `cat`, `chmod`, `clear`, `column`, `comm`, `cp`, `curl` *(network-gated)*, `cut`, `date`, `diff`, `dirname`, `du`, `echo`, `egrep`, `env`, `expand`, `expr`, `false`, `fgrep`, `file`, `find`, `fmt`, `fold`, `grep`, `gunzip`, `gzip`, `head`, `hostname`, `jq`, `join`, `ln`, `ls`, `md5sum`, `mkdir`, `mv`, `nl`, `od`, `paste`, `printf`, `printenv`, `pwd`, `readlink`, `realpath`, `rev`, `rg`, `rm`, `rmdir`, `sed`, `seq`, `sha1sum`, `sha256sum`, `sleep`, `sort`, `split`, `stat`, `strings`, `tac`, `tail`, `tar`, `tee`, `test` / `[`, `timeout`, `touch`, `tr`, `tree`, `true`, `unexpand`, `uname`, `uniq`, `wc`, `which`, `whoami`, `xargs`, `yes`, `zcat`
 
-Plus 18 interpreter builtins: `exit`, `cd`, `export`, `unset`, `set`, `shift`, `readonly`, `declare`, `read`, `eval`, `source`, `break`, `continue`, `:`, `let`, `local`, `return`, `trap`.
+Plus 40 shell builtins: `exit`, `cd`, `export`, `unset`, `set`, `shift`, `readonly`, `declare`, `read`, `eval`, `source` / `.`, `break`, `continue`, `:`, `let`, `local`, `return`, `trap`, `shopt`, `type`, `command`, `builtin`, `getopts`, `mapfile` / `readarray`, `pushd`, `popd`, `dirs`, `hash`, `wait`, `alias`, `unalias`, `printf`, `exec`, `sh` / `bash`, `help`, `history`.
+
+All commands support `--help` for usage information. Each command includes flag fidelity metadata (supported, stubbed, ignored).
+
+For a comprehensive guide tailored to AI agents, see [AGENTS.npm.md](https://github.com/shantanugoel/rust-bash/blob/main/AGENTS.npm.md).
 
 ## Comparison with just-bash
 

@@ -343,13 +343,13 @@ Add infrastructure for systematic command correctness:
 - ✅ **Comparison test suite**: Fixture-based tests that run scripts against real bash and assert matching stdout/stderr/exit code. Record expected output in fixture files for offline replay. Enables differential testing without requiring bash at every `cargo test`.
 - ✅ **Per-command flag metadata**: Each command exports a declarative flag list (name, type, implemented vs stubbed). Enables coverage tracking and systematic fuzzing of flag combinations.
 
-### M7.9 — AI Agent Documentation (`AGENTS.md`)
+### M7.9 — AI Agent Documentation (`AGENTS.md`) ✅
 
 Ship a purpose-built `AGENTS.md` in the npm package and alongside the CLI binary. This is the primary interface documentation for AI agents consuming rust-bash. Inspired by just-bash's `AGENTS.npm.md` which ships as `dist/AGENTS.md`.
 
-- **Content**: Quick-start examples, available commands grouped by category, tools-by-file-format recipes (JSON with `jq`, YAML with `yq`, CSV with `xan`), key behavioral notes (isolation model, no real filesystem, no network by default).
-- **Distribution**: Include in npm package (`@rust-bash/core`), embed in CLI `--help`, and publish to docs site.
-- **Validation**: Add a test that verifies all documented commands actually exist in the registry and all code examples parse successfully.
+- ✅ **Content**: Quick-start examples, available commands grouped by category, tools-by-file-format recipes (JSON with `jq`, YAML with `yq`, CSV with `xan`), key behavioral notes (isolation model, no real filesystem, no network by default).
+- ✅ **Distribution**: Include in npm package (`@rust-bash/core`), embed in CLI `--help`, and publish to docs site.
+- ✅ **Validation**: Add a test that verifies all documented commands actually exist in the registry and all code examples parse successfully.
 
 ---
 

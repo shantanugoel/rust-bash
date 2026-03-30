@@ -18,6 +18,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
+pub use builtins::builtin_names;
 pub use expansion::expand_word;
 pub use walker::execute_program;
 

@@ -554,6 +554,7 @@ For complete Python and Go examples, see [`examples/ffi/`](examples/ffi/). For t
 - [Guidebook](docs/guidebook/) — architecture, design, and implementation details
 - [Recipes](docs/recipes/) — task-oriented guides for common use cases
 - [npm package README](packages/core/README.md) — TypeScript API reference
+- [AI Agent Guide](AGENTS.npm.md) — quick-start guide for AI agents consuming rust-bash
 
 ## Roadmap
 
