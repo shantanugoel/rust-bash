@@ -2385,18 +2385,29 @@ impl super::VirtualCommand for PrintfCommand {
 
         let format_str = &args[0];
         let arguments = &args[1..];
-        let stdout = run_printf_format(format_str, arguments);
+        let result = run_printf_format(format_str, arguments);
 
         CommandResult {
-            stdout,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            exit_code: if result.had_error { 1 } else { 0 },
             ..Default::default()
         }
     }
 }
 
+/// Result of printf formatting: stdout output, stderr errors, and whether any error occurred.
+pub(crate) struct PrintfResult {
+    pub stdout: String,
+    pub stderr: String,
+    pub had_error: bool,
+}
+
 /// Run printf formatting with argument cycling (shared between command and builtin).
-pub(crate) fn run_printf_format(format_str: &str, arguments: &[String]) -> String {
+pub(crate) fn run_printf_format(format_str: &str, arguments: &[String]) -> PrintfResult {
     let mut stdout = String::new();
+    let mut stderr = String::new();
+    let mut had_error = false;
     let mut arg_idx = 0;
     let arg_count = arguments.len();
 
@@ -2405,8 +2416,12 @@ pub(crate) fn run_printf_format(format_str: &str, arguments: &[String]) -> Strin
 
     loop {
         let start_arg_idx = arg_idx;
-        let (result, terminate) = format_printf(format_str, arguments, &mut arg_idx);
+        let (result, terminate, err) = format_printf(format_str, arguments, &mut arg_idx);
         stdout.push_str(&result);
+        if let Some(e) = err {
+            stderr.push_str(&e);
+            had_error = true;
+        }
 
         if terminate || !need_cycle || arg_idx >= arg_count {
             break;
@@ -2416,45 +2431,77 @@ pub(crate) fn run_printf_format(format_str: &str, arguments: &[String]) -> Strin
         }
         first_pass = false;
     }
-    stdout
+    PrintfResult {
+        stdout,
+        stderr,
+        had_error,
+    }
 }
 
-/// Parse an integer argument for printf, handling:
-/// - `'c` or `"c` — character code (e.g., `'A` → 65)
-/// - `0xHH` — hex
-/// - `0NNN` — octal (digits 0-7 only)
-/// - plain decimal
-fn parse_printf_int(s: &str) -> i64 {
-    let s = s.trim();
-    if s.is_empty() {
-        return 0;
+/// Parse an integer argument for `printf`.
+///
+/// Handles `'c` or `"c` for character code, `0x` hex, `0` octal, plain decimal.
+/// Returns `(value, optional_error_message)`. On invalid input, returns `(0, Some(error))`.
+/// On trailing whitespace, returns `(parsed_value, Some(error))`.
+fn parse_printf_int(s: &str) -> (i64, Option<String>) {
+    let trimmed = s.trim_start();
+    if trimmed.is_empty() {
+        return (0, None);
     }
-    // 'c or "c → character code
-    if (s.starts_with('\'') || s.starts_with('"')) && s.len() >= 2 {
-        return s[1..].chars().next().map(|c| c as i64).unwrap_or(0);
+    // 'c or "c → character code; bare ' or " → 0
+    if trimmed.starts_with('\'') || trimmed.starts_with('"') {
+        if trimmed.len() >= 2 {
+            return (
+                trimmed[1..].chars().next().map(|c| c as i64).unwrap_or(0),
+                None,
+            );
+        }
+        return (0, None);
     }
+    // Check for trailing non-whitespace after trim
+    let clean = trimmed.trim_end();
+    let has_trailing_space = clean.len() != trimmed.len();
+    let s_for_err = s.trim();
+
     // Handle optional leading sign
-    let (negative, s) = if let Some(rest) = s.strip_prefix('-') {
-        (true, rest)
-    } else if let Some(rest) = s.strip_prefix('+') {
-        (false, rest)
+    let (negative, rest) = if let Some(r) = clean.strip_prefix('-') {
+        (true, r)
+    } else if let Some(r) = clean.strip_prefix('+') {
+        (false, r)
     } else {
-        (false, s)
+        (false, clean)
     };
-    let val = if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-        i64::from_str_radix(hex, 16).unwrap_or(0)
-    } else if s.starts_with('0') && s.len() > 1 && s[1..].chars().all(|c| c.is_ascii_digit()) {
-        // Octal: if digits 8/9 are present, from_str_radix fails → 0
-        i64::from_str_radix(s, 8).unwrap_or(0)
+    let parsed = if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
+        i64::from_str_radix(hex, 16)
+    } else if rest.starts_with('0')
+        && rest.len() > 1
+        && rest[1..].chars().all(|c| c.is_ascii_digit())
+    {
+        i64::from_str_radix(rest, 8)
     } else {
-        s.parse::<i64>().unwrap_or(0)
+        rest.parse::<i64>()
     };
-    if negative { -val } else { val }
+    match parsed {
+        Ok(val) => {
+            let val = if negative { -val } else { val };
+            if has_trailing_space {
+                (val, Some(format!("printf: {s_for_err}: invalid number\n")))
+            } else {
+                (val, None)
+            }
+        }
+        Err(_) => (0, Some(format!("printf: {s_for_err}: invalid number\n"))),
+    }
 }
 
-pub(crate) fn format_printf(fmt: &str, args: &[String], arg_idx: &mut usize) -> (String, bool) {
+pub(crate) fn format_printf(
+    fmt: &str,
+    args: &[String],
+    arg_idx: &mut usize,
+) -> (String, bool, Option<String>) {
     let mut result = String::new();
     let mut terminate = false;
+    let mut error_msg: Option<String> = None;
     let chars: Vec<char> = fmt.chars().collect();
     let mut i = 0;
 
@@ -2621,13 +2668,18 @@ pub(crate) fn format_printf(fmt: &str, args: &[String], arg_idx: &mut usize) -> 
                     }
                 }
                 'd' | 'i' => {
-                    let val = if *arg_idx < args.len() {
-                        let a = &args[*arg_idx];
-                        *arg_idx += 1;
-                        parse_printf_int(a)
-                    } else {
-                        0
+                    let (val, err) = {
+                        if *arg_idx < args.len() {
+                            let a = &args[*arg_idx];
+                            *arg_idx += 1;
+                            parse_printf_int(a)
+                        } else {
+                            (0, None)
+                        }
                     };
+                    if let Some(e) = err {
+                        error_msg = Some(e);
+                    }
                     let digits = val.unsigned_abs().to_string();
                     let formatted = format_int_padded(&IntFmtOpts {
                         prefix: "",
@@ -2642,14 +2694,47 @@ pub(crate) fn format_printf(fmt: &str, args: &[String], arg_idx: &mut usize) -> 
                     });
                     result.push_str(&formatted);
                 }
-                'o' => {
-                    let val = if *arg_idx < args.len() {
-                        let a = &args[*arg_idx];
-                        *arg_idx += 1;
-                        parse_printf_int(a)
-                    } else {
-                        0
+                'u' => {
+                    let (val, err) = {
+                        if *arg_idx < args.len() {
+                            let a = &args[*arg_idx];
+                            *arg_idx += 1;
+                            let (v, e) = parse_printf_int(a);
+                            (v as u64, e)
+                        } else {
+                            (0u64, None)
+                        }
                     };
+                    if let Some(e) = err {
+                        error_msg = Some(e);
+                    }
+                    let digits = val.to_string();
+                    let formatted = format_int_padded(&IntFmtOpts {
+                        prefix: "",
+                        digits: &digits,
+                        negative: false,
+                        zero_pad,
+                        left_align,
+                        plus_sign: false,
+                        space_sign: false,
+                        width,
+                        precision,
+                    });
+                    result.push_str(&formatted);
+                }
+                'o' => {
+                    let (val, err) = {
+                        if *arg_idx < args.len() {
+                            let a = &args[*arg_idx];
+                            *arg_idx += 1;
+                            parse_printf_int(a)
+                        } else {
+                            (0, None)
+                        }
+                    };
+                    if let Some(e) = err {
+                        error_msg = Some(e);
+                    }
                     // Unsigned format: use two's complement representation
                     let uval = val as u64;
                     let prefix = if alt_form && uval != 0 { "0" } else { "" };
@@ -2668,13 +2753,18 @@ pub(crate) fn format_printf(fmt: &str, args: &[String], arg_idx: &mut usize) -> 
                     result.push_str(&formatted);
                 }
                 'x' | 'X' => {
-                    let val = if *arg_idx < args.len() {
-                        let a = &args[*arg_idx];
-                        *arg_idx += 1;
-                        parse_printf_int(a)
-                    } else {
-                        0
+                    let (val, err) = {
+                        if *arg_idx < args.len() {
+                            let a = &args[*arg_idx];
+                            *arg_idx += 1;
+                            parse_printf_int(a)
+                        } else {
+                            (0, None)
+                        }
                     };
+                    if let Some(e) = err {
+                        error_msg = Some(e);
+                    }
                     // Unsigned format: use two's complement representation
                     let uval = val as u64;
                     let prefix = if alt_form && uval != 0 {
@@ -2710,23 +2800,20 @@ pub(crate) fn format_printf(fmt: &str, args: &[String], arg_idx: &mut usize) -> 
                     };
                     let prec = precision.unwrap_or(6);
                     let num_str = match conv {
-                        'e' => format!("{:.prec$e}", val),
-                        'E' => format!("{:.prec$E}", val),
+                        'e' => format_scientific(val, prec, false),
+                        'E' => format_scientific(val, prec, true),
                         'g' | 'G' => {
-                            // %g uses shorter of %e or %f
-                            let f_str = format!("{:.prec$}", val);
-                            let e_str = if conv == 'g' {
-                                format!("{:.prec$e}", val)
+                            let upper = conv == 'G';
+                            format_g(val, prec, upper, alt_form)
+                        }
+                        _ => {
+                            let s = format!("{:.prec$}", val);
+                            if alt_form && !s.contains('.') {
+                                format!("{s}.")
                             } else {
-                                format!("{:.prec$E}", val)
-                            };
-                            if e_str.len() < f_str.len() {
-                                e_str
-                            } else {
-                                f_str
+                                s
                             }
                         }
-                        _ => format!("{:.prec$}", val),
                     };
                     let sign = if val.is_sign_negative() && !num_str.starts_with('-') {
                         "-"
@@ -2795,9 +2882,17 @@ pub(crate) fn format_printf(fmt: &str, args: &[String], arg_idx: &mut usize) -> 
                     } else {
                         String::new()
                     };
-                    result.push_str(&printf_shell_quote(&arg));
+                    let quoted = printf_shell_quote(&arg);
+                    let w = width.unwrap_or(0);
+                    if left_align {
+                        result.push_str(&format!("{:<width$}", quoted, width = w));
+                    } else {
+                        result.push_str(&format!("{:>width$}", quoted, width = w));
+                    }
                 }
                 _ => {
+                    // Unknown format specifier: produce error
+                    error_msg = Some(format!("printf: %{conv}: invalid format character\n"));
                     result.push('%');
                     result.push_str(&flags);
                     if let Some(w) = width {
@@ -2815,7 +2910,7 @@ pub(crate) fn format_printf(fmt: &str, args: &[String], arg_idx: &mut usize) -> 
         }
         i += 1;
     }
-    (result, terminate)
+    (result, terminate, error_msg)
 }
 
 struct IntFmtOpts<'a> {
@@ -2878,6 +2973,90 @@ fn format_int_padded(opts: &IntFmtOpts) -> String {
     }
 }
 
+/// Format a float in scientific notation matching C printf %e (e.g., "3.140000e+00").
+fn format_scientific(val: f64, prec: usize, upper: bool) -> String {
+    if val == 0.0 {
+        let letter = if upper { 'E' } else { 'e' };
+        return if prec == 0 {
+            format!("0{letter}+00")
+        } else {
+            format!("0.{:0>prec$}{letter}+00", "", prec = prec)
+        };
+    }
+    let abs_val = val.abs();
+    let exp = abs_val.log10().floor() as i32;
+    let mantissa = abs_val / 10f64.powi(exp);
+    let letter = if upper { 'E' } else { 'e' };
+    let sign_char = if exp < 0 { '-' } else { '+' };
+    let abs_exp = exp.unsigned_abs();
+    let mantissa_str = format!("{:.prec$}", mantissa, prec = prec);
+    let neg = if val.is_sign_negative() { "-" } else { "" };
+    if abs_exp >= 100 {
+        format!("{neg}{mantissa_str}{letter}{sign_char}{abs_exp}")
+    } else {
+        format!("{neg}{mantissa_str}{letter}{sign_char}{abs_exp:02}")
+    }
+}
+
+/// Format a float using %g rules: use %e if exponent < -4 or >= precision,
+/// otherwise use %f. Trailing zeros are removed unless # flag is set.
+fn format_g(val: f64, prec: usize, upper: bool, alt_form: bool) -> String {
+    let prec = if prec == 0 { 1 } else { prec };
+    if val == 0.0 {
+        if alt_form {
+            return format!("0.{:0>width$}", "", width = prec.saturating_sub(1));
+        }
+        return "0".to_string();
+    }
+    let abs_val = val.abs();
+    let exp = abs_val.log10().floor() as i32;
+    if exp < -4 || exp >= prec as i32 {
+        // Use scientific notation
+        let sig_digits = prec.saturating_sub(1);
+        let s = format_scientific(val, sig_digits, upper);
+        if !alt_form {
+            strip_trailing_zeros_scientific(&s)
+        } else {
+            s
+        }
+    } else {
+        // Use fixed notation
+        let decimal_places = (prec as i32 - 1 - exp).max(0) as usize;
+        let s = format!("{:.prec$}", val, prec = decimal_places);
+        if !alt_form {
+            strip_trailing_zeros_fixed(&s)
+        } else {
+            s
+        }
+    }
+}
+
+/// Remove trailing zeros after decimal point in fixed notation, but keep the dot if # flag.
+fn strip_trailing_zeros_fixed(s: &str) -> String {
+    if !s.contains('.') {
+        return s.to_string();
+    }
+    let s = s.trim_end_matches('0');
+    let s = s.trim_end_matches('.');
+    s.to_string()
+}
+
+/// Remove trailing zeros after decimal point in scientific notation (e.g., "1.200e+01" → "1.2e+01").
+fn strip_trailing_zeros_scientific(s: &str) -> String {
+    // Split at 'e' or 'E'
+    let split_pos = s.find('e').or_else(|| s.find('E'));
+    let Some(pos) = split_pos else {
+        return s.to_string();
+    };
+    let (mantissa, exponent) = s.split_at(pos);
+    let trimmed = if mantissa.contains('.') {
+        mantissa.trim_end_matches('0').trim_end_matches('.')
+    } else {
+        mantissa
+    };
+    format!("{trimmed}{exponent}")
+}
+
 /// Expand backslash escapes for printf %b format specifier.
 /// Returns `(expanded_text, should_terminate)`. `should_terminate` is true if `\c` was encountered.
 fn expand_printf_backslash_escapes(s: &str) -> (String, bool) {
@@ -2897,7 +3076,56 @@ fn expand_printf_backslash_escapes(s: &str) -> (String, bool) {
                 'b' => result.push('\x08'),
                 'f' => result.push('\x0C'),
                 'v' => result.push('\x0B'),
+                'x' => {
+                    // \xHH — hex escape (1-2 hex digits)
+                    let mut hex = String::new();
+                    while hex.len() < 2 && i + 1 < chars.len() && chars[i + 1].is_ascii_hexdigit() {
+                        i += 1;
+                        hex.push(chars[i]);
+                    }
+                    if hex.is_empty() {
+                        result.push('\\');
+                        result.push('x');
+                    } else if let Ok(val) = u32::from_str_radix(&hex, 16)
+                        && let Some(c) = char::from_u32(val)
+                    {
+                        result.push(c);
+                    }
+                }
+                'u' => {
+                    // \uHHHH — unicode escape (1-4 hex digits)
+                    let mut hex = String::new();
+                    while hex.len() < 4 && i + 1 < chars.len() && chars[i + 1].is_ascii_hexdigit() {
+                        i += 1;
+                        hex.push(chars[i]);
+                    }
+                    if hex.is_empty() {
+                        result.push('\\');
+                        result.push('u');
+                    } else if let Ok(val) = u32::from_str_radix(&hex, 16)
+                        && let Some(c) = char::from_u32(val)
+                    {
+                        result.push(c);
+                    }
+                }
+                'U' => {
+                    // \UHHHHHHHH — unicode escape (1-8 hex digits)
+                    let mut hex = String::new();
+                    while hex.len() < 8 && i + 1 < chars.len() && chars[i + 1].is_ascii_hexdigit() {
+                        i += 1;
+                        hex.push(chars[i]);
+                    }
+                    if hex.is_empty() {
+                        result.push('\\');
+                        result.push('U');
+                    } else if let Ok(val) = u32::from_str_radix(&hex, 16)
+                        && let Some(c) = char::from_u32(val)
+                    {
+                        result.push(c);
+                    }
+                }
                 '0' => {
+                    // \0NNN — octal with leading 0 (up to 3 digits after the 0)
                     let mut val = 0u32;
                     let mut count = 0;
                     while count < 3
@@ -2912,6 +3140,23 @@ fn expand_printf_backslash_escapes(s: &str) -> (String, bool) {
                     if count == 0 {
                         result.push('\0');
                     } else if let Some(c) = char::from_u32(val) {
+                        result.push(c);
+                    }
+                }
+                c @ '1'..='7' => {
+                    // \NNN — octal without leading 0 (up to 3 digits total)
+                    let mut val = c.to_digit(8).unwrap_or(0);
+                    let mut count = 1;
+                    while count < 3
+                        && i + 1 < chars.len()
+                        && chars[i + 1] >= '0'
+                        && chars[i + 1] <= '7'
+                    {
+                        i += 1;
+                        val = val * 8 + chars[i].to_digit(8).unwrap_or(0);
+                        count += 1;
+                    }
+                    if let Some(c) = char::from_u32(val) {
                         result.push(c);
                     }
                 }

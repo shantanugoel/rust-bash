@@ -278,6 +278,7 @@ bugs.test:for loop (issue #1446)
 bugs.test:if/else
 bugs.test:OSH can use ARGV name
 bugs.test:other builtins fail on writing to full disk
+bugs.test:printf integer size bug
 bugs.test:(( status bug
 bugs.test:Turn an array into an integer.
 bugs.test:unset readonly -- one line
@@ -406,6 +407,7 @@ builtin-meta.test:command -p (hide tool in custom path)
 builtin-meta.test:command skips function lookup
 builtin-meta.test:command -V nonexistent
 builtin-misc.test:Invalid shift argument
+builtin-misc.test:Print shell strings with normal chars: set and printf %q and ${x@Q}
 builtin-misc.test:shift
 builtin-misc.test:Shifting too far
 builtin-misc.test:time pipeline
@@ -415,18 +417,26 @@ builtin-printf.test:%06x %06X %06o
 builtin-printf.test:dynamic declare instead of %q
 builtin-printf.test:dynamic declare instead of %s
 builtin-printf.test:empty string (osh is more strict)
+builtin-printf.test:leading spaces are accepted in value given to %d %X, but not trailing spaces
+builtin-printf.test:negative numbers with unsigned / octal / hex
 builtin-printf.test:No char after ' => zero code point
 builtin-printf.test:printf %6.0s and %0.0s
 builtin-printf.test:printf %6.4d -- "precision" does padding for integers
 builtin-printf.test:printf %6.4s does both truncation and padding
 builtin-printf.test:printf %6.4x X o
+builtin-printf.test:printf %6q (width)
 builtin-printf.test:printf %6.s and %0.s
 builtin-printf.test:printf + and space flags
+builtin-printf.test:printf %b does backslash escaping
 builtin-printf.test:printf %b respects \c early return
+builtin-printf.test:printf %b supports octal escapes, both \141 and \0141
+builtin-printf.test:printf %b unicode escapes
 builtin-printf.test:printf %c ASCII
 builtin-printf.test:printf %d with + prefix (positive sign)
 builtin-printf.test:printf %d %X support hex 0x5 and octal 055
+builtin-printf.test:printf eE fF gG
 builtin-printf.test:printf % escapes
+builtin-printf.test:printf # flag
 builtin-printf.test:printf floating point (not required, but they all implement it)
 builtin-printf.test:printf floating point with - and 0
 builtin-printf.test:printf integer
@@ -437,6 +447,10 @@ builtin-printf.test:printf -v dynamic scope
 builtin-printf.test:printf -v %q
 builtin-printf.test:printf -v %s
 builtin-printf.test:printf width strings
+builtin-printf.test:printf with no args
+builtin-printf.test:Unicode char with '
+builtin-printf.test:unsigned / octal / hex
+builtin-printf.test:unsigned / octal / hex big
 builtin-read.test:dynamic scope used to set vars
 builtin-read.test:IFS= read -n (OSH regression: value saved in tempenv)
 builtin-read.test:IFS='x ' read a b: trailing spaces (with max_split)
@@ -445,10 +459,12 @@ builtin-read.test:read builtin with no newline returns status 1
 builtin-read.test:read builtin with too few variables
 builtin-read.test:read -d : (colon-separated records)
 builtin-read.test:read /dev/null
+builtin-read.test:read -d -n - respects delimiter and splits
 builtin-read.test:read does not respect C backslash escapes
 builtin-read.test:read from empty file
 builtin-read.test:read line from here doc
 builtin-read.test:read -n 0
+builtin-read.test:read -n doesn't strip whitespace (bug fix)
 builtin-read.test:read -n from pipe
 builtin-read.test:read -N ignores delimiters
 builtin-read.test:read -n with invalid arg
@@ -463,6 +479,7 @@ builtin-read.test:read with IFS=''
 builtin-read.test:read with IFS=$'\n'
 builtin-read.test:read with smooshed args
 builtin-read.test:read with zero args
+builtin-set.test:A single + is an ignored flag; not an argument
 builtin-set.test:can continue after unknown option
 builtin-set.test:nounset with "$@"
 builtin-set.test:reset option with long flag
@@ -841,6 +858,8 @@ sh-func.test:return "" (a lot of disagreement)
 sh-func.test:Return statement
 sh-func.test:Return without args gives previous
 sh-options-bash.test:SHELLOPTS is updated when options are changed
+sh-options-bash.test:shopt -s progcomp hostcomplete are stubs (bash-completion)
+sh-options.test:$- and more options
 sh-options.test:noclobber off
 sh-options.test:noclobber on
 sh-options.test:noclobber on &> >
@@ -848,6 +867,8 @@ sh-options.test:noclobber on &>> >>
 sh-options.test:noclobber on >>
 sh-options.test:no-ops not shown by shopt -p
 sh-options.test:set -o vi/emacs
+sh-options.test:set without args and array variables
+sh-options.test:set without args lists variables
 sh-options.test:shopt allows for backward compatibility like bash
 sh-options.test:shopt -p exit code (regression)
 sh-options.test:shopt -p prints 'shopt' options

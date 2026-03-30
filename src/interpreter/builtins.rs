@@ -936,11 +936,33 @@ fn builtin_unset(
 
 fn builtin_set(args: &[String], state: &mut InterpreterState) -> Result<ExecResult, RustBashError> {
     if args.is_empty() {
-        // List all variables
+        // List all variables in bash format (no quotes for scalars, array syntax for arrays)
         let mut lines: Vec<String> = state
             .env
             .iter()
-            .map(|(k, v)| format!("{k}='{}'\n", v.value.as_scalar()))
+            .map(|(k, v)| match &v.value {
+                VariableValue::IndexedArray(map) => {
+                    let elements: Vec<String> = map
+                        .iter()
+                        .map(|(idx, val)| format!("[{idx}]=\"{val}\""))
+                        .collect();
+                    format!("{k}=({})\n", elements.join(" "))
+                }
+                VariableValue::AssociativeArray(map) => {
+                    let elements: Vec<String> = map
+                        .iter()
+                        .map(|(key, val)| {
+                            if key.contains(' ') || key.contains('"') {
+                                format!("[\"{key}\"]=\"{val}\"")
+                            } else {
+                                format!("[{key}]=\"{val}\"")
+                            }
+                        })
+                        .collect();
+                    format!("{k}=({})\n", elements.join(" "))
+                }
+                VariableValue::Scalar(s) => format!("{k}={s}\n"),
+            })
             .collect();
         lines.sort();
         return Ok(ExecResult {
@@ -963,12 +985,19 @@ fn builtin_set(args: &[String], state: &mut InterpreterState) -> Result<ExecResu
                 if i < args.len() {
                     apply_option_name(&args[i], enable, state);
                 } else if !enable {
-                    // set +o with no arg: list options
+                    // set +o with no arg: list options in re-parseable format
+                    let mut out = String::new();
+                    for name in SET_O_OPTIONS {
+                        let val = get_set_option(name, state).unwrap_or(false);
+                        let flag = if val { "-o" } else { "+o" };
+                        out.push_str(&format!("set {flag} {name}\n"));
+                    }
                     return Ok(ExecResult {
-                        stdout: format_options(state),
+                        stdout: out,
                         ..ExecResult::default()
                     });
                 } else {
+                    // set -o with no arg: list options in tabular format
                     return Ok(ExecResult {
                         stdout: format_options(state),
                         ..ExecResult::default()
@@ -1036,22 +1065,13 @@ fn apply_option_name(name: &str, enable: bool, state: &mut InterpreterState) {
 }
 
 fn format_options(state: &InterpreterState) -> String {
-    let on_off = |b: bool| if b { "on" } else { "off" };
-    format!(
-        "allexport      {}\nemacs          {}\nerrexit        {}\nnoclobber      {}\nnoexec         {}\nnoglob         {}\nnounset        {}\npipefail       {}\nposix          {}\nverbose        {}\nvi             {}\nxtrace         {}\n",
-        on_off(state.shell_opts.allexport),
-        on_off(state.shell_opts.emacs_mode),
-        on_off(state.shell_opts.errexit),
-        on_off(state.shell_opts.noclobber),
-        on_off(state.shell_opts.noexec),
-        on_off(state.shell_opts.noglob),
-        on_off(state.shell_opts.nounset),
-        on_off(state.shell_opts.pipefail),
-        on_off(state.shell_opts.posix),
-        on_off(state.shell_opts.verbose),
-        on_off(state.shell_opts.vi_mode),
-        on_off(state.shell_opts.xtrace),
-    )
+    let mut out = String::new();
+    for name in SET_O_OPTIONS {
+        let val = get_set_option(name, state).unwrap_or(false);
+        let status = if val { "on" } else { "off" };
+        out.push_str(&format!("{name:<23}\t{status}\n"));
+    }
+    out
 }
 
 // ── shift ───────────────────────────────────────────────────────────
@@ -2078,11 +2098,20 @@ fn assign_fields_to_vars(
     var_names: &[&str],
 ) -> Result<(), RustBashError> {
     if ifs.is_empty() || var_names.len() <= 1 {
-        // Single variable or empty IFS: trim IFS whitespace, assign whole line
-        let ifs_ws = |c: char| (c == ' ' || c == '\t' || c == '\n') && ifs.contains(c);
-        let trimmed = line.trim_matches(ifs_ws);
+        // Single variable: assign whole line
+        // For REPLY (no named vars), don't trim leading/trailing whitespace
+        // For a single named var, only trim IFS whitespace from edges
+        let value = if var_names.first().copied() == Some("REPLY") && var_names.len() == 1 {
+            // REPLY: strip trailing newline but preserve other whitespace
+            line.to_string()
+        } else if ifs.is_empty() {
+            line.to_string()
+        } else {
+            let ifs_ws = |c: char| (c == ' ' || c == '\t' || c == '\n') && ifs.contains(c);
+            line.trim_matches(ifs_ws).to_string()
+        };
         let var_name = var_names.first().copied().unwrap_or("REPLY");
-        return set_variable(state, var_name, trimmed.to_string());
+        return set_variable(state, var_name, value);
     }
 
     // Multiple variables: extract fields one at a time, preserving original text for the last
@@ -2304,49 +2333,141 @@ fn builtin_trap(
 
 /// Ordered list of all shopt option names (for consistent listing).
 const SHOPT_OPTIONS: &[&str] = &[
+    "autocd",
+    "cdspell",
+    "checkhash",
+    "checkjobs",
+    "checkwinsize",
+    "cmdhist",
+    "complete_fullquote",
+    "direxpand",
+    "dirspell",
     "dotglob",
+    "execfail",
     "expand_aliases",
     "extglob",
+    "extquote",
     "failglob",
+    "force_fignore",
+    "globasciiranges",
     "globskipdots",
     "globstar",
+    "gnu_errfmt",
+    "histappend",
+    "histreedit",
+    "histverify",
+    "hostcomplete",
+    "huponexit",
+    "inherit_errexit",
+    "interactive_comments",
     "lastpipe",
+    "lithist",
+    "login_shell",
+    "mailwarn",
+    "no_empty_cmd_completion",
     "nocaseglob",
     "nocasematch",
     "nullglob",
+    "progcomp",
+    "progcomp_alias",
+    "promptvars",
+    "shift_verbose",
+    "sourcepath",
     "xpg_echo",
 ];
 
 fn get_shopt(state: &InterpreterState, name: &str) -> Option<bool> {
+    let o = &state.shopt_opts;
     match name {
-        "nullglob" => Some(state.shopt_opts.nullglob),
-        "globstar" => Some(state.shopt_opts.globstar),
-        "dotglob" => Some(state.shopt_opts.dotglob),
-        "globskipdots" => Some(state.shopt_opts.globskipdots),
-        "failglob" => Some(state.shopt_opts.failglob),
-        "nocaseglob" => Some(state.shopt_opts.nocaseglob),
-        "nocasematch" => Some(state.shopt_opts.nocasematch),
-        "lastpipe" => Some(state.shopt_opts.lastpipe),
-        "expand_aliases" => Some(state.shopt_opts.expand_aliases),
-        "xpg_echo" => Some(state.shopt_opts.xpg_echo),
-        "extglob" => Some(state.shopt_opts.extglob),
+        "autocd" => Some(o.autocd),
+        "cdspell" => Some(o.cdspell),
+        "checkhash" => Some(o.checkhash),
+        "checkjobs" => Some(o.checkjobs),
+        "checkwinsize" => Some(o.checkwinsize),
+        "cmdhist" => Some(o.cmdhist),
+        "complete_fullquote" => Some(o.complete_fullquote),
+        "direxpand" => Some(o.direxpand),
+        "dirspell" => Some(o.dirspell),
+        "dotglob" => Some(o.dotglob),
+        "execfail" => Some(o.execfail),
+        "expand_aliases" => Some(o.expand_aliases),
+        "extglob" => Some(o.extglob),
+        "extquote" => Some(o.extquote),
+        "failglob" => Some(o.failglob),
+        "force_fignore" => Some(o.force_fignore),
+        "globasciiranges" => Some(o.globasciiranges),
+        "globskipdots" => Some(o.globskipdots),
+        "globstar" => Some(o.globstar),
+        "gnu_errfmt" => Some(o.gnu_errfmt),
+        "histappend" => Some(o.histappend),
+        "histreedit" => Some(o.histreedit),
+        "histverify" => Some(o.histverify),
+        "hostcomplete" => Some(o.hostcomplete),
+        "huponexit" => Some(o.huponexit),
+        "inherit_errexit" => Some(o.inherit_errexit),
+        "interactive_comments" => Some(o.interactive_comments),
+        "lastpipe" => Some(o.lastpipe),
+        "lithist" => Some(o.lithist),
+        "login_shell" => Some(o.login_shell),
+        "mailwarn" => Some(o.mailwarn),
+        "no_empty_cmd_completion" => Some(o.no_empty_cmd_completion),
+        "nocaseglob" => Some(o.nocaseglob),
+        "nocasematch" => Some(o.nocasematch),
+        "nullglob" => Some(o.nullglob),
+        "progcomp" => Some(o.progcomp),
+        "progcomp_alias" => Some(o.progcomp_alias),
+        "promptvars" => Some(o.promptvars),
+        "shift_verbose" => Some(o.shift_verbose),
+        "sourcepath" => Some(o.sourcepath),
+        "xpg_echo" => Some(o.xpg_echo),
         _ => None,
     }
 }
 
 fn set_shopt(state: &mut InterpreterState, name: &str, value: bool) -> bool {
+    let o = &mut state.shopt_opts;
     match name {
-        "nullglob" => state.shopt_opts.nullglob = value,
-        "globstar" => state.shopt_opts.globstar = value,
-        "dotglob" => state.shopt_opts.dotglob = value,
-        "globskipdots" => state.shopt_opts.globskipdots = value,
-        "failglob" => state.shopt_opts.failglob = value,
-        "nocaseglob" => state.shopt_opts.nocaseglob = value,
-        "nocasematch" => state.shopt_opts.nocasematch = value,
-        "lastpipe" => state.shopt_opts.lastpipe = value,
-        "expand_aliases" => state.shopt_opts.expand_aliases = value,
-        "xpg_echo" => state.shopt_opts.xpg_echo = value,
-        "extglob" => state.shopt_opts.extglob = value,
+        "autocd" => o.autocd = value,
+        "cdspell" => o.cdspell = value,
+        "checkhash" => o.checkhash = value,
+        "checkjobs" => o.checkjobs = value,
+        "checkwinsize" => o.checkwinsize = value,
+        "cmdhist" => o.cmdhist = value,
+        "complete_fullquote" => o.complete_fullquote = value,
+        "direxpand" => o.direxpand = value,
+        "dirspell" => o.dirspell = value,
+        "dotglob" => o.dotglob = value,
+        "execfail" => o.execfail = value,
+        "expand_aliases" => o.expand_aliases = value,
+        "extglob" => o.extglob = value,
+        "extquote" => o.extquote = value,
+        "failglob" => o.failglob = value,
+        "force_fignore" => o.force_fignore = value,
+        "globasciiranges" => o.globasciiranges = value,
+        "globskipdots" => o.globskipdots = value,
+        "globstar" => o.globstar = value,
+        "gnu_errfmt" => o.gnu_errfmt = value,
+        "histappend" => o.histappend = value,
+        "histreedit" => o.histreedit = value,
+        "histverify" => o.histverify = value,
+        "hostcomplete" => o.hostcomplete = value,
+        "huponexit" => o.huponexit = value,
+        "inherit_errexit" => o.inherit_errexit = value,
+        "interactive_comments" => o.interactive_comments = value,
+        "lastpipe" => o.lastpipe = value,
+        "lithist" => o.lithist = value,
+        "login_shell" => o.login_shell = value,
+        "mailwarn" => o.mailwarn = value,
+        "no_empty_cmd_completion" => o.no_empty_cmd_completion = value,
+        "nocaseglob" => o.nocaseglob = value,
+        "nocasematch" => o.nocasematch = value,
+        "nullglob" => o.nullglob = value,
+        "progcomp" => o.progcomp = value,
+        "progcomp_alias" => o.progcomp_alias = value,
+        "promptvars" => o.promptvars = value,
+        "shift_verbose" => o.shift_verbose = value,
+        "sourcepath" => o.sourcepath = value,
+        "xpg_echo" => o.xpg_echo = value,
         _ => return false,
     }
     true
@@ -2361,6 +2482,7 @@ fn builtin_shopt(
     let mut unset_flag = false; // -u
     let mut query_flag = false; // -q
     let mut print_flag = false; // -p
+    let mut o_flag = false; // -o (use set -o options instead of shopt options)
     let mut opt_names: Vec<&str> = Vec::new();
 
     let mut i = 0;
@@ -2373,6 +2495,7 @@ fn builtin_shopt(
                     'u' => unset_flag = true,
                     'q' => query_flag = true,
                     'p' => print_flag = true,
+                    'o' => o_flag = true,
                     _ => {
                         return Ok(ExecResult {
                             stderr: format!("shopt: -{c}: invalid option\n"),
@@ -2386,6 +2509,13 @@ fn builtin_shopt(
             opt_names.push(arg);
         }
         i += 1;
+    }
+
+    // If -o flag is set, operate on set -o options instead of shopt options
+    if o_flag {
+        return shopt_o_mode(
+            set_flag, unset_flag, query_flag, print_flag, &opt_names, state,
+        );
     }
 
     // shopt -s opt ... — enable; or shopt -s with no args — list enabled
@@ -2402,7 +2532,6 @@ fn builtin_shopt(
                 ..ExecResult::default()
             });
         }
-        let exit_code = 0;
         for name in &opt_names {
             if !set_shopt(state, name, true) {
                 return Ok(ExecResult {
@@ -2412,10 +2541,7 @@ fn builtin_shopt(
                 });
             }
         }
-        return Ok(ExecResult {
-            exit_code,
-            ..ExecResult::default()
-        });
+        return Ok(ExecResult::default());
     }
 
     // shopt -u opt ... — disable; or shopt -u with no args — list disabled
@@ -2523,6 +2649,186 @@ fn builtin_shopt(
     }
 
     Ok(ExecResult::default())
+}
+
+// ── shopt -o helper ─────────────────────────────────────────────────
+
+const SET_O_OPTIONS: &[&str] = &[
+    "allexport",
+    "braceexpand",
+    "emacs",
+    "errexit",
+    "hashall",
+    "histexpand",
+    "history",
+    "interactive-comments",
+    "monitor",
+    "noclobber",
+    "noexec",
+    "noglob",
+    "nounset",
+    "pipefail",
+    "posix",
+    "verbose",
+    "vi",
+    "xtrace",
+];
+
+fn get_set_option(name: &str, state: &InterpreterState) -> Option<bool> {
+    match name {
+        "allexport" => Some(state.shell_opts.allexport),
+        "braceexpand" => Some(true), // always on
+        "emacs" => Some(state.shell_opts.emacs_mode),
+        "errexit" => Some(state.shell_opts.errexit),
+        "hashall" => Some(true), // always on
+        "histexpand" => Some(false),
+        "history" => Some(false),
+        "interactive-comments" => Some(true),
+        "monitor" => Some(false),
+        "noclobber" => Some(state.shell_opts.noclobber),
+        "noexec" => Some(state.shell_opts.noexec),
+        "noglob" => Some(state.shell_opts.noglob),
+        "nounset" => Some(state.shell_opts.nounset),
+        "pipefail" => Some(state.shell_opts.pipefail),
+        "posix" => Some(state.shell_opts.posix),
+        "verbose" => Some(state.shell_opts.verbose),
+        "vi" => Some(state.shell_opts.vi_mode),
+        "xtrace" => Some(state.shell_opts.xtrace),
+        _ => None,
+    }
+}
+
+fn shopt_o_mode(
+    set_flag: bool,
+    unset_flag: bool,
+    query_flag: bool,
+    print_flag: bool,
+    opt_names: &[&str],
+    state: &mut InterpreterState,
+) -> Result<ExecResult, RustBashError> {
+    // shopt -o -s opt ... — enable set option
+    if set_flag {
+        if opt_names.is_empty() {
+            let mut out = String::new();
+            for name in SET_O_OPTIONS {
+                if get_set_option(name, state) == Some(true) {
+                    out.push_str(&format!("{name:<20}on\n"));
+                }
+            }
+            return Ok(ExecResult {
+                stdout: out,
+                ..ExecResult::default()
+            });
+        }
+        for name in opt_names {
+            if get_set_option(name, state).is_none() {
+                return Ok(ExecResult {
+                    stderr: format!("shopt: {name}: invalid shell option name\n"),
+                    exit_code: 1,
+                    ..ExecResult::default()
+                });
+            }
+            apply_option_name(name, true, state);
+        }
+        return Ok(ExecResult::default());
+    }
+
+    // shopt -o -u opt ... — disable set option
+    if unset_flag {
+        if opt_names.is_empty() {
+            let mut out = String::new();
+            for name in SET_O_OPTIONS {
+                if get_set_option(name, state) == Some(false) {
+                    out.push_str(&format!("{name:<20}off\n"));
+                }
+            }
+            return Ok(ExecResult {
+                stdout: out,
+                ..ExecResult::default()
+            });
+        }
+        for name in opt_names {
+            if get_set_option(name, state).is_none() {
+                return Ok(ExecResult {
+                    stderr: format!("shopt: {name}: invalid shell option name\n"),
+                    exit_code: 1,
+                    ..ExecResult::default()
+                });
+            }
+            apply_option_name(name, false, state);
+        }
+        return Ok(ExecResult::default());
+    }
+
+    // shopt -o -q opt ... — query
+    if query_flag {
+        for name in opt_names {
+            match get_set_option(name, state) {
+                Some(true) => {}
+                Some(false) => {
+                    return Ok(ExecResult {
+                        exit_code: 1,
+                        ..ExecResult::default()
+                    });
+                }
+                None => {
+                    return Ok(ExecResult {
+                        stderr: format!("shopt: {name}: invalid shell option name\n"),
+                        exit_code: 2,
+                        ..ExecResult::default()
+                    });
+                }
+            }
+        }
+        return Ok(ExecResult::default());
+    }
+
+    // shopt -p -o / shopt -o (listing)
+    let no_args = opt_names.is_empty();
+    let names: Vec<&str> = if no_args {
+        SET_O_OPTIONS.to_vec()
+    } else {
+        opt_names.to_vec()
+    };
+
+    if !print_flag && no_args {
+        let mut out = String::new();
+        for name in SET_O_OPTIONS {
+            let val = get_set_option(name, state).unwrap_or(false);
+            let status = if val { "on" } else { "off" };
+            out.push_str(&format!("{name:<20}{status}\n"));
+        }
+        return Ok(ExecResult {
+            stdout: out,
+            ..ExecResult::default()
+        });
+    }
+
+    let mut out = String::new();
+    let mut any_invalid = false;
+    for name in &names {
+        match get_set_option(name, state) {
+            Some(val) => {
+                let flag = if val { "-o" } else { "+o" };
+                out.push_str(&format!("set {flag} {name}\n"));
+            }
+            None => {
+                if print_flag {
+                    return Ok(ExecResult {
+                        stderr: format!("shopt: {name}: invalid shell option name\n"),
+                        exit_code: 1,
+                        ..ExecResult::default()
+                    });
+                }
+                any_invalid = true;
+            }
+        }
+    }
+    Ok(ExecResult {
+        stdout: out,
+        exit_code: if any_invalid { 1 } else { 0 },
+        ..ExecResult::default()
+    })
 }
 
 // ── source / . ──────────────────────────────────────────────────────
@@ -3927,7 +4233,7 @@ fn builtin_printf(
     if args.is_empty() {
         return Ok(ExecResult {
             stderr: "printf: usage: printf [-v var] format [arguments]\n".into(),
-            exit_code: 1,
+            exit_code: 2,
             ..ExecResult::default()
         });
     }
@@ -3944,21 +4250,29 @@ fn builtin_printf(
     if remaining_args.is_empty() {
         return Ok(ExecResult {
             stderr: "printf: usage: printf [-v var] format [arguments]\n".into(),
-            exit_code: 1,
+            exit_code: 2,
             ..ExecResult::default()
         });
     }
 
     let format_str = &remaining_args[0];
     let arguments = &remaining_args[1..];
-    let output = crate::commands::text::run_printf_format(format_str, arguments);
+    let result = crate::commands::text::run_printf_format(format_str, arguments);
+
+    let exit_code = if result.had_error { 1 } else { 0 };
 
     if let Some(name) = var_name {
-        set_variable(state, &name, output)?;
-        Ok(ExecResult::default())
+        set_variable(state, &name, result.stdout)?;
+        Ok(ExecResult {
+            stderr: result.stderr,
+            exit_code,
+            ..ExecResult::default()
+        })
     } else {
         Ok(ExecResult {
-            stdout: output,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            exit_code,
             ..ExecResult::default()
         })
     }

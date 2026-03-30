@@ -5364,8 +5364,9 @@ fn shellopts_reflects_set_flags() {
 fn shellopts_empty_by_default() {
     let mut sh = shell();
     let r = sh.exec("echo \"$SHELLOPTS\"").unwrap();
-    // No options enabled by default
-    assert_eq!(r.stdout.trim(), "");
+    // Default options: braceexpand and hashall are always on
+    assert!(r.stdout.trim().contains("braceexpand"));
+    assert!(r.stdout.trim().contains("hashall"));
 }
 
 #[test]

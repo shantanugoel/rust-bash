@@ -1887,8 +1887,27 @@ fn resolve_named_var(name: &str, state: &InterpreterState) -> String {
 /// Compute `SHELLOPTS` — colon-separated list of enabled `set -o` options.
 fn compute_shellopts(state: &InterpreterState) -> String {
     let mut opts = Vec::new();
+    if state.shell_opts.allexport {
+        opts.push("allexport");
+    }
+    // braceexpand is always on
+    opts.push("braceexpand");
+    if state.shell_opts.emacs_mode {
+        opts.push("emacs");
+    }
     if state.shell_opts.errexit {
         opts.push("errexit");
+    }
+    // hashall is always on
+    opts.push("hashall");
+    if state.shell_opts.noclobber {
+        opts.push("noclobber");
+    }
+    if state.shell_opts.noexec {
+        opts.push("noexec");
+    }
+    if state.shell_opts.noglob {
+        opts.push("noglob");
     }
     if state.shell_opts.nounset {
         opts.push("nounset");
@@ -1896,47 +1915,148 @@ fn compute_shellopts(state: &InterpreterState) -> String {
     if state.shell_opts.pipefail {
         opts.push("pipefail");
     }
+    if state.shell_opts.posix {
+        opts.push("posix");
+    }
+    if state.shell_opts.verbose {
+        opts.push("verbose");
+    }
+    if state.shell_opts.vi_mode {
+        opts.push("vi");
+    }
     if state.shell_opts.xtrace {
         opts.push("xtrace");
     }
-    opts.sort_unstable();
+    // Already in alphabetical order due to how we construct it
     opts.join(":")
 }
 
 /// Compute `BASHOPTS` — colon-separated list of enabled `shopt` options.
 fn compute_bashopts(state: &InterpreterState) -> String {
+    let o = &state.shopt_opts;
     let mut opts = Vec::new();
-    if state.shopt_opts.dotglob {
+    // Must be alphabetical order (bash convention)
+    if o.autocd {
+        opts.push("autocd");
+    }
+    if o.cdspell {
+        opts.push("cdspell");
+    }
+    if o.checkhash {
+        opts.push("checkhash");
+    }
+    if o.checkjobs {
+        opts.push("checkjobs");
+    }
+    if o.checkwinsize {
+        opts.push("checkwinsize");
+    }
+    if o.cmdhist {
+        opts.push("cmdhist");
+    }
+    if o.complete_fullquote {
+        opts.push("complete_fullquote");
+    }
+    if o.direxpand {
+        opts.push("direxpand");
+    }
+    if o.dirspell {
+        opts.push("dirspell");
+    }
+    if o.dotglob {
         opts.push("dotglob");
     }
-    if state.shopt_opts.expand_aliases {
+    if o.execfail {
+        opts.push("execfail");
+    }
+    if o.expand_aliases {
         opts.push("expand_aliases");
     }
-    if state.shopt_opts.extglob {
+    if o.extglob {
         opts.push("extglob");
     }
-    if state.shopt_opts.failglob {
+    if o.extquote {
+        opts.push("extquote");
+    }
+    if o.failglob {
         opts.push("failglob");
     }
-    if state.shopt_opts.globskipdots {
+    if o.force_fignore {
+        opts.push("force_fignore");
+    }
+    if o.globasciiranges {
+        opts.push("globasciiranges");
+    }
+    if o.globskipdots {
         opts.push("globskipdots");
     }
-    if state.shopt_opts.globstar {
+    if o.globstar {
         opts.push("globstar");
     }
-    if state.shopt_opts.lastpipe {
+    if o.gnu_errfmt {
+        opts.push("gnu_errfmt");
+    }
+    if o.histappend {
+        opts.push("histappend");
+    }
+    if o.histreedit {
+        opts.push("histreedit");
+    }
+    if o.histverify {
+        opts.push("histverify");
+    }
+    if o.hostcomplete {
+        opts.push("hostcomplete");
+    }
+    if o.huponexit {
+        opts.push("huponexit");
+    }
+    if o.inherit_errexit {
+        opts.push("inherit_errexit");
+    }
+    if o.interactive_comments {
+        opts.push("interactive_comments");
+    }
+    if o.lastpipe {
         opts.push("lastpipe");
     }
-    if state.shopt_opts.nocaseglob {
+    if o.lithist {
+        opts.push("lithist");
+    }
+    if o.login_shell {
+        opts.push("login_shell");
+    }
+    if o.mailwarn {
+        opts.push("mailwarn");
+    }
+    if o.no_empty_cmd_completion {
+        opts.push("no_empty_cmd_completion");
+    }
+    if o.nocaseglob {
         opts.push("nocaseglob");
     }
-    if state.shopt_opts.nocasematch {
+    if o.nocasematch {
         opts.push("nocasematch");
     }
-    if state.shopt_opts.nullglob {
+    if o.nullglob {
         opts.push("nullglob");
     }
-    if state.shopt_opts.xpg_echo {
+    if o.progcomp {
+        opts.push("progcomp");
+    }
+    if o.progcomp_alias {
+        opts.push("progcomp_alias");
+    }
+    if o.promptvars {
+        opts.push("promptvars");
+    }
+    if o.shift_verbose {
+        opts.push("shift_verbose");
+    }
+    if o.sourcepath {
+        opts.push("sourcepath");
+    }
+    if o.xpg_echo {
         opts.push("xpg_echo");
     }
     opts.join(":")
@@ -1977,15 +2097,35 @@ fn resolve_special(sp: &SpecialParameter, state: &InterpreterState) -> String {
         SpecialParameter::LastBackgroundProcessId => String::new(),
         SpecialParameter::ShellName => state.shell_name.clone(),
         SpecialParameter::CurrentOptionFlags => {
+            // Bash emits flags in canonical order: a e f h n u v x B C
             let mut flags = String::new();
+            if state.shell_opts.allexport {
+                flags.push('a');
+            }
             if state.shell_opts.errexit {
                 flags.push('e');
+            }
+            if state.shell_opts.noglob {
+                flags.push('f');
+            }
+            // hashall (h) is always on in bash by default
+            flags.push('h');
+            if state.shell_opts.noexec {
+                flags.push('n');
             }
             if state.shell_opts.nounset {
                 flags.push('u');
             }
+            if state.shell_opts.verbose {
+                flags.push('v');
+            }
             if state.shell_opts.xtrace {
                 flags.push('x');
+            }
+            // braceexpand (B) is always on by default
+            flags.push('B');
+            if state.shell_opts.noclobber {
+                flags.push('C');
             }
             flags
         }
