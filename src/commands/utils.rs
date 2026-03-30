@@ -1,6 +1,7 @@
 //! Utility commands: expr, date, sleep, seq, env, printenv, which, base64,
 //! md5sum, sha256sum, whoami, hostname, uname, yes
 
+use super::CommandMeta;
 use crate::commands::{CommandContext, CommandResult};
 use std::path::PathBuf;
 
@@ -16,9 +17,21 @@ fn resolve_path(path_str: &str, cwd: &str) -> PathBuf {
 
 pub struct ExprCommand;
 
+static EXPR_META: CommandMeta = CommandMeta {
+    name: "expr",
+    synopsis: "expr EXPRESSION",
+    description: "Evaluate expressions.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for ExprCommand {
     fn name(&self) -> &str {
         "expr"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&EXPR_META)
     }
 
     fn execute(&self, args: &[String], _ctx: &CommandContext) -> CommandResult {
@@ -258,9 +271,21 @@ fn is_truthy(s: &str) -> bool {
 
 pub struct DateCommand;
 
+static DATE_META: CommandMeta = CommandMeta {
+    name: "date",
+    synopsis: "date [+FORMAT]",
+    description: "Display the current date and time.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for DateCommand {
     fn name(&self) -> &str {
         "date"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&DATE_META)
     }
 
     fn execute(&self, args: &[String], _ctx: &CommandContext) -> CommandResult {
@@ -285,9 +310,21 @@ impl super::VirtualCommand for DateCommand {
 
 pub struct SleepCommand;
 
+static SLEEP_META: CommandMeta = CommandMeta {
+    name: "sleep",
+    synopsis: "sleep SECONDS",
+    description: "Delay for a specified amount of time.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for SleepCommand {
     fn name(&self) -> &str {
         "sleep"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&SLEEP_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -345,9 +382,21 @@ impl super::VirtualCommand for SleepCommand {
 
 pub struct SeqCommand;
 
+static SEQ_META: CommandMeta = CommandMeta {
+    name: "seq",
+    synopsis: "seq [FIRST [INCREMENT]] LAST",
+    description: "Print a sequence of numbers.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for SeqCommand {
     fn name(&self) -> &str {
         "seq"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&SEQ_META)
     }
 
     fn execute(&self, args: &[String], _ctx: &CommandContext) -> CommandResult {
@@ -502,9 +551,21 @@ impl super::VirtualCommand for SeqCommand {
 
 pub struct EnvCommand;
 
+static ENV_META: CommandMeta = CommandMeta {
+    name: "env",
+    synopsis: "env",
+    description: "Print the current environment.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for EnvCommand {
     fn name(&self) -> &str {
         "env"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&ENV_META)
     }
 
     fn execute(&self, _args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -527,9 +588,21 @@ impl super::VirtualCommand for EnvCommand {
 
 pub struct PrintenvCommand;
 
+static PRINTENV_META: CommandMeta = CommandMeta {
+    name: "printenv",
+    synopsis: "printenv [VARIABLE ...]",
+    description: "Print all or part of environment.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for PrintenvCommand {
     fn name(&self) -> &str {
         "printenv"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&PRINTENV_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -573,9 +646,21 @@ impl super::VirtualCommand for PrintenvCommand {
 
 pub struct WhichCommand;
 
+static WHICH_META: CommandMeta = CommandMeta {
+    name: "which",
+    synopsis: "which COMMAND ...",
+    description: "Locate a command.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for WhichCommand {
     fn name(&self) -> &str {
         "which"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&WHICH_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -638,9 +723,24 @@ impl super::VirtualCommand for WhichCommand {
 
 pub struct Base64Command;
 
+static BASE64_META: CommandMeta = CommandMeta {
+    name: "base64",
+    synopsis: "base64 [-d] [-w COLS] [FILE]",
+    description: "Base64 encode or decode data.",
+    options: &[
+        ("-d, --decode", "decode data"),
+        ("-w COLS", "wrap encoded lines after COLS characters"),
+    ],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for Base64Command {
     fn name(&self) -> &str {
         "base64"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&BASE64_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -744,9 +844,21 @@ impl super::VirtualCommand for Base64Command {
 
 pub struct Md5sumCommand;
 
+static MD5SUM_META: CommandMeta = CommandMeta {
+    name: "md5sum",
+    synopsis: "md5sum [FILE ...]",
+    description: "Compute and check MD5 message digest.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for Md5sumCommand {
     fn name(&self) -> &str {
         "md5sum"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&MD5SUM_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -810,9 +922,21 @@ impl super::VirtualCommand for Md5sumCommand {
 
 pub struct Sha256sumCommand;
 
+static SHA256SUM_META: CommandMeta = CommandMeta {
+    name: "sha256sum",
+    synopsis: "sha256sum [FILE ...]",
+    description: "Compute and check SHA256 message digest.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for Sha256sumCommand {
     fn name(&self) -> &str {
         "sha256sum"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&SHA256SUM_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -876,9 +1000,21 @@ impl super::VirtualCommand for Sha256sumCommand {
 
 pub struct WhoamiCommand;
 
+static WHOAMI_META: CommandMeta = CommandMeta {
+    name: "whoami",
+    synopsis: "whoami",
+    description: "Print effective user name.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for WhoamiCommand {
     fn name(&self) -> &str {
         "whoami"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&WHOAMI_META)
     }
 
     fn execute(&self, _args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -898,9 +1034,21 @@ impl super::VirtualCommand for WhoamiCommand {
 
 pub struct HostnameCommand;
 
+static HOSTNAME_META: CommandMeta = CommandMeta {
+    name: "hostname",
+    synopsis: "hostname",
+    description: "Show the system's host name.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for HostnameCommand {
     fn name(&self) -> &str {
         "hostname"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&HOSTNAME_META)
     }
 
     fn execute(&self, _args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -920,9 +1068,27 @@ impl super::VirtualCommand for HostnameCommand {
 
 pub struct UnameCommand;
 
+static UNAME_META: CommandMeta = CommandMeta {
+    name: "uname",
+    synopsis: "uname [-amnrs]",
+    description: "Print system information.",
+    options: &[
+        ("-a", "print all information"),
+        ("-s", "print the kernel name"),
+        ("-n", "print the network node hostname"),
+        ("-r", "print the kernel release"),
+        ("-m", "print the machine hardware name"),
+    ],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for UnameCommand {
     fn name(&self) -> &str {
         "uname"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&UNAME_META)
     }
 
     fn execute(&self, args: &[String], _ctx: &CommandContext) -> CommandResult {
@@ -984,9 +1150,21 @@ impl super::VirtualCommand for UnameCommand {
 
 pub struct YesCommand;
 
+static YES_META: CommandMeta = CommandMeta {
+    name: "yes",
+    synopsis: "yes [STRING]",
+    description: "Output a string repeatedly until killed.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for YesCommand {
     fn name(&self) -> &str {
         "yes"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&YES_META)
     }
 
     fn execute(&self, args: &[String], _ctx: &CommandContext) -> CommandResult {

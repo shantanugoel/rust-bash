@@ -66,6 +66,11 @@ impl RustBash {
         self.state.commands.keys().map(|k| k.as_str()).collect()
     }
 
+    /// Returns the `CommandMeta` for a registered command, if it provides one.
+    pub fn command_meta(&self, name: &str) -> Option<&'static commands::CommandMeta> {
+        self.state.commands.get(name).and_then(|cmd| cmd.meta())
+    }
+
     /// Sets the shell name (`$0`).
     pub fn set_shell_name(&mut self, name: String) {
         self.state.shell_name = name;

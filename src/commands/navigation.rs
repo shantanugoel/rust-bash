@@ -1,5 +1,6 @@
 //! Navigation commands: realpath, basename, dirname, tree
 
+use super::CommandMeta;
 use crate::commands::{CommandContext, CommandResult};
 use crate::vfs::NodeType;
 use std::path::{Path, PathBuf};
@@ -16,9 +17,21 @@ fn resolve_path(path_str: &str, cwd: &str) -> PathBuf {
 
 pub struct RealpathCommand;
 
+static REALPATH_META: CommandMeta = CommandMeta {
+    name: "realpath",
+    synopsis: "realpath [PATH ...]",
+    description: "Print the resolved absolute pathname.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for RealpathCommand {
     fn name(&self) -> &str {
         "realpath"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&REALPATH_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -75,9 +88,21 @@ impl super::VirtualCommand for RealpathCommand {
 
 pub struct BasenameCommand;
 
+static BASENAME_META: CommandMeta = CommandMeta {
+    name: "basename",
+    synopsis: "basename NAME [SUFFIX]",
+    description: "Strip directory and suffix from filenames.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for BasenameCommand {
     fn name(&self) -> &str {
         "basename"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&BASENAME_META)
     }
 
     fn execute(&self, args: &[String], _ctx: &CommandContext) -> CommandResult {
@@ -134,9 +159,21 @@ impl super::VirtualCommand for BasenameCommand {
 
 pub struct DirnameCommand;
 
+static DIRNAME_META: CommandMeta = CommandMeta {
+    name: "dirname",
+    synopsis: "dirname NAME ...",
+    description: "Strip last component from file name.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for DirnameCommand {
     fn name(&self) -> &str {
         "dirname"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&DIRNAME_META)
     }
 
     fn execute(&self, args: &[String], _ctx: &CommandContext) -> CommandResult {
@@ -192,9 +229,21 @@ impl super::VirtualCommand for DirnameCommand {
 
 pub struct TreeCommand;
 
+static TREE_META: CommandMeta = CommandMeta {
+    name: "tree",
+    synopsis: "tree [DIRECTORY]",
+    description: "List contents of directories in a tree-like format.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for TreeCommand {
     fn name(&self) -> &str {
         "tree"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&TREE_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {

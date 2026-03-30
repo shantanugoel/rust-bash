@@ -277,7 +277,7 @@ Fixture-based comparison test suite that records expected output from real `/bin
 
 **Goal**: Fill remaining command gaps identified against just-bash, and add `--help` to every command so AI agents can self-discover usage.
 
-### M7.1 — `--help` Flag for All Commands
+### ✅ M7.1 — `--help` Flag for All Commands
 
 Add a `--help` handler to the command dispatch layer (or per-command). When any command receives `--help` as the first argument, print a usage summary to stdout and exit 0. Cover all ~58 existing commands and every new command added in M7. Consider a declarative approach (e.g., a `CommandMeta` struct with name, synopsis, description, options) to avoid per-command boilerplate.
 

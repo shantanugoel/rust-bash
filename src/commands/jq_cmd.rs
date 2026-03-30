@@ -1,4 +1,4 @@
-use crate::commands::{CommandContext, CommandResult, VirtualCommand};
+use crate::commands::{CommandContext, CommandMeta, CommandResult, VirtualCommand};
 use jaq_core::load::{Arena, File, Loader};
 use jaq_core::{Ctx, Vars, data, unwrap_valr};
 use jaq_json::Val;
@@ -6,9 +6,32 @@ use std::path::PathBuf;
 
 pub struct JqCommand;
 
+static JQ_META: CommandMeta = CommandMeta {
+    name: "jq",
+    synopsis: "jq [OPTIONS] FILTER [FILE ...]",
+    description: "Command-line JSON processor.",
+    options: &[
+        ("-r, --raw-output", "output raw strings, not JSON texts"),
+        ("-c, --compact-output", "produce compact output"),
+        ("-S, --sort-keys", "sort keys of objects on output"),
+        ("-j, --join-output", "like -r but without trailing newline"),
+        ("-e, --exit-status", "set exit status based on output"),
+        ("-n, --null-input", "use null as the single input value"),
+        ("-R, --raw-input", "read each line as a string"),
+        ("-s, --slurp", "read entire input stream as a single array"),
+        ("--arg NAME VALUE", "set variable $NAME to VALUE"),
+        ("--argjson NAME JSON", "set variable $NAME to JSON value"),
+    ],
+    supports_help_flag: true,
+};
+
 impl VirtualCommand for JqCommand {
     fn name(&self) -> &str {
         "jq"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&JQ_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {

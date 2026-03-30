@@ -1,6 +1,6 @@
 //! Network commands: curl
 
-use crate::commands::{CommandContext, CommandResult};
+use crate::commands::{CommandContext, CommandMeta, CommandResult};
 use crate::network::NetworkPolicy;
 use std::io::Read;
 use std::path::PathBuf;
@@ -315,9 +315,36 @@ fn format_response_headers(status: u16, headers: &ureq::http::HeaderMap) -> Stri
 
 pub struct CurlCommand;
 
+static CURL_META: CommandMeta = CommandMeta {
+    name: "curl",
+    synopsis: "curl [OPTIONS] URL",
+    description: "Transfer data from or to a server.",
+    options: &[
+        ("-X, --request METHOD", "specify request method"),
+        ("-H, --header HEADER", "pass custom header to server"),
+        ("-d, --data DATA", "send data in POST request"),
+        ("-o, --output FILE", "write output to FILE"),
+        (
+            "-w, --write-out FORMAT",
+            "display information after transfer",
+        ),
+        ("-f, --fail", "fail silently on server errors"),
+        ("-L, --location", "follow redirects"),
+        ("-i, --include", "include response headers in output"),
+        ("-I, --head", "fetch headers only"),
+        ("-v, --verbose", "make the operation more talkative"),
+        ("-s, --silent", "silent mode"),
+    ],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for CurlCommand {
     fn name(&self) -> &str {
         "curl"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&CURL_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {

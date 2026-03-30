@@ -1,7 +1,7 @@
 //! The `sed` stream editor command — a mini-interpreter for sed scripts.
 
 use crate::commands::regex_util::bre_to_ere;
-use crate::commands::{CommandContext, CommandResult};
+use crate::commands::{CommandContext, CommandMeta, CommandResult};
 use regex::Regex;
 use std::path::PathBuf;
 
@@ -83,9 +83,30 @@ struct SedOpts<'a> {
 
 pub struct SedCommand;
 
+static SED_META: CommandMeta = CommandMeta {
+    name: "sed",
+    synopsis: "sed [-nEi] [-e SCRIPT] [-f FILE] [FILE ...]",
+    description: "Stream editor for filtering and transforming text.",
+    options: &[
+        (
+            "-n, --quiet",
+            "suppress automatic printing of pattern space",
+        ),
+        ("-i, --in-place", "edit files in place"),
+        ("-E, -r", "use extended regular expressions"),
+        ("-e SCRIPT", "add the script to the commands to be executed"),
+        ("-f FILE", "add the contents of FILE to the commands"),
+    ],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for SedCommand {
     fn name(&self) -> &str {
         "sed"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&SED_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {

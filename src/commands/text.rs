@@ -1,5 +1,6 @@
 //! Text processing commands: grep, sort, uniq, cut, head, tail, wc, tr, rev, fold, nl, printf, paste
 
+use super::CommandMeta;
 use crate::commands::{CommandContext, CommandResult};
 use crate::interpreter::pattern::glob_match;
 use regex::Regex;
@@ -492,9 +493,58 @@ fn matches_glob_filters(filename: &str, include_globs: &[&str], exclude_globs: &
     true
 }
 
+static GREP_META: CommandMeta = CommandMeta {
+    name: "grep",
+    synopsis: "grep [OPTIONS] PATTERN [FILE ...]",
+    description: "Print lines that match patterns.",
+    options: &[
+        ("-i, --ignore-case", "ignore case distinctions"),
+        ("-v, --invert-match", "select non-matching lines"),
+        ("-n, --line-number", "prefix each line with line number"),
+        ("-c, --count", "print only a count of matching lines"),
+        (
+            "-l, --files-with-matches",
+            "print only names of files with matches",
+        ),
+        (
+            "-L, --files-without-match",
+            "print only names of files without matches",
+        ),
+        ("-F, --fixed-strings", "interpret pattern as fixed string"),
+        (
+            "-E, --extended-regexp",
+            "interpret pattern as extended regex",
+        ),
+        ("-P, --perl-regexp", "interpret pattern as Perl regex"),
+        ("-w, --word-regexp", "match only whole words"),
+        ("-x, --line-regexp", "match only whole lines"),
+        ("-r, -R, --recursive", "search directories recursively"),
+        (
+            "-o, --only-matching",
+            "show only the matching part of lines",
+        ),
+        ("-H, --with-filename", "print the file name for each match"),
+        ("-h, --no-filename", "suppress the file name prefix"),
+        ("-q, --quiet", "suppress all normal output"),
+        ("-e PATTERN", "use PATTERN for matching"),
+        ("-f FILE", "obtain patterns from FILE"),
+        ("-A NUM", "print NUM lines of trailing context"),
+        ("-B NUM", "print NUM lines of leading context"),
+        ("-C NUM", "print NUM lines of output context"),
+        ("-m NUM, --max-count=NUM", "stop after NUM matches"),
+        ("--include=GLOB", "search only files matching GLOB"),
+        ("--exclude=GLOB", "skip files matching GLOB"),
+    ],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for GrepCommand {
     fn name(&self) -> &str {
         "grep"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&GREP_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -833,9 +883,27 @@ fn grep_with_context(
 
 pub struct SortCommand;
 
+static SORT_META: CommandMeta = CommandMeta {
+    name: "sort",
+    synopsis: "sort [-rnuk KEY] [-t SEP] [FILE ...]",
+    description: "Sort lines of text files.",
+    options: &[
+        ("-r", "reverse the result of comparisons"),
+        ("-n", "compare according to string numerical value"),
+        ("-u", "output only unique lines"),
+        ("-k KEY", "sort via a key field specification"),
+        ("-t SEP", "use SEP as the field separator"),
+    ],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for SortCommand {
     fn name(&self) -> &str {
         "sort"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&SORT_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -985,9 +1053,25 @@ fn parse_leading_number(s: &str) -> f64 {
 
 pub struct UniqCommand;
 
+static UNIQ_META: CommandMeta = CommandMeta {
+    name: "uniq",
+    synopsis: "uniq [-cdu] [FILE]",
+    description: "Report or omit repeated lines.",
+    options: &[
+        ("-c", "prefix lines by the number of occurrences"),
+        ("-d", "only print duplicate lines"),
+        ("-u", "only print unique lines"),
+    ],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for UniqCommand {
     fn name(&self) -> &str {
         "uniq"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&UNIQ_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -1066,9 +1150,25 @@ impl super::VirtualCommand for UniqCommand {
 
 pub struct CutCommand;
 
+static CUT_META: CommandMeta = CommandMeta {
+    name: "cut",
+    synopsis: "cut -f FIELDS [-d DELIM] [FILE ...]",
+    description: "Remove sections from each line of files.",
+    options: &[
+        ("-d DELIM", "use DELIM instead of TAB for field delimiter"),
+        ("-f FIELDS", "select only these fields"),
+        ("-c CHARS", "select only these character positions"),
+    ],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for CutCommand {
     fn name(&self) -> &str {
         "cut"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&CUT_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -1210,9 +1310,24 @@ fn parse_range_spec(spec: &str) -> Vec<usize> {
 
 pub struct HeadCommand;
 
+static HEAD_META: CommandMeta = CommandMeta {
+    name: "head",
+    synopsis: "head [-n NUM] [-c NUM] [FILE ...]",
+    description: "Output the first part of files.",
+    options: &[
+        ("-n NUM", "print the first NUM lines (default 10)"),
+        ("-c NUM", "print the first NUM bytes"),
+    ],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for HeadCommand {
     fn name(&self) -> &str {
         "head"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&HEAD_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -1303,9 +1418,21 @@ impl super::VirtualCommand for HeadCommand {
 
 pub struct TailCommand;
 
+static TAIL_META: CommandMeta = CommandMeta {
+    name: "tail",
+    synopsis: "tail [-n NUM] [FILE ...]",
+    description: "Output the last part of files.",
+    options: &[("-n NUM", "print the last NUM lines (default 10)")],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for TailCommand {
     fn name(&self) -> &str {
         "tail"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&TAIL_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -1381,9 +1508,24 @@ impl super::VirtualCommand for TailCommand {
 
 pub struct OdCommand;
 
+static OD_META: CommandMeta = CommandMeta {
+    name: "od",
+    synopsis: "od [-An] [-t TYPE] [FILE ...]",
+    description: "Dump files in octal and other formats.",
+    options: &[
+        ("-An", "suppress the address column"),
+        ("-t TYPE", "select output format (e.g. x1, o2)"),
+    ],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for OdCommand {
     fn name(&self) -> &str {
         "od"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&OD_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -1498,9 +1640,25 @@ impl super::VirtualCommand for OdCommand {
 
 pub struct WcCommand;
 
+static WC_META: CommandMeta = CommandMeta {
+    name: "wc",
+    synopsis: "wc [-lwc] [FILE ...]",
+    description: "Print newline, word, and byte counts for each file.",
+    options: &[
+        ("-l", "print the newline count"),
+        ("-w", "print the word count"),
+        ("-c", "print the byte count"),
+    ],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for WcCommand {
     fn name(&self) -> &str {
         "wc"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&WC_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -1641,9 +1799,24 @@ impl super::VirtualCommand for WcCommand {
 
 pub struct TrCommand;
 
+static TR_META: CommandMeta = CommandMeta {
+    name: "tr",
+    synopsis: "tr [-ds] SET1 [SET2]",
+    description: "Translate or delete characters.",
+    options: &[
+        ("-d", "delete characters in SET1"),
+        ("-s", "squeeze repeated output characters"),
+    ],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for TrCommand {
     fn name(&self) -> &str {
         "tr"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&TR_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -1770,9 +1943,21 @@ fn expand_tr_set(s: &str) -> Vec<char> {
 
 pub struct RevCommand;
 
+static REV_META: CommandMeta = CommandMeta {
+    name: "rev",
+    synopsis: "rev [FILE ...]",
+    description: "Reverse lines characterwise.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for RevCommand {
     fn name(&self) -> &str {
         "rev"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&REV_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -1815,9 +2000,24 @@ impl super::VirtualCommand for RevCommand {
 
 pub struct FoldCommand;
 
+static FOLD_META: CommandMeta = CommandMeta {
+    name: "fold",
+    synopsis: "fold [-s] [-w WIDTH] [FILE ...]",
+    description: "Wrap each input line to fit in specified width.",
+    options: &[
+        ("-w WIDTH", "use WIDTH columns instead of 80"),
+        ("-s", "break at spaces"),
+    ],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for FoldCommand {
     fn name(&self) -> &str {
         "fold"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&FOLD_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -1907,9 +2107,21 @@ impl super::VirtualCommand for FoldCommand {
 
 pub struct NlCommand;
 
+static NL_META: CommandMeta = CommandMeta {
+    name: "nl",
+    synopsis: "nl [FILE ...]",
+    description: "Number lines of files.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for NlCommand {
     fn name(&self) -> &str {
         "nl"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&NL_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -1960,9 +2172,21 @@ impl super::VirtualCommand for NlCommand {
 
 pub struct PrintfCommand;
 
+static PRINTF_CMD_META: CommandMeta = CommandMeta {
+    name: "printf",
+    synopsis: "printf [-v var] FORMAT [ARGUMENT ...]",
+    description: "Format and print data.",
+    options: &[("-v VAR", "assign the output to shell variable VAR")],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for PrintfCommand {
     fn name(&self) -> &str {
         "printf"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&PRINTF_CMD_META)
     }
 
     fn execute(&self, args: &[String], _ctx: &CommandContext) -> CommandResult {
@@ -2496,9 +2720,21 @@ fn printf_shell_quote(s: &str) -> String {
 
 pub struct PasteCommand;
 
+static PASTE_META: CommandMeta = CommandMeta {
+    name: "paste",
+    synopsis: "paste [-d DELIM] [FILE ...]",
+    description: "Merge lines of files.",
+    options: &[("-d DELIM", "use DELIM instead of TAB as delimiter")],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for PasteCommand {
     fn name(&self) -> &str {
         "paste"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&PASTE_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -2573,9 +2809,21 @@ impl super::VirtualCommand for PasteCommand {
 
 pub struct TacCommand;
 
+static TAC_META: CommandMeta = CommandMeta {
+    name: "tac",
+    synopsis: "tac [-s SEP] [FILE ...]",
+    description: "Concatenate and print files in reverse.",
+    options: &[("-s SEP", "use SEP as the record separator")],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for TacCommand {
     fn name(&self) -> &str {
         "tac"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&TAC_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -2645,9 +2893,25 @@ impl super::VirtualCommand for TacCommand {
 
 pub struct CommCommand;
 
+static COMM_META: CommandMeta = CommandMeta {
+    name: "comm",
+    synopsis: "comm [-123] FILE1 FILE2",
+    description: "Compare two sorted files line by line.",
+    options: &[
+        ("-1", "suppress column 1 (lines unique to FILE1)"),
+        ("-2", "suppress column 2 (lines unique to FILE2)"),
+        ("-3", "suppress column 3 (lines common to both)"),
+    ],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for CommCommand {
     fn name(&self) -> &str {
         "comm"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&COMM_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -2776,9 +3040,29 @@ impl super::VirtualCommand for CommCommand {
 
 pub struct JoinCommand;
 
+static JOIN_META: CommandMeta = CommandMeta {
+    name: "join",
+    synopsis: "join [-t SEP] [-1 FIELD] [-2 FIELD] FILE1 FILE2",
+    description: "Join lines of two files on a common field.",
+    options: &[
+        ("-t SEP", "use SEP as input and output field separator"),
+        ("-j FIELD", "equivalent to -1 FIELD -2 FIELD"),
+        ("-1 FIELD", "join on this field of file 1"),
+        ("-2 FIELD", "join on this field of file 2"),
+        ("-a FILENUM", "print unpairable lines from file FILENUM"),
+        ("-e STRING", "replace missing input fields with STRING"),
+        ("-o FORMAT", "output format specification"),
+    ],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for JoinCommand {
     fn name(&self) -> &str {
         "join"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&JOIN_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -3011,9 +3295,24 @@ impl super::VirtualCommand for JoinCommand {
 
 pub struct FmtCommand;
 
+static FMT_META: CommandMeta = CommandMeta {
+    name: "fmt",
+    synopsis: "fmt [-s] [-w WIDTH] [FILE ...]",
+    description: "Simple optimal text formatter.",
+    options: &[
+        ("-w WIDTH", "maximum line width (default 75)"),
+        ("-s", "split long lines only, do not refill"),
+    ],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for FmtCommand {
     fn name(&self) -> &str {
         "fmt"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&FMT_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -3143,9 +3442,25 @@ fn split_paragraphs(input: &str) -> Vec<String> {
 
 pub struct ColumnCommand;
 
+static COLUMN_META: CommandMeta = CommandMeta {
+    name: "column",
+    synopsis: "column [-t] [-s SEP] [-o SEP] [FILE ...]",
+    description: "Columnate lists.",
+    options: &[
+        ("-t", "create a table"),
+        ("-s SEP", "specify input column separator"),
+        ("-o SEP", "specify output column separator"),
+    ],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for ColumnCommand {
     fn name(&self) -> &str {
         "column"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&COLUMN_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -3285,9 +3600,21 @@ impl super::VirtualCommand for ColumnCommand {
 
 pub struct ExpandCommand;
 
+static EXPAND_META: CommandMeta = CommandMeta {
+    name: "expand",
+    synopsis: "expand [-t STOPS] [FILE ...]",
+    description: "Convert tabs to spaces.",
+    options: &[("-t STOPS", "set tab stops")],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for ExpandCommand {
     fn name(&self) -> &str {
         "expand"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&EXPAND_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -3356,9 +3683,24 @@ impl super::VirtualCommand for ExpandCommand {
 
 pub struct UnexpandCommand;
 
+static UNEXPAND_META: CommandMeta = CommandMeta {
+    name: "unexpand",
+    synopsis: "unexpand [-a] [-t NUM] [FILE ...]",
+    description: "Convert spaces to tabs.",
+    options: &[
+        ("-a", "convert all blanks, not just leading"),
+        ("-t NUM", "set tab width (default 8)"),
+    ],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for UnexpandCommand {
     fn name(&self) -> &str {
         "unexpand"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&UNEXPAND_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {

@@ -1,5 +1,6 @@
 //! Shell builtins that modify interpreter state.
 
+use crate::commands::CommandMeta;
 use crate::error::RustBashError;
 use crate::interpreter::walker::execute_program;
 use crate::interpreter::{
@@ -61,6 +62,28 @@ pub(crate) fn is_builtin(name: &str) -> bool {
     builtin_names().contains(&name)
 }
 
+/// Shared --help check for `command` and `builtin` wrappers.
+fn check_help(name: &str, state: &InterpreterState) -> Option<ExecResult> {
+    if let Some(meta) = builtin_meta(name)
+        && meta.supports_help_flag
+    {
+        return Some(ExecResult {
+            stdout: crate::commands::format_help(meta),
+            ..ExecResult::default()
+        });
+    }
+    if let Some(cmd) = state.commands.get(name)
+        && let Some(meta) = cmd.meta()
+        && meta.supports_help_flag
+    {
+        return Some(ExecResult {
+            stdout: crate::commands::format_help(meta),
+            ..ExecResult::default()
+        });
+    }
+    None
+}
+
 /// Return the list of known shell builtin names.
 pub(crate) fn builtin_names() -> &'static [&'static str] {
     &[
@@ -103,7 +126,382 @@ pub(crate) fn builtin_names() -> &'static [&'static str] {
     ]
 }
 
-// ── exit ─────────────────────────────────────────────────────────────
+// ── Builtin command metadata for --help ──────────────────────────────
+
+static CD_META: CommandMeta = CommandMeta {
+    name: "cd",
+    synopsis: "cd [dir]",
+    description: "Change the shell working directory.",
+    options: &[],
+    supports_help_flag: true,
+};
+
+static EXIT_META: CommandMeta = CommandMeta {
+    name: "exit",
+    synopsis: "exit [n]",
+    description: "Exit the shell.",
+    options: &[],
+    supports_help_flag: true,
+};
+
+static EXPORT_META: CommandMeta = CommandMeta {
+    name: "export",
+    synopsis: "export [-n] [name[=value] ...]",
+    description: "Set export attribute for shell variables.",
+    options: &[("-n", "remove the export property from each name")],
+    supports_help_flag: true,
+};
+
+static UNSET_META: CommandMeta = CommandMeta {
+    name: "unset",
+    synopsis: "unset [-fv] [name ...]",
+    description: "Unset values and attributes of shell variables and functions.",
+    options: &[
+        ("-f", "treat each name as a shell function"),
+        ("-v", "treat each name as a shell variable"),
+    ],
+    supports_help_flag: true,
+};
+
+static SET_META: CommandMeta = CommandMeta {
+    name: "set",
+    synopsis: "set [-euxvnCaf] [-o option-name] [--] [arg ...]",
+    description: "Set or unset values of shell options and positional parameters.",
+    options: &[
+        (
+            "-e",
+            "exit immediately if a command exits with non-zero status",
+        ),
+        ("-u", "treat unset variables as an error"),
+        (
+            "-x",
+            "print commands and their arguments as they are executed",
+        ),
+        ("-v", "print shell input lines as they are read"),
+        ("-n", "read commands but do not execute them"),
+        ("-C", "do not allow output redirection to overwrite files"),
+        ("-a", "mark variables for export"),
+        ("-f", "disable file name generation (globbing)"),
+        (
+            "-o OPTION",
+            "set option by name (errexit, nounset, pipefail, ...)",
+        ),
+    ],
+    supports_help_flag: true,
+};
+
+static SHIFT_META: CommandMeta = CommandMeta {
+    name: "shift",
+    synopsis: "shift [n]",
+    description: "Shift positional parameters.",
+    options: &[],
+    supports_help_flag: true,
+};
+
+static READONLY_META: CommandMeta = CommandMeta {
+    name: "readonly",
+    synopsis: "readonly [name[=value] ...]",
+    description: "Mark shell variables as unchangeable.",
+    options: &[],
+    supports_help_flag: true,
+};
+
+static DECLARE_META: CommandMeta = CommandMeta {
+    name: "declare",
+    synopsis: "declare [-aAilnprux] [name[=value] ...]",
+    description: "Set variable values and attributes.",
+    options: &[
+        ("-a", "indexed array"),
+        ("-A", "associative array"),
+        ("-i", "integer attribute"),
+        ("-l", "convert to lower case on assignment"),
+        ("-u", "convert to upper case on assignment"),
+        ("-n", "nameref attribute"),
+        ("-r", "readonly attribute"),
+        ("-x", "export attribute"),
+        ("-p", "display attributes and values"),
+    ],
+    supports_help_flag: true,
+};
+
+static READ_META: CommandMeta = CommandMeta {
+    name: "read",
+    synopsis: "read [-r] [-a array] [-d delim] [-n count] [-N count] [-p prompt] [name ...]",
+    description: "Read a line from standard input and split it into fields.",
+    options: &[
+        ("-r", "do not allow backslashes to escape characters"),
+        ("-a ARRAY", "assign words to indices of ARRAY"),
+        ("-d DELIM", "read until DELIM instead of newline"),
+        ("-n COUNT", "read at most COUNT characters"),
+        ("-N COUNT", "read exactly COUNT characters"),
+        ("-p PROMPT", "output PROMPT before reading"),
+    ],
+    supports_help_flag: true,
+};
+
+static EVAL_META: CommandMeta = CommandMeta {
+    name: "eval",
+    synopsis: "eval [arg ...]",
+    description: "Execute arguments as a shell command.",
+    options: &[],
+    supports_help_flag: true,
+};
+
+static SOURCE_META: CommandMeta = CommandMeta {
+    name: "source",
+    synopsis: "source filename [arguments]",
+    description: "Execute commands from a file in the current shell.",
+    options: &[],
+    supports_help_flag: true,
+};
+
+static BREAK_META: CommandMeta = CommandMeta {
+    name: "break",
+    synopsis: "break [n]",
+    description: "Exit for, while, or until loops.",
+    options: &[],
+    supports_help_flag: true,
+};
+
+static CONTINUE_META: CommandMeta = CommandMeta {
+    name: "continue",
+    synopsis: "continue [n]",
+    description: "Resume the next iteration of the enclosing loop.",
+    options: &[],
+    supports_help_flag: true,
+};
+
+static COLON_META: CommandMeta = CommandMeta {
+    name: ":",
+    synopsis: ": [arguments]",
+    description: "No effect; the command does nothing.",
+    options: &[],
+    supports_help_flag: true,
+};
+
+static LET_META: CommandMeta = CommandMeta {
+    name: "let",
+    synopsis: "let arg [arg ...]",
+    description: "Evaluate arithmetic expressions.",
+    options: &[],
+    supports_help_flag: true,
+};
+
+static LOCAL_META: CommandMeta = CommandMeta {
+    name: "local",
+    synopsis: "local [name[=value] ...]",
+    description: "Define local variables.",
+    options: &[],
+    supports_help_flag: true,
+};
+
+static RETURN_META: CommandMeta = CommandMeta {
+    name: "return",
+    synopsis: "return [n]",
+    description: "Return from a shell function.",
+    options: &[],
+    supports_help_flag: true,
+};
+
+static TRAP_META: CommandMeta = CommandMeta {
+    name: "trap",
+    synopsis: "trap [-lp] [action signal ...]",
+    description: "Trap signals and other events.",
+    options: &[
+        ("-l", "list signal names"),
+        ("-p", "display trap commands for each signal"),
+    ],
+    supports_help_flag: true,
+};
+
+static SHOPT_META: CommandMeta = CommandMeta {
+    name: "shopt",
+    synopsis: "shopt [-pqsu] [optname ...]",
+    description: "Set and unset shell options.",
+    options: &[
+        ("-s", "enable (set) each optname"),
+        ("-u", "disable (unset) each optname"),
+        (
+            "-q",
+            "suppresses normal output; exit status indicates match",
+        ),
+        ("-p", "display in a form that may be reused as input"),
+    ],
+    supports_help_flag: true,
+};
+
+static TYPE_META: CommandMeta = CommandMeta {
+    name: "type",
+    synopsis: "type [-tap] name [name ...]",
+    description: "Display information about command type.",
+    options: &[
+        ("-t", "print a single word describing the type"),
+        ("-a", "display all locations containing an executable"),
+        ("-p", "print the file name of the disk file"),
+    ],
+    supports_help_flag: true,
+};
+
+static COMMAND_META: CommandMeta = CommandMeta {
+    name: "command",
+    synopsis: "command [-vVp] command [arg ...]",
+    description: "Execute a simple command or display information about commands.",
+    options: &[
+        ("-v", "display a description of COMMAND similar to type"),
+        ("-V", "display a more verbose description"),
+        ("-p", "use a default value for PATH"),
+    ],
+    supports_help_flag: true,
+};
+
+static BUILTIN_CMD_META: CommandMeta = CommandMeta {
+    name: "builtin",
+    synopsis: "builtin shell-builtin [arguments]",
+    description: "Execute shell builtins.",
+    options: &[],
+    supports_help_flag: true,
+};
+
+static GETOPTS_META: CommandMeta = CommandMeta {
+    name: "getopts",
+    synopsis: "getopts optstring name [arg ...]",
+    description: "Parse option arguments.",
+    options: &[],
+    supports_help_flag: true,
+};
+
+static MAPFILE_META: CommandMeta = CommandMeta {
+    name: "mapfile",
+    synopsis: "mapfile [-t] [-d delim] [-n count] [-s count] [array]",
+    description: "Read lines from standard input into an indexed array variable.",
+    options: &[
+        ("-t", "remove a trailing delimiter from each line"),
+        (
+            "-d DELIM",
+            "use DELIM to terminate lines instead of newline",
+        ),
+        ("-n COUNT", "copy at most COUNT lines"),
+        ("-s COUNT", "discard the first COUNT lines"),
+    ],
+    supports_help_flag: true,
+};
+
+static PUSHD_META: CommandMeta = CommandMeta {
+    name: "pushd",
+    synopsis: "pushd [+N | -N | dir]",
+    description: "Add directories to stack.",
+    options: &[],
+    supports_help_flag: true,
+};
+
+static POPD_META: CommandMeta = CommandMeta {
+    name: "popd",
+    synopsis: "popd [+N | -N]",
+    description: "Remove directories from stack.",
+    options: &[],
+    supports_help_flag: true,
+};
+
+static DIRS_META: CommandMeta = CommandMeta {
+    name: "dirs",
+    synopsis: "dirs [-cpvl]",
+    description: "Display directory stack.",
+    options: &[
+        ("-c", "clear the directory stack"),
+        ("-p", "print one entry per line"),
+        ("-v", "print one entry per line, with index"),
+        ("-l", "use full pathnames"),
+    ],
+    supports_help_flag: true,
+};
+
+static HASH_META: CommandMeta = CommandMeta {
+    name: "hash",
+    synopsis: "hash [-r] [name ...]",
+    description: "Remember or display program locations.",
+    options: &[("-r", "forget all remembered locations")],
+    supports_help_flag: true,
+};
+
+static WAIT_META: CommandMeta = CommandMeta {
+    name: "wait",
+    synopsis: "wait [pid ...]",
+    description: "Wait for job completion and return exit status.",
+    options: &[],
+    supports_help_flag: true,
+};
+
+static ALIAS_META: CommandMeta = CommandMeta {
+    name: "alias",
+    synopsis: "alias [-p] [name[=value] ...]",
+    description: "Define or display aliases.",
+    options: &[("-p", "print all defined aliases in a reusable format")],
+    supports_help_flag: true,
+};
+
+static UNALIAS_META: CommandMeta = CommandMeta {
+    name: "unalias",
+    synopsis: "unalias [-a] name [name ...]",
+    description: "Remove alias definitions.",
+    options: &[("-a", "remove all alias definitions")],
+    supports_help_flag: true,
+};
+
+static PRINTF_META: CommandMeta = CommandMeta {
+    name: "printf",
+    synopsis: "printf [-v var] format [arguments]",
+    description: "Format and print data.",
+    options: &[("-v VAR", "assign the output to shell variable VAR")],
+    supports_help_flag: true,
+};
+
+static EXEC_META: CommandMeta = CommandMeta {
+    name: "exec",
+    synopsis: "exec [-a name] [command [arguments]]",
+    description: "Replace the shell with the given command.",
+    options: &[],
+    supports_help_flag: true,
+};
+
+/// Return the `CommandMeta` for a shell builtin, if one exists.
+pub(crate) fn builtin_meta(name: &str) -> Option<&'static CommandMeta> {
+    match name {
+        "cd" => Some(&CD_META),
+        "exit" => Some(&EXIT_META),
+        "export" => Some(&EXPORT_META),
+        "unset" => Some(&UNSET_META),
+        "set" => Some(&SET_META),
+        "shift" => Some(&SHIFT_META),
+        "readonly" => Some(&READONLY_META),
+        "declare" => Some(&DECLARE_META),
+        "read" => Some(&READ_META),
+        "eval" => Some(&EVAL_META),
+        "source" | "." => Some(&SOURCE_META),
+        "break" => Some(&BREAK_META),
+        "continue" => Some(&CONTINUE_META),
+        ":" | "colon" => Some(&COLON_META),
+        "let" => Some(&LET_META),
+        "local" => Some(&LOCAL_META),
+        "return" => Some(&RETURN_META),
+        "trap" => Some(&TRAP_META),
+        "shopt" => Some(&SHOPT_META),
+        "type" => Some(&TYPE_META),
+        "command" => Some(&COMMAND_META),
+        "builtin" => Some(&BUILTIN_CMD_META),
+        "getopts" => Some(&GETOPTS_META),
+        "mapfile" | "readarray" => Some(&MAPFILE_META),
+        "pushd" => Some(&PUSHD_META),
+        "popd" => Some(&POPD_META),
+        "dirs" => Some(&DIRS_META),
+        "hash" => Some(&HASH_META),
+        "wait" => Some(&WAIT_META),
+        "alias" => Some(&ALIAS_META),
+        "unalias" => Some(&UNALIAS_META),
+        "printf" => Some(&PRINTF_META),
+        "exec" => Some(&EXEC_META),
+        _ => None,
+    }
+}
 
 fn builtin_exit(
     args: &[String],
@@ -2049,6 +2447,13 @@ fn builtin_command(
     let cmd_args = &remaining[1..];
     let cmd_args_owned: Vec<String> = cmd_args.to_vec();
 
+    // --help interception (consistent with dispatch_command)
+    if cmd_args_owned.first().map(|a| a.as_str()) == Some("--help")
+        && let Some(help) = check_help(name, state)
+    {
+        return Ok(help);
+    }
+
     // Try builtin first
     if let Some(result) = execute_builtin(name, &cmd_args_owned, state, stdin)? {
         return Ok(result);
@@ -2183,6 +2588,13 @@ fn builtin_builtin(
 
     let name = &args[0];
     let sub_args: Vec<String> = args[1..].to_vec();
+
+    // --help interception (consistent with dispatch_command)
+    if sub_args.first().map(|a| a.as_str()) == Some("--help")
+        && let Some(help) = check_help(name, state)
+    {
+        return Ok(help);
+    }
 
     // Try shell builtins first
     if let Some(result) = execute_builtin(name, &sub_args, state, stdin)? {
@@ -3443,5 +3855,15 @@ mod tests {
         for &name in builtin_names() {
             assert!(is_builtin(name));
         }
+    }
+
+    #[test]
+    fn all_builtins_have_meta() {
+        let missing: Vec<&str> = builtin_names()
+            .iter()
+            .filter(|&&name| builtin_meta(name).is_none())
+            .copied()
+            .collect();
+        assert!(missing.is_empty(), "Builtins missing meta: {:?}", missing);
     }
 }

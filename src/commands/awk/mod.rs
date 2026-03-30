@@ -2,7 +2,7 @@ mod lexer;
 mod parser;
 mod runtime;
 
-use super::{CommandContext, CommandResult, VirtualCommand};
+use super::{CommandContext, CommandMeta, CommandResult, VirtualCommand};
 use lexer::Lexer;
 use parser::Parser;
 use runtime::AwkRuntime;
@@ -10,9 +10,25 @@ use std::path::PathBuf;
 
 pub struct AwkCommand;
 
+static AWK_META: CommandMeta = CommandMeta {
+    name: "awk",
+    synopsis: "awk [-F FS] [-v VAR=VALUE] [-f FILE] 'PROGRAM' [FILE ...]",
+    description: "Pattern scanning and text processing language.",
+    options: &[
+        ("-F FS", "set the input field separator"),
+        ("-v VAR=VALUE", "assign a value to a variable"),
+        ("-f FILE", "read the awk program from FILE"),
+    ],
+    supports_help_flag: true,
+};
+
 impl VirtualCommand for AwkCommand {
     fn name(&self) -> &str {
         "awk"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&AWK_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {

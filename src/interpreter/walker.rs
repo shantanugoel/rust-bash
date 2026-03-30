@@ -729,6 +729,17 @@ fn execute_simple_command(
     // 4d. Handle `exec` builtin specially — it needs access to redirects.
     //     Prefix assignments before `exec` are permanent (no subshell).
     if cmd_name == "exec" {
+        // Intercept --help before exec dispatch
+        if args.first().map(|a| a.as_str()) == Some("--help")
+            && let Some(meta) = builtins::builtin_meta("exec")
+            && meta.supports_help_flag
+        {
+            return Ok(ExecResult {
+                stdout: crate::commands::format_help(meta),
+                stderr: String::new(),
+                exit_code: 0,
+            });
+        }
         for a in &assignments {
             apply_assignment(a.clone(), state)?;
         }
@@ -1503,6 +1514,32 @@ fn dispatch_command(
 ) -> Result<ExecResult, RustBashError> {
     state.counters.command_count += 1;
     check_limits(state)?;
+
+    // 0. --help interception (before builtin dispatch, function lookup, etc.)
+    if args.first().map(|a| a.as_str()) == Some("--help") {
+        // Check builtins first
+        if let Some(meta) = builtins::builtin_meta(name)
+            && meta.supports_help_flag
+        {
+            return Ok(ExecResult {
+                stdout: crate::commands::format_help(meta),
+                stderr: String::new(),
+                exit_code: 0,
+            });
+        }
+        // Check registered commands
+        if let Some(cmd) = state.commands.get(name)
+            && let Some(meta) = cmd.meta()
+            && meta.supports_help_flag
+        {
+            return Ok(ExecResult {
+                stdout: crate::commands::format_help(meta),
+                stderr: String::new(),
+                exit_code: 0,
+            });
+        }
+        // No meta or supports_help_flag == false → fall through to normal dispatch
+    }
 
     // 1. Special shell builtins (unshadowable)
     if let Some(result) = builtins::execute_builtin(name, args, state, stdin)? {

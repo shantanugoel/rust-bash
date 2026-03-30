@@ -1,6 +1,6 @@
 //! diff command: compare files line by line
 
-use crate::commands::{CommandContext, CommandResult};
+use crate::commands::{CommandContext, CommandMeta, CommandResult};
 use crate::vfs::NodeType;
 use similar::TextDiff;
 use std::path::PathBuf;
@@ -815,9 +815,39 @@ fn parse_args<'a>(args: &'a [String]) -> Result<(DiffOpts<'a>, Vec<&'a str>), St
     Ok((opts, files))
 }
 
+static DIFF_META: CommandMeta = CommandMeta {
+    name: "diff",
+    synopsis: "diff [OPTIONS] FILE1 FILE2",
+    description: "Compare files line by line.",
+    options: &[
+        ("-u, --unified", "output in unified format"),
+        ("-c, --context", "output in context format"),
+        ("-r, --recursive", "recursively compare directories"),
+        ("-q, --brief", "report only when files differ"),
+        ("-s, --report-identical", "report when files are identical"),
+        ("-N, --new-file", "treat absent files as empty"),
+        ("-i, --ignore-case", "ignore case differences"),
+        ("-w, --ignore-all-space", "ignore all white space"),
+        (
+            "-b, --ignore-space-change",
+            "ignore changes in amount of white space",
+        ),
+        (
+            "-B, --ignore-blank-lines",
+            "ignore changes where lines are all blank",
+        ),
+        ("--label LABEL", "use LABEL instead of file name"),
+    ],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for DiffCommand {
     fn name(&self) -> &str {
         "diff"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&DIFF_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {

@@ -55,14 +55,52 @@ pub struct CommandResult {
 
 Commands return structured results. The interpreter handles piping stdout between pipeline stages and collecting stderr.
 
+## CommandMeta and `--help` Support
+
+Every command and builtin can provide declarative metadata via `CommandMeta`:
+
+```rust
+pub struct CommandMeta {
+    pub name: &'static str,
+    pub synopsis: &'static str,        // e.g., "grep [OPTIONS] PATTERN [FILE...]"
+    pub description: &'static str,     // One-line summary
+    pub options: &'static [(&'static str, &'static str)],  // ("-n", "print line numbers")
+    pub supports_help_flag: bool,      // false for echo, true, false, test, [
+}
+```
+
+Commands expose metadata through the `VirtualCommand::meta()` method (default returns `None`). Builtins provide metadata through the `builtin_meta()` function in the builtins module.
+
+### `--help` Dispatch
+
+When a command receives `--help` as its **first** argument, the dispatch layer intercepts it **before** any command code runs:
+
+1. Look up `CommandMeta` for the command name (builtins first, then registered commands).
+2. If `meta.supports_help_flag == true` → print formatted help to stdout, exit 0.
+3. If `meta.supports_help_flag == false` → fall through to normal dispatch.
+4. If no metadata found → fall through to normal dispatch.
+
+### Bash Compatibility Opt-Outs
+
+Some commands set `supports_help_flag: false` to match bash behavior:
+
+| Command | Behavior with `--help` |
+|---------|----------------------|
+| `echo` | Prints literal `--help` |
+| `true` | Exits 0 silently |
+| `false` | Exits 1 silently |
+| `test` | Treats `--help` as string operand (truthy) |
+| `[` | Treats `--help` as string operand (truthy) |
+
 ## Command Resolution Order
 
 When the interpreter encounters a command name, it resolves in this order:
 
-1. **Shell builtins** — `cd`, `export`, `exit`, `set`, `local`, `return`, etc. Handled directly by the interpreter.
-2. **User-defined functions** — stored in `InterpreterState.functions`.
-3. **Registered commands** — looked up in `InterpreterState.commands` HashMap.
-4. **"Command not found"** — stderr error, exit code 127.
+1. **`--help` interception** — if the first argument is `--help`, check metadata and potentially return help text (see above).
+2. **Shell builtins** — `cd`, `export`, `exit`, `set`, `local`, `return`, etc. Handled directly by the interpreter.
+3. **User-defined functions** — stored in `InterpreterState.functions`.
+4. **Registered commands** — looked up in `InterpreterState.commands` HashMap.
+5. **"Command not found"** — stderr error, exit code 127.
 
 External process execution is impossible by design — there is no fallback to `std::process::Command`.
 
@@ -204,14 +242,31 @@ To add a command:
 
 1. Create a struct implementing `VirtualCommand`
 2. Implement `name()` → the command name string
-3. Implement `execute()` → parse args, read from `ctx.fs`/`ctx.stdin`, return `CommandResult`
-4. Register in the default command registry
+3. Implement `meta()` → return a `&'static CommandMeta` with help text and options
+4. Implement `execute()` → parse args, read from `ctx.fs`/`ctx.stdin`, return `CommandResult`
+5. Register in the default command registry
 
 ```rust
+use crate::commands::{CommandContext, CommandMeta, CommandResult, VirtualCommand};
+
 pub struct MyCommand;
+
+static MY_COMMAND_META: CommandMeta = CommandMeta {
+    name: "mycommand",
+    synopsis: "mycommand [OPTIONS] [ARG ...]",
+    description: "Do something useful.",
+    options: &[
+        ("-v", "verbose output"),
+    ],
+    supports_help_flag: true,
+};
 
 impl VirtualCommand for MyCommand {
     fn name(&self) -> &str { "mycommand" }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&MY_COMMAND_META)
+    }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
         // Parse arguments
@@ -225,6 +280,8 @@ impl VirtualCommand for MyCommand {
     }
 }
 ```
+
+> **Note**: The `--help` flag is handled automatically by the dispatch layer. You do not need to check for `--help` in your `execute()` method — just provide the `CommandMeta`.
 
 ## Custom Commands (User-Provided)
 

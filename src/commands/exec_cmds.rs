@@ -1,6 +1,6 @@
 //! Commands that use the exec callback: xargs, find
 
-use crate::commands::{CommandContext, CommandResult};
+use crate::commands::{CommandContext, CommandMeta, CommandResult};
 use crate::interpreter::pattern::glob_match;
 use crate::vfs::NodeType;
 use std::path::{Path, PathBuf};
@@ -17,9 +17,29 @@ fn resolve_path(path_str: &str, cwd: &str) -> PathBuf {
 
 pub struct XargsCommand;
 
+static XARGS_META: CommandMeta = CommandMeta {
+    name: "xargs",
+    synopsis: "xargs [-0] [-I REPL] [-n NUM] [-d DELIM] [COMMAND]",
+    description: "Build and execute command lines from standard input.",
+    options: &[
+        (
+            "-I REPL",
+            "replace occurrences of REPL in COMMAND with input",
+        ),
+        ("-n NUM", "use at most NUM arguments per command line"),
+        ("-d DELIM", "use DELIM as input delimiter"),
+        ("-0", "use NUL as input delimiter"),
+    ],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for XargsCommand {
     fn name(&self) -> &str {
         "xargs"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&XARGS_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -264,9 +284,31 @@ enum FindExpr {
     Or(Box<FindExpr>, Box<FindExpr>),
 }
 
+static FIND_META: CommandMeta = CommandMeta {
+    name: "find",
+    synopsis: "find [PATH ...] [EXPRESSION]",
+    description: "Search for files in a directory hierarchy.",
+    options: &[
+        ("-name PATTERN", "match filename against PATTERN"),
+        ("-type TYPE", "match file type (f, d, l)"),
+        ("-maxdepth N", "descend at most N directory levels"),
+        ("-mindepth N", "ignore first N directory levels"),
+        ("-empty", "match empty files and directories"),
+        ("-newer FILE", "match files newer than FILE"),
+        ("-exec CMD ;", "execute CMD for each match"),
+        ("-exec CMD +", "execute CMD with matches as arguments"),
+        ("-print", "print the full file name"),
+    ],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for FindCommand {
     fn name(&self) -> &str {
         "find"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&FIND_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {

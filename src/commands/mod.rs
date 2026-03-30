@@ -42,10 +42,34 @@ pub struct CommandContext<'a> {
     pub exec: Option<ExecCallback<'a>>,
 }
 
+/// Declarative metadata for a command, used by --help and the help builtin.
+pub struct CommandMeta {
+    pub name: &'static str,
+    pub synopsis: &'static str,
+    pub description: &'static str,
+    pub options: &'static [(&'static str, &'static str)],
+    pub supports_help_flag: bool,
+}
+
+/// Format help text from `CommandMeta` for display via `--help`.
+pub fn format_help(meta: &CommandMeta) -> String {
+    let mut out = format!("Usage: {}\n\n{}\n", meta.synopsis, meta.description);
+    if !meta.options.is_empty() {
+        out.push_str("\nOptions:\n");
+        for (flag, desc) in meta.options {
+            out.push_str(&format!("  {:<20} {}\n", flag, desc));
+        }
+    }
+    out
+}
+
 /// Trait for commands that can be registered and executed.
 pub trait VirtualCommand: Send + Sync {
     fn name(&self) -> &str;
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult;
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        None
+    }
 }
 
 // ── Built-in command implementations ─────────────────────────────────
@@ -53,9 +77,25 @@ pub trait VirtualCommand: Send + Sync {
 /// The `echo` command: prints arguments to stdout.
 pub struct EchoCommand;
 
+static ECHO_META: CommandMeta = CommandMeta {
+    name: "echo",
+    synopsis: "echo [-neE] [string ...]",
+    description: "Write arguments to standard output.",
+    options: &[
+        ("-n", "do not output the trailing newline"),
+        ("-e", "enable interpretation of backslash escapes"),
+        ("-E", "disable interpretation of backslash escapes"),
+    ],
+    supports_help_flag: false,
+};
+
 impl VirtualCommand for EchoCommand {
     fn name(&self) -> &str {
         "echo"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&ECHO_META)
     }
 
     fn execute(&self, args: &[String], _ctx: &CommandContext) -> CommandResult {
@@ -154,9 +194,21 @@ fn interpret_echo_escapes(s: &str) -> (String, bool) {
 /// The `true` command: always succeeds (exit code 0).
 pub struct TrueCommand;
 
+static TRUE_META: CommandMeta = CommandMeta {
+    name: "true",
+    synopsis: "true",
+    description: "Do nothing, successfully.",
+    options: &[],
+    supports_help_flag: false,
+};
+
 impl VirtualCommand for TrueCommand {
     fn name(&self) -> &str {
         "true"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&TRUE_META)
     }
 
     fn execute(&self, _args: &[String], _ctx: &CommandContext) -> CommandResult {
@@ -167,9 +219,21 @@ impl VirtualCommand for TrueCommand {
 /// The `false` command: always fails (exit code 1).
 pub struct FalseCommand;
 
+static FALSE_META: CommandMeta = CommandMeta {
+    name: "false",
+    synopsis: "false",
+    description: "Do nothing, unsuccessfully.",
+    options: &[],
+    supports_help_flag: false,
+};
+
 impl VirtualCommand for FalseCommand {
     fn name(&self) -> &str {
         "false"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&FALSE_META)
     }
 
     fn execute(&self, _args: &[String], _ctx: &CommandContext) -> CommandResult {
@@ -183,9 +247,21 @@ impl VirtualCommand for FalseCommand {
 /// The `cat` command: concatenate files and/or stdin.
 pub struct CatCommand;
 
+static CAT_META: CommandMeta = CommandMeta {
+    name: "cat",
+    synopsis: "cat [-n] [FILE ...]",
+    description: "Concatenate files and print on standard output.",
+    options: &[("-n, --number", "number all output lines")],
+    supports_help_flag: true,
+};
+
 impl VirtualCommand for CatCommand {
     fn name(&self) -> &str {
         "cat"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&CAT_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -263,9 +339,21 @@ impl VirtualCommand for CatCommand {
 /// The `pwd` command: print working directory.
 pub struct PwdCommand;
 
+static PWD_META: CommandMeta = CommandMeta {
+    name: "pwd",
+    synopsis: "pwd",
+    description: "Print the current working directory.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl VirtualCommand for PwdCommand {
     fn name(&self) -> &str {
         "pwd"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&PWD_META)
     }
 
     fn execute(&self, _args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -280,9 +368,21 @@ impl VirtualCommand for PwdCommand {
 /// The `touch` command: create empty file or update mtime.
 pub struct TouchCommand;
 
+static TOUCH_META: CommandMeta = CommandMeta {
+    name: "touch",
+    synopsis: "touch FILE ...",
+    description: "Update file access and modification times, creating files if needed.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl VirtualCommand for TouchCommand {
     fn name(&self) -> &str {
         "touch"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&TOUCH_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -335,9 +435,21 @@ impl VirtualCommand for TouchCommand {
 /// The `mkdir` command: create directories (`-p` for parents).
 pub struct MkdirCommand;
 
+static MKDIR_META: CommandMeta = CommandMeta {
+    name: "mkdir",
+    synopsis: "mkdir [-p] DIRECTORY ...",
+    description: "Create directories.",
+    options: &[("-p, --parents", "create parent directories as needed")],
+    supports_help_flag: true,
+};
+
 impl VirtualCommand for MkdirCommand {
     fn name(&self) -> &str {
         "mkdir"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&MKDIR_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -397,9 +509,26 @@ impl VirtualCommand for MkdirCommand {
 /// The `ls` command: list directory contents.
 pub struct LsCommand;
 
+static LS_META: CommandMeta = CommandMeta {
+    name: "ls",
+    synopsis: "ls [-alR1] [FILE ...]",
+    description: "List directory contents.",
+    options: &[
+        ("-a", "do not ignore entries starting with ."),
+        ("-l", "use a long listing format"),
+        ("-1", "list one file per line"),
+        ("-R", "list subdirectories recursively"),
+    ],
+    supports_help_flag: true,
+};
+
 impl VirtualCommand for LsCommand {
     fn name(&self) -> &str {
         "ls"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&LS_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -579,9 +708,31 @@ fn format_mode(mode: u32) -> String {
 /// The `test` command: evaluate conditional expressions.
 pub struct TestCommand;
 
+static TEST_META: CommandMeta = CommandMeta {
+    name: "test",
+    synopsis: "test EXPRESSION",
+    description: "Evaluate conditional expression.",
+    options: &[
+        ("-e FILE", "FILE exists"),
+        ("-f FILE", "FILE exists and is a regular file"),
+        ("-d FILE", "FILE exists and is a directory"),
+        ("-z STRING", "the length of STRING is zero"),
+        ("-n STRING", "the length of STRING is nonzero"),
+        ("s1 = s2", "the strings are equal"),
+        ("s1 != s2", "the strings are not equal"),
+        ("n1 -eq n2", "integers are equal"),
+        ("n1 -lt n2", "first integer is less than second"),
+    ],
+    supports_help_flag: false,
+};
+
 impl VirtualCommand for TestCommand {
     fn name(&self) -> &str {
         "test"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&TEST_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -592,9 +743,21 @@ impl VirtualCommand for TestCommand {
 /// The `[` command: evaluate conditional expressions (requires closing `]`).
 pub struct BracketCommand;
 
+static BRACKET_META: CommandMeta = CommandMeta {
+    name: "[",
+    synopsis: "[ EXPRESSION ]",
+    description: "Evaluate conditional expression (synonym for test).",
+    options: &[],
+    supports_help_flag: false,
+};
+
 impl VirtualCommand for BracketCommand {
     fn name(&self) -> &str {
         "["
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&BRACKET_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {

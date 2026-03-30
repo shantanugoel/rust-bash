@@ -1,5 +1,6 @@
 //! File operation commands: cp, mv, rm, tee, stat, chmod, ln
 
+use super::CommandMeta;
 use crate::commands::{CommandContext, CommandResult};
 use crate::vfs::NodeType;
 use std::path::{Path, PathBuf};
@@ -16,9 +17,21 @@ fn resolve_path(path_str: &str, cwd: &str) -> PathBuf {
 
 pub struct CpCommand;
 
+static CP_META: CommandMeta = CommandMeta {
+    name: "cp",
+    synopsis: "cp [-rR] SOURCE... DEST",
+    description: "Copy files and directories.",
+    options: &[("-r, -R", "copy directories recursively")],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for CpCommand {
     fn name(&self) -> &str {
         "cp"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&CP_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -144,9 +157,21 @@ fn copy_dir_recursive(ctx: &CommandContext, src: &Path, dest: &Path) -> Result<(
 
 pub struct MvCommand;
 
+static MV_META: CommandMeta = CommandMeta {
+    name: "mv",
+    synopsis: "mv SOURCE... DEST",
+    description: "Move (rename) files and directories.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for MvCommand {
     fn name(&self) -> &str {
         "mv"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&MV_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -223,9 +248,27 @@ impl super::VirtualCommand for MvCommand {
 
 pub struct RmCommand;
 
+static RM_META: CommandMeta = CommandMeta {
+    name: "rm",
+    synopsis: "rm [-rf] FILE...",
+    description: "Remove files or directories.",
+    options: &[
+        (
+            "-r, -R",
+            "remove directories and their contents recursively",
+        ),
+        ("-f", "ignore nonexistent files, never prompt"),
+    ],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for RmCommand {
     fn name(&self) -> &str {
         "rm"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&RM_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -311,9 +354,21 @@ impl super::VirtualCommand for RmCommand {
 
 pub struct TeeCommand;
 
+static TEE_META: CommandMeta = CommandMeta {
+    name: "tee",
+    synopsis: "tee [-a] [FILE ...]",
+    description: "Read from stdin and write to stdout and files.",
+    options: &[("-a", "append to the given files, do not overwrite")],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for TeeCommand {
     fn name(&self) -> &str {
         "tee"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&TEE_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -366,9 +421,21 @@ impl super::VirtualCommand for TeeCommand {
 
 pub struct StatCommand;
 
+static STAT_META: CommandMeta = CommandMeta {
+    name: "stat",
+    synopsis: "stat FILE...",
+    description: "Display file status.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for StatCommand {
     fn name(&self) -> &str {
         "stat"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&STAT_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -431,9 +498,21 @@ impl super::VirtualCommand for StatCommand {
 
 pub struct ChmodCommand;
 
+static CHMOD_META: CommandMeta = CommandMeta {
+    name: "chmod",
+    synopsis: "chmod MODE FILE...",
+    description: "Change file mode bits.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for ChmodCommand {
     fn name(&self) -> &str {
         "chmod"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&CHMOD_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
@@ -495,9 +574,21 @@ impl super::VirtualCommand for ChmodCommand {
 
 pub struct LnCommand;
 
+static LN_META: CommandMeta = CommandMeta {
+    name: "ln",
+    synopsis: "ln [-s] TARGET LINK_NAME",
+    description: "Make links between files.",
+    options: &[("-s", "make symbolic links instead of hard links")],
+    supports_help_flag: true,
+};
+
 impl super::VirtualCommand for LnCommand {
     fn name(&self) -> &str {
         "ln"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&LN_META)
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
