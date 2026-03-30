@@ -59,7 +59,7 @@ impl VariableValue {
         match self {
             VariableValue::Scalar(s) => s,
             VariableValue::IndexedArray(map) => map.get(&0).map(|s| s.as_str()).unwrap_or(""),
-            VariableValue::AssociativeArray(_) => "",
+            VariableValue::AssociativeArray(map) => map.get("0").map(|s| s.as_str()).unwrap_or(""),
         }
     }
 

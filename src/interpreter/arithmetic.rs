@@ -108,14 +108,76 @@ fn tokenize(input: &str) -> Result<Vec<Token>, RustBashError> {
 
         let start = i;
 
-        // Numbers: decimal, hex (0x/0X), octal (0...)
+        // Numbers: decimal, hex (0x/0X), octal (0...) or base#value
         if bytes[i].is_ascii_digit() {
             let num = parse_number(bytes, &mut i)?;
+            // Check for base#value syntax: e.g. 16#ff, 2#101
+            if i < bytes.len() && bytes[i] == b'#' {
+                let base = num;
+                i += 1; // skip '#'
+                let val_start = i;
+                while i < bytes.len()
+                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'@' || bytes[i] == b'_')
+                {
+                    i += 1;
+                }
+                let val_str = std::str::from_utf8(&bytes[val_start..i]).unwrap();
+                let result = parse_base_n_value(base, val_str)?;
+                tokens.push(Token {
+                    kind: TokenKind::Number(result),
+                    start,
+                    len: i - start,
+                });
+            } else {
+                tokens.push(Token {
+                    kind: TokenKind::Number(num),
+                    start,
+                    len: i - start,
+                });
+            }
+            continue;
+        }
+
+        // Single-quoted numeric constants: treat 'x' as ASCII value of x
+        if bytes[i] == b'\'' {
+            i += 1;
+            let ch_val = if i < bytes.len() {
+                let v = bytes[i] as i64;
+                i += 1;
+                v
+            } else {
+                0
+            };
+            // skip closing quote if present
+            if i < bytes.len() && bytes[i] == b'\'' {
+                i += 1;
+            }
             tokens.push(Token {
-                kind: TokenKind::Number(num),
+                kind: TokenKind::Number(ch_val),
                 start,
                 len: i - start,
             });
+            continue;
+        }
+
+        // Double-quoted strings: evaluate content as sub-expression
+        if bytes[i] == b'"' {
+            i += 1;
+            let inner_start = i;
+            while i < bytes.len() && bytes[i] != b'"' {
+                if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            let inner = std::str::from_utf8(&bytes[inner_start..i]).unwrap_or("");
+            if i < bytes.len() {
+                i += 1; // skip closing quote
+            }
+            // Recursively tokenize the inner content
+            let inner_tokens = tokenize(inner)?;
+            tokens.extend(inner_tokens);
             continue;
         }
 
@@ -587,6 +649,44 @@ fn parse_number(bytes: &[u8], i: &mut usize) -> Result<i64, RustBashError> {
         .map_err(|_| RustBashError::Execution(format!("arithmetic: invalid number `{s}`")))
 }
 
+/// Parse a value in base N (2..64). Digits: 0-9, a-z, A-Z, @, _
+fn parse_base_n_value(base: i64, digits: &str) -> Result<i64, RustBashError> {
+    if !(2..=64).contains(&base) {
+        return Err(RustBashError::Execution(format!(
+            "arithmetic: invalid arithmetic base: {base}"
+        )));
+    }
+    let base_u = base as u64;
+    let mut result: i64 = 0;
+    for ch in digits.chars() {
+        let digit_val = match ch {
+            '0'..='9' => (ch as u64) - (b'0' as u64),
+            'a'..='z' => (ch as u64) - (b'a' as u64) + 10,
+            'A'..='Z' => {
+                if base <= 36 {
+                    (ch as u64) - (b'A' as u64) + 10
+                } else {
+                    (ch as u64) - (b'A' as u64) + 36
+                }
+            }
+            '@' => 62,
+            '_' => 63,
+            _ => {
+                return Err(RustBashError::Execution(format!(
+                    "arithmetic: value too great for base: {digits} (base {base})"
+                )));
+            }
+        };
+        if digit_val >= base_u {
+            return Err(RustBashError::Execution(format!(
+                "arithmetic: value too great for base: {digits} (base {base})"
+            )));
+        }
+        result = result.wrapping_mul(base).wrapping_add(digit_val as i64);
+    }
+    Ok(result)
+}
+
 // ── Recursive-descent parser / evaluator ────────────────────────────
 
 struct Parser<'a> {
@@ -709,37 +809,79 @@ impl<'a> Parser<'a> {
     }
 
     // Ternary: cond ? true_val : false_val
+    // Bash short-circuits: only the taken branch is evaluated for side effects.
     fn parse_ternary(&mut self, state: &mut InterpreterState) -> Result<i64, RustBashError> {
         let cond = self.parse_logical_or(state)?;
         if self.peek() == Some(TokenKind::Question) {
             self.advance();
-            let true_val = self.parse_assignment(state)?;
-            self.expect(TokenKind::Colon)?;
-            let false_val = self.parse_assignment(state)?;
-            Ok(if cond != 0 { true_val } else { false_val })
+            if cond != 0 {
+                let true_val = self.parse_assignment(state)?;
+                self.expect(TokenKind::Colon)?;
+                self.skip_ternary_branch()?;
+                Ok(true_val)
+            } else {
+                self.skip_ternary_branch()?;
+                self.expect(TokenKind::Colon)?;
+                let false_val = self.parse_assignment(state)?;
+                Ok(false_val)
+            }
         } else {
             Ok(cond)
         }
     }
 
-    // Logical OR: ||
+    /// Skip tokens for one ternary branch without evaluating side effects.
+    /// Handles nested ternaries by tracking `?`/`:` depth.
+    fn skip_ternary_branch(&mut self) -> Result<(), RustBashError> {
+        let mut depth = 0;
+        loop {
+            match self.peek() {
+                Some(TokenKind::Question) => {
+                    depth += 1;
+                    self.advance();
+                }
+                Some(TokenKind::Colon) if depth == 0 => break,
+                Some(TokenKind::Colon) => {
+                    depth -= 1;
+                    self.advance();
+                }
+                None => break,
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // Logical OR: || (short-circuit: skip RHS if LHS is truthy)
     fn parse_logical_or(&mut self, state: &mut InterpreterState) -> Result<i64, RustBashError> {
         let mut left = self.parse_logical_and(state)?;
         while self.peek() == Some(TokenKind::PipePipe) {
             self.advance();
-            let right = self.parse_logical_and(state)?;
-            left = i64::from(left != 0 || right != 0);
+            if left != 0 {
+                self.parse_logical_and(state)?;
+                left = 1;
+            } else {
+                let right = self.parse_logical_and(state)?;
+                left = i64::from(right != 0);
+            }
         }
         Ok(left)
     }
 
-    // Logical AND: &&
+    // Logical AND: && (short-circuit: skip RHS if LHS is falsy)
     fn parse_logical_and(&mut self, state: &mut InterpreterState) -> Result<i64, RustBashError> {
         let mut left = self.parse_bitwise_or(state)?;
         while self.peek() == Some(TokenKind::AmpAmp) {
             self.advance();
-            let right = self.parse_bitwise_or(state)?;
-            left = i64::from(left != 0 && right != 0);
+            if left == 0 {
+                self.parse_bitwise_or(state)?;
+                left = 0;
+            } else {
+                let right = self.parse_bitwise_or(state)?;
+                left = i64::from(right != 0);
+            }
         }
         Ok(left)
     }
@@ -1037,7 +1179,7 @@ impl<'a> Parser<'a> {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-fn read_var(state: &InterpreterState, name: &str) -> i64 {
+fn read_var(state: &mut InterpreterState, name: &str) -> i64 {
     // Handle special parameters
     match name {
         "#" => return state.positional_params.len() as i64,
@@ -1057,16 +1199,45 @@ fn read_var(state: &InterpreterState, name: &str) -> i64 {
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(0);
     }
+    // Recursive variable resolution: if the value is not numeric, treat it as
+    // a variable name and resolve again (up to a depth limit to prevent loops).
+    resolve_var_recursive(state, name, 0)
+}
+
+fn resolve_var_recursive(state: &mut InterpreterState, name: &str, depth: usize) -> i64 {
+    const MAX_DEPTH: usize = 10;
     let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
-    state
+    let val_str = state
         .env
         .get(&resolved)
-        .map(|v| v.value.as_scalar().parse::<i64>().unwrap_or(0))
-        .unwrap_or(0)
+        .map(|v| v.value.as_scalar().to_string())
+        .unwrap_or_default();
+    if val_str.is_empty() {
+        return 0;
+    }
+    if let Ok(n) = val_str.parse::<i64>() {
+        return n;
+    }
+    // If the value looks like a valid variable name, resolve recursively.
+    if depth < MAX_DEPTH
+        && val_str
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !val_str.chars().next().unwrap_or('0').is_ascii_digit()
+    {
+        return resolve_var_recursive(state, &val_str, depth + 1);
+    }
+    // Bash evaluates the variable's string value as an arithmetic expression.
+    if depth < MAX_DEPTH
+        && let Ok(n) = eval_arithmetic(&val_str, state)
+    {
+        return n;
+    }
+    0
 }
 
 /// Read a specific array element by numeric index.
-fn read_array_element(state: &InterpreterState, name: &str, index: i64) -> i64 {
+fn read_array_element(state: &mut InterpreterState, name: &str, index: i64) -> i64 {
     use crate::interpreter::VariableValue;
     let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
     let Some(var) = state.env.get(&resolved) else {

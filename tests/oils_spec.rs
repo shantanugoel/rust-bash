@@ -338,8 +338,12 @@ fn run_oils_spec_file(path: &Path) -> datatest_stable::Result<()> {
                 });
             }
             // Not in pass-list and mismatches: expected failure.
-            (false, Some(_)) => {
-                eprintln!("XFAIL {key}: not in pass-list");
+            (false, Some(msg)) => {
+                if std::env::var("OILS_VERBOSE_XFAIL").is_ok() {
+                    eprintln!("XFAIL {key}: {msg}");
+                } else {
+                    eprintln!("XFAIL {key}: not in pass-list");
+                }
                 outcomes.push(CaseOutcome::ExpectedFail);
             }
             // Not in pass-list and matches: unexpected pass — force promotion.

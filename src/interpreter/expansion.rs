@@ -90,24 +90,7 @@ pub(crate) fn expand_word_mut(
 ///
 /// Brace expansion is NOT applied here — assignments like `X={a,b}` keep
 /// literal braces, matching bash behavior.
-pub(crate) fn expand_word_to_string(
-    word: &ast::Word,
-    state: &InterpreterState,
-) -> Result<String, RustBashError> {
-    let words = expand_word_segments(word, state)?;
-    let result = finalize_no_split(words);
-    let joined = result.join(" ");
-    if joined.len() > state.limits.max_string_length {
-        return Err(RustBashError::LimitExceeded {
-            limit_name: "max_string_length",
-            limit_value: state.limits.max_string_length,
-            actual_value: joined.len(),
-        });
-    }
-    Ok(joined)
-}
-
-/// Mutable version of expand_word_to_string.
+/// Expand a word to a single string (no word splitting or globbing).
 pub(crate) fn expand_word_to_string_mut(
     word: &ast::Word,
     state: &mut InterpreterState,
@@ -331,7 +314,20 @@ fn expand_word_piece(
         }
         WordPiece::EscapeSequence(s) => {
             if let Some(c) = s.strip_prefix('\\') {
-                push_segment(words, c, true, true);
+                // In double quotes, only \$, \`, \", \\, and \newline are special.
+                // Other \X sequences should preserve the backslash.
+                if in_dq {
+                    match c {
+                        "$" | "`" | "\"" | "\\" | "\n" => {
+                            push_segment(words, c, true, true);
+                        }
+                        _ => {
+                            push_segment(words, s, true, true);
+                        }
+                    }
+                } else {
+                    push_segment(words, c, true, true);
+                }
             } else {
                 push_segment(words, s, true, true);
             }
@@ -390,7 +386,9 @@ fn expand_word_piece_mut(
             Ok(false)
         }
         WordPiece::ArithmeticExpression(expr) => {
-            let val = crate::interpreter::arithmetic::eval_arithmetic(&expr.value, state)?;
+            // Expand shell variables in the expression before arithmetic evaluation.
+            let expanded = expand_arith_expression(&expr.value, state)?;
+            let val = crate::interpreter::arithmetic::eval_arithmetic(&expanded, state)?;
             push_segment(words, &val.to_string(), in_dq, in_dq);
             Ok(false)
         }
@@ -468,7 +466,7 @@ fn expand_parameter(
             let val = resolve_parameter(parameter, state, *indirect);
             if should_use_default(&val, test_type, state, parameter) {
                 if let Some(dv) = default_value {
-                    let expanded = expand_raw_string(dv, state)?;
+                    let expanded = expand_raw_string_ctx(dv, state, in_dq)?;
                     push_segment(words, &expanded, in_dq, in_dq);
                 }
             } else {
@@ -485,7 +483,7 @@ fn expand_parameter(
             let val = resolve_parameter(parameter, state, *indirect);
             if should_use_default(&val, test_type, state, parameter) {
                 if let Some(dv) = default_value {
-                    let expanded = expand_raw_string(dv, state)?;
+                    let expanded = expand_raw_string_ctx(dv, state, in_dq)?;
                     push_segment(words, &expanded, in_dq, in_dq);
                 }
             } else {
@@ -502,7 +500,7 @@ fn expand_parameter(
             if should_use_default(&val, test_type, state, parameter) {
                 let param_name = parameter_name(parameter);
                 let msg = if let Some(raw) = error_message {
-                    expand_raw_string(raw, state)?
+                    expand_raw_string_ctx(raw, state, in_dq)?
                 } else {
                     "parameter null or not set".to_string()
                 };
@@ -523,7 +521,7 @@ fn expand_parameter(
             if !should_use_default(&val, test_type, state, parameter)
                 && let Some(av) = alternative_value
             {
-                let expanded = expand_raw_string(av, state)?;
+                let expanded = expand_raw_string_ctx(av, state, in_dq)?;
                 push_segment(words, &expanded, in_dq, in_dq);
             }
             // If unset/null, expand to nothing
@@ -533,68 +531,136 @@ fn expand_parameter(
             indirect,
             pattern,
         } => {
-            let val = resolve_parameter(parameter, state, *indirect);
-            let result = if let Some(pat) = pattern {
-                if let Some(idx) = pattern::shortest_suffix_match(&val, pat) {
-                    val[..idx].to_string()
+            if let Some((values, concatenate)) = get_vectorized_values(parameter, state, *indirect)
+            {
+                let results: Vec<String> = values
+                    .iter()
+                    .map(|v| {
+                        if let Some(pat) = pattern
+                            && let Some(idx) = pattern::shortest_suffix_match(v, pat)
+                        {
+                            v[..idx].to_string()
+                        } else {
+                            v.clone()
+                        }
+                    })
+                    .collect();
+                push_vectorized(results, concatenate, words, state, in_dq);
+            } else {
+                let val = resolve_parameter(parameter, state, *indirect);
+                let result = if let Some(pat) = pattern {
+                    if let Some(idx) = pattern::shortest_suffix_match(&val, pat) {
+                        val[..idx].to_string()
+                    } else {
+                        val
+                    }
                 } else {
                     val
-                }
-            } else {
-                val
-            };
-            push_segment(words, &result, in_dq, in_dq);
+                };
+                push_segment(words, &result, in_dq, in_dq);
+            }
         }
         ParameterExpr::RemoveLargestSuffixPattern {
             parameter,
             indirect,
             pattern,
         } => {
-            let val = resolve_parameter(parameter, state, *indirect);
-            let result = if let Some(pat) = pattern {
-                if let Some(idx) = pattern::longest_suffix_match(&val, pat) {
-                    val[..idx].to_string()
+            if let Some((values, concatenate)) = get_vectorized_values(parameter, state, *indirect)
+            {
+                let results: Vec<String> = values
+                    .iter()
+                    .map(|v| {
+                        if let Some(pat) = pattern
+                            && let Some(idx) = pattern::longest_suffix_match(v, pat)
+                        {
+                            v[..idx].to_string()
+                        } else {
+                            v.clone()
+                        }
+                    })
+                    .collect();
+                push_vectorized(results, concatenate, words, state, in_dq);
+            } else {
+                let val = resolve_parameter(parameter, state, *indirect);
+                let result = if let Some(pat) = pattern {
+                    if let Some(idx) = pattern::longest_suffix_match(&val, pat) {
+                        val[..idx].to_string()
+                    } else {
+                        val
+                    }
                 } else {
                     val
-                }
-            } else {
-                val
-            };
-            push_segment(words, &result, in_dq, in_dq);
+                };
+                push_segment(words, &result, in_dq, in_dq);
+            }
         }
         ParameterExpr::RemoveSmallestPrefixPattern {
             parameter,
             indirect,
             pattern,
         } => {
-            let val = resolve_parameter(parameter, state, *indirect);
-            let result = if let Some(pat) = pattern {
-                if let Some(len) = pattern::shortest_prefix_match(&val, pat) {
-                    val[len..].to_string()
+            if let Some((values, concatenate)) = get_vectorized_values(parameter, state, *indirect)
+            {
+                let results: Vec<String> = values
+                    .iter()
+                    .map(|v| {
+                        if let Some(pat) = pattern
+                            && let Some(len) = pattern::shortest_prefix_match(v, pat)
+                        {
+                            v[len..].to_string()
+                        } else {
+                            v.clone()
+                        }
+                    })
+                    .collect();
+                push_vectorized(results, concatenate, words, state, in_dq);
+            } else {
+                let val = resolve_parameter(parameter, state, *indirect);
+                let result = if let Some(pat) = pattern {
+                    if let Some(len) = pattern::shortest_prefix_match(&val, pat) {
+                        val[len..].to_string()
+                    } else {
+                        val
+                    }
                 } else {
                     val
-                }
-            } else {
-                val
-            };
-            push_segment(words, &result, in_dq, in_dq);
+                };
+                push_segment(words, &result, in_dq, in_dq);
+            }
         }
         ParameterExpr::RemoveLargestPrefixPattern {
             parameter,
             indirect,
             pattern,
         } => {
-            let val = resolve_parameter(parameter, state, *indirect);
-            let result = if let Some(pat) = pattern {
-                if let Some(len) = pattern::longest_prefix_match(&val, pat) {
-                    val[len..].to_string()
+            if let Some((values, concatenate)) = get_vectorized_values(parameter, state, *indirect)
+            {
+                let results: Vec<String> = values
+                    .iter()
+                    .map(|v| {
+                        if let Some(pat) = pattern
+                            && let Some(len) = pattern::longest_prefix_match(v, pat)
+                        {
+                            v[len..].to_string()
+                        } else {
+                            v.clone()
+                        }
+                    })
+                    .collect();
+                push_vectorized(results, concatenate, words, state, in_dq);
+            } else {
+                let val = resolve_parameter(parameter, state, *indirect);
+                let result = if let Some(pat) = pattern {
+                    if let Some(len) = pattern::longest_prefix_match(&val, pat) {
+                        val[len..].to_string()
+                    } else {
+                        val
+                    }
                 } else {
                     val
-                }
-            } else {
-                val
-            };
-            push_segment(words, &result, in_dq, in_dq);
+                };
+                push_segment(words, &result, in_dq, in_dq);
+            }
         }
         ParameterExpr::Substring {
             parameter,
@@ -763,7 +829,7 @@ fn expand_parameter_mut(
             let val = resolve_parameter_maybe_mut(parameter, state, *indirect)?;
             if should_use_default(&val, test_type, state, parameter) {
                 let dv = if let Some(raw) = default_value {
-                    expand_raw_string_mut(raw, state)?
+                    expand_raw_string_mut_ctx(raw, state, in_dq)?
                 } else {
                     String::new()
                 };
@@ -1691,6 +1757,54 @@ fn get_call_stack_values(name: &str, state: &InterpreterState) -> Option<Vec<Str
     }
 }
 
+/// Returns the individual element values for a parameter if it represents an
+/// array expansion (`[@]` or `[*]` or `$@` / `$*`).  Returns `None` for scalar
+/// parameters so the caller can fall through to the normal scalar path.  When
+/// `Some` is returned, the bool indicates whether the values should be
+/// concatenated (`[*]` / `$*`) or kept separate (`[@]` / `$@`).
+fn get_vectorized_values(
+    parameter: &Parameter,
+    state: &InterpreterState,
+    indirect: bool,
+) -> Option<(Vec<String>, bool)> {
+    let _ = indirect; // indirect not yet relevant for array expansion
+    match parameter {
+        Parameter::NamedWithAllIndices { name, concatenate } => {
+            Some((get_array_values(name, state), *concatenate))
+        }
+        Parameter::Special(SpecialParameter::AllPositionalParameters { concatenate }) => {
+            Some((state.positional_params.clone(), *concatenate))
+        }
+        _ => None,
+    }
+}
+
+/// Push vectorized operation results into `words`, handling `[@]` vs `[*]`
+/// semantics (separate words vs IFS-joined).
+fn push_vectorized(
+    results: Vec<String>,
+    concatenate: bool,
+    words: &mut Vec<WordInProgress>,
+    state: &InterpreterState,
+    in_dq: bool,
+) {
+    if concatenate {
+        let sep = match get_var(state, "IFS") {
+            Some(s) => s.chars().next().map(|c| c.to_string()).unwrap_or_default(),
+            None => " ".to_string(),
+        };
+        let joined = results.join(&sep);
+        push_segment(words, &joined, in_dq, in_dq);
+    } else {
+        for (i, v) in results.iter().enumerate() {
+            if i > 0 {
+                start_new_word(words);
+            }
+            push_segment(words, v, in_dq, in_dq);
+        }
+    }
+}
+
 /// Get all values of an array variable as a Vec.
 fn get_array_values(name: &str, state: &InterpreterState) -> Vec<String> {
     // Handle call-stack pseudo-arrays first.
@@ -1936,12 +2050,28 @@ fn is_unset(state: &InterpreterState, parameter: &Parameter) -> bool {
             }
         }
         Parameter::Special(_) => false,
-        Parameter::NamedWithIndex { name, .. } => {
+        Parameter::NamedWithIndex { name, index } => {
             if is_dynamic_special(name) {
                 return false;
             }
             let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
-            !state.env.contains_key(&resolved)
+            match state.env.get(&resolved) {
+                None => true,
+                Some(var) => {
+                    use crate::interpreter::VariableValue;
+                    match &var.value {
+                        VariableValue::IndexedArray(map) => {
+                            let idx = simple_arith_eval(index, state) as usize;
+                            !map.contains_key(&idx)
+                        }
+                        VariableValue::AssociativeArray(map) => !map.contains_key(index.as_str()),
+                        VariableValue::Scalar(_) => {
+                            let idx = simple_arith_eval(index, state) as usize;
+                            idx != 0
+                        }
+                    }
+                }
+            }
         }
         Parameter::NamedWithAllIndices { name, .. } => {
             if is_dynamic_special(name) {
@@ -1985,17 +2115,53 @@ fn parse_arithmetic_value(expr: &str) -> i64 {
 
 // ── Raw string expansion (for default/alternative values) ───────────
 
-fn expand_raw_string(raw: &str, state: &InterpreterState) -> Result<String, RustBashError> {
-    let word = ast::Word {
-        value: raw.to_string(),
-        loc: None,
-    };
-    expand_word_to_string(&word, state)
+fn expand_raw_string_ctx(
+    raw: &str,
+    state: &InterpreterState,
+    in_dq: bool,
+) -> Result<String, RustBashError> {
+    let options = parser_options();
+    let pieces = brush_parser::word::parse(raw, &options)
+        .map_err(|e| RustBashError::Parse(e.to_string()))?;
+
+    let mut words: Vec<WordInProgress> = vec![Vec::new()];
+    for piece_ws in &pieces {
+        expand_word_piece(&piece_ws.piece, &mut words, state, in_dq)?;
+    }
+    let result = finalize_no_split(words);
+    Ok(result.join(" "))
 }
 
-fn expand_raw_string_mut(raw: &str, state: &mut InterpreterState) -> Result<String, RustBashError> {
+fn expand_raw_string_mut_ctx(
+    raw: &str,
+    state: &mut InterpreterState,
+    in_dq: bool,
+) -> Result<String, RustBashError> {
+    let options = parser_options();
+    let pieces = brush_parser::word::parse(raw, &options)
+        .map_err(|e| RustBashError::Parse(e.to_string()))?;
+
+    let mut words: Vec<WordInProgress> = vec![Vec::new()];
+    for piece_ws in &pieces {
+        expand_word_piece_mut(&piece_ws.piece, &mut words, state, in_dq)?;
+    }
+    let result = finalize_no_split(words);
+    Ok(result.join(" "))
+}
+
+/// Expand shell variables inside an arithmetic expression before evaluation.
+/// This handles cases like `$((${zero}11))` where `zero=0` should yield `011`.
+fn expand_arith_expression(
+    expr: &str,
+    state: &mut InterpreterState,
+) -> Result<String, RustBashError> {
+    // If the expression contains no shell expansion markers, return as-is.
+    if !expr.contains('$') && !expr.contains('`') {
+        return Ok(expr.to_string());
+    }
+    // Parse the expression as a shell word and expand it.
     let word = ast::Word {
-        value: raw.to_string(),
+        value: expr.to_string(),
         loc: None,
     };
     expand_word_to_string_mut(&word, state)

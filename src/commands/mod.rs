@@ -992,6 +992,89 @@ impl VirtualCommand for EgrepCommand {
     }
 }
 
+/// Oils test helper: `argv.py` prints arguments as a Python list.
+///
+/// Equivalent to `python2 -c 'import sys; print(sys.argv[1:])'`.
+struct ArgvPyCommand;
+
+static ARGV_PY_META: CommandMeta = CommandMeta {
+    name: "argv.py",
+    synopsis: "argv.py [arg ...]",
+    description: "Print arguments as a Python list (Oils test helper).",
+    options: &[],
+    supports_help_flag: false,
+    flags: &[],
+};
+
+impl VirtualCommand for ArgvPyCommand {
+    fn name(&self) -> &str {
+        "argv.py"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&ARGV_PY_META)
+    }
+
+    fn execute(&self, args: &[String], _ctx: &CommandContext) -> CommandResult {
+        // Python repr format: ['a', 'b'] — matches Python 2 list repr.
+        // If a string contains single quotes but no double quotes, use double quotes.
+        let parts: Vec<String> = args.iter().map(|a| python_repr_string(a)).collect();
+        CommandResult {
+            stdout: format!("[{}]\n", parts.join(", ")),
+            ..Default::default()
+        }
+    }
+}
+
+/// Produce a Python-style repr of a string, matching Python 2 behavior.
+fn python_repr_string(s: &str) -> String {
+    if s.contains('\'') && !s.contains('"') {
+        // Use double quotes: "it's"
+        let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("\"{escaped}\"")
+    } else {
+        // Use single quotes: 'hello'
+        let escaped = s.replace('\\', "\\\\").replace('\'', "\\'");
+        format!("'{escaped}'")
+    }
+}
+
+/// Oils test helper: `printenv.py` prints specified environment variables.
+struct PrintenvPyCommand;
+
+static PRINTENV_PY_META: CommandMeta = CommandMeta {
+    name: "printenv.py",
+    synopsis: "printenv.py [NAME ...]",
+    description: "Print environment variables or 'None' (Oils test helper).",
+    options: &[],
+    supports_help_flag: false,
+    flags: &[],
+};
+
+impl VirtualCommand for PrintenvPyCommand {
+    fn name(&self) -> &str {
+        "printenv.py"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&PRINTENV_PY_META)
+    }
+
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
+        let mut out = String::new();
+        for name in args {
+            match ctx.env.get(name.as_str()) {
+                Some(val) => out.push_str(&format!("{val}\n")),
+                None => out.push_str("None\n"),
+            }
+        }
+        CommandResult {
+            stdout: out,
+            ..Default::default()
+        }
+    }
+}
+
 /// Register the default set of commands.
 pub fn register_default_commands() -> HashMap<String, Box<dyn VirtualCommand>> {
     let mut commands: HashMap<String, Box<dyn VirtualCommand>> = HashMap::new();
@@ -1090,6 +1173,9 @@ pub fn register_default_commands() -> HashMap<String, Box<dyn VirtualCommand>> {
         Box::new(compression::GunzipCommand),
         Box::new(compression::ZcatCommand),
         Box::new(compression::TarCommand),
+        // Oils test helpers
+        Box::new(ArgvPyCommand),
+        Box::new(PrintenvPyCommand),
     ];
     for cmd in defaults {
         commands.insert(cmd.name().to_string(), cmd);

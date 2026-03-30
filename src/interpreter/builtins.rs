@@ -27,7 +27,7 @@ pub(crate) fn execute_builtin(
         "set" => builtin_set(args, state).map(Some),
         "shift" => builtin_shift(args, state).map(Some),
         "readonly" => builtin_readonly(args, state).map(Some),
-        "declare" => builtin_declare(args, state).map(Some),
+        "declare" | "typeset" => builtin_declare(args, state).map(Some),
         "read" => builtin_read(args, state, stdin).map(Some),
         "eval" => builtin_eval(args, state).map(Some),
         "source" | "." => builtin_source(args, state).map(Some),
@@ -98,6 +98,7 @@ pub fn builtin_names() -> &'static [&'static str] {
         "shift",
         "readonly",
         "declare",
+        "typeset",
         "read",
         "eval",
         "source",
@@ -540,7 +541,7 @@ pub(crate) fn builtin_meta(name: &str) -> Option<&'static CommandMeta> {
         "set" => Some(&SET_META),
         "shift" => Some(&SHIFT_META),
         "readonly" => Some(&READONLY_META),
-        "declare" => Some(&DECLARE_META),
+        "declare" | "typeset" => Some(&DECLARE_META),
         "read" => Some(&READ_META),
         "eval" => Some(&EVAL_META),
         "source" | "." => Some(&SOURCE_META),
@@ -787,13 +788,13 @@ fn builtin_export(
     args: &[String],
     state: &mut InterpreterState,
 ) -> Result<ExecResult, RustBashError> {
-    if args.is_empty() {
+    if args.is_empty() || args == ["-p"] {
         // List all exported variables
         let mut lines: Vec<String> = state
             .env
             .iter()
             .filter(|(_, v)| v.exported())
-            .map(|(k, v)| format!("declare -x {k}=\"{}\"\n", v.value.as_scalar()))
+            .map(|(k, v)| format_declare_line(k, v))
             .collect();
         lines.sort();
         return Ok(ExecResult {
@@ -802,17 +803,40 @@ fn builtin_export(
         });
     }
 
+    let mut unexport = false;
     for arg in args {
         if arg == "-n" {
-            continue; // export -n VAR would unexport, skip flag for now
+            unexport = true;
+            continue;
         }
         if arg.starts_with('-') && !arg.contains('=') {
             continue; // skip other flags
         }
-        if let Some((name, value)) = arg.split_once('=') {
-            set_variable(state, name, value.to_string())?;
+        if let Some((name, value)) = arg.split_once("+=") {
+            // export name+=value — append
+            let current = state
+                .env
+                .get(name)
+                .map(|v| v.value.as_scalar().to_string())
+                .unwrap_or_default();
+            let new_val = format!("{current}{value}");
+            set_variable(state, name, new_val)?;
             if let Some(var) = state.env.get_mut(name) {
                 var.attrs.insert(VariableAttrs::EXPORTED);
+            }
+        } else if let Some((name, value)) = arg.split_once('=') {
+            set_variable(state, name, value.to_string())?;
+            if let Some(var) = state.env.get_mut(name) {
+                if unexport {
+                    var.attrs.remove(VariableAttrs::EXPORTED);
+                } else {
+                    var.attrs.insert(VariableAttrs::EXPORTED);
+                }
+            }
+        } else if unexport {
+            // export -n VAR — remove export flag
+            if let Some(var) = state.env.get_mut(arg.as_str()) {
+                var.attrs.remove(VariableAttrs::EXPORTED);
             }
         } else {
             // Just mark existing variable as exported
@@ -1069,12 +1093,12 @@ fn builtin_readonly(
     args: &[String],
     state: &mut InterpreterState,
 ) -> Result<ExecResult, RustBashError> {
-    if args.is_empty() {
+    if args.is_empty() || args == ["-p"] {
         let mut lines: Vec<String> = state
             .env
             .iter()
             .filter(|(_, v)| v.readonly())
-            .map(|(k, v)| format!("declare -r {k}=\"{}\"\n", v.value.as_scalar()))
+            .map(|(k, v)| format_declare_line(k, v))
             .collect();
         lines.sort();
         return Ok(ExecResult {
@@ -1087,7 +1111,18 @@ fn builtin_readonly(
         if arg.starts_with('-') {
             continue; // skip flags
         }
-        if let Some((name, value)) = arg.split_once('=') {
+        if let Some((name, value)) = arg.split_once("+=") {
+            let current = state
+                .env
+                .get(name)
+                .map(|v| v.value.as_scalar().to_string())
+                .unwrap_or_default();
+            let new_val = format!("{current}{value}");
+            set_variable(state, name, new_val)?;
+            if let Some(var) = state.env.get_mut(name) {
+                var.attrs.insert(VariableAttrs::READONLY);
+            }
+        } else if let Some((name, value)) = arg.split_once('=') {
             set_variable(state, name, value.to_string())?;
             if let Some(var) = state.env.get_mut(name) {
                 var.attrs.insert(VariableAttrs::READONLY);
@@ -1126,10 +1161,18 @@ fn builtin_declare(
     let mut make_uppercase = false;
     let mut make_nameref = false;
     let mut print_mode = false;
+    let mut func_mode = false; // -f: functions
+    let mut func_names_mode = false; // -F: function names only
+    let mut global_mode = false; // -g
+    let mut remove_exported = false; // +x
     let mut var_args: Vec<&String> = Vec::new();
 
     for arg in args {
         if let Some(flags) = arg.strip_prefix('-') {
+            if flags.is_empty() {
+                var_args.push(arg);
+                continue;
+            }
             for c in flags.chars() {
                 match c {
                     'r' => make_readonly = true,
@@ -1141,7 +1184,16 @@ fn builtin_declare(
                     'u' => make_uppercase = true,
                     'n' => make_nameref = true,
                     'p' => print_mode = true,
+                    'f' => func_mode = true,
+                    'F' => func_names_mode = true,
+                    'g' => global_mode = true,
                     _ => {}
+                }
+            }
+        } else if let Some(flags) = arg.strip_prefix('+') {
+            for c in flags.chars() {
+                if c == 'x' {
+                    remove_exported = true;
                 }
             }
         } else {
@@ -1149,10 +1201,35 @@ fn builtin_declare(
         }
     }
 
+    // declare -f / declare -F: function listing/checking
+    if func_mode || func_names_mode {
+        return declare_functions(state, &var_args, func_names_mode);
+    }
+
     // declare -p [varname...] — print variable declarations
     if print_mode {
-        return declare_print(state, &var_args);
+        return declare_print(
+            state,
+            &var_args,
+            make_readonly,
+            make_exported,
+            make_nameref,
+            make_indexed_array,
+            make_assoc_array,
+        );
     }
+
+    // typeset +x name — remove export attribute
+    if remove_exported {
+        for arg in &var_args {
+            if let Some(var) = state.env.get_mut(arg.as_str()) {
+                var.attrs.remove(VariableAttrs::EXPORTED);
+            }
+        }
+        return Ok(ExecResult::default());
+    }
+
+    let _ = global_mode; // accepted but not yet meaningful (no dynamic scoping)
 
     let has_any_flag = make_readonly
         || make_exported
@@ -1190,7 +1267,17 @@ fn builtin_declare(
     }
 
     for arg in var_args {
-        if let Some((name, value)) = arg.split_once('=') {
+        // Check for += (append) before = (assign)
+        if let Some((name, value)) = arg.split_once("+=") {
+            declare_append_value(
+                state,
+                name,
+                value,
+                flag_attrs,
+                make_assoc_array,
+                make_indexed_array,
+            )?;
+        } else if let Some((name, value)) = arg.split_once('=') {
             declare_with_value(
                 state,
                 name,
@@ -1208,12 +1295,92 @@ fn builtin_declare(
     Ok(ExecResult::default())
 }
 
+/// Handle `declare -f` (list function bodies) and `declare -F` (list function names).
+fn declare_functions(
+    state: &InterpreterState,
+    var_args: &[&String],
+    names_only: bool,
+) -> Result<ExecResult, RustBashError> {
+    if var_args.is_empty() {
+        // List all functions
+        let mut lines: Vec<String> = Vec::new();
+        for name in state.functions.keys() {
+            if names_only {
+                lines.push(format!("declare -f {name}\n"));
+            } else {
+                lines.push(format!("{name} () {{ :; }}\n")); // simplified body
+            }
+        }
+        lines.sort();
+        return Ok(ExecResult {
+            stdout: lines.join(""),
+            ..ExecResult::default()
+        });
+    }
+    // Check specific function existence
+    let mut exit_code = 0;
+    let mut stdout = String::new();
+    for name in var_args {
+        if state.functions.contains_key(name.as_str()) {
+            if names_only {
+                stdout.push_str(&format!("declare -f {name}\n"));
+            }
+        } else {
+            exit_code = 1;
+        }
+    }
+    Ok(ExecResult {
+        stdout,
+        exit_code,
+        ..ExecResult::default()
+    })
+}
+
 /// Print variable declarations with `declare -p`.
 fn declare_print(
     state: &InterpreterState,
     var_args: &[&String],
+    filter_readonly: bool,
+    filter_exported: bool,
+    filter_nameref: bool,
+    filter_indexed: bool,
+    filter_assoc: bool,
 ) -> Result<ExecResult, RustBashError> {
+    let has_filter =
+        filter_readonly || filter_exported || filter_nameref || filter_indexed || filter_assoc;
+
     if var_args.is_empty() {
+        if has_filter {
+            // Filter by attribute
+            let mut lines: Vec<String> = state
+                .env
+                .iter()
+                .filter(|(_, v)| {
+                    if filter_readonly && v.attrs.contains(VariableAttrs::READONLY) {
+                        return true;
+                    }
+                    if filter_exported && v.attrs.contains(VariableAttrs::EXPORTED) {
+                        return true;
+                    }
+                    if filter_nameref && v.attrs.contains(VariableAttrs::NAMEREF) {
+                        return true;
+                    }
+                    if filter_indexed && matches!(v.value, VariableValue::IndexedArray(_)) {
+                        return true;
+                    }
+                    if filter_assoc && matches!(v.value, VariableValue::AssociativeArray(_)) {
+                        return true;
+                    }
+                    false
+                })
+                .map(|(k, v)| format_declare_line(k, v))
+                .collect();
+            lines.sort();
+            return Ok(ExecResult {
+                stdout: lines.join(""),
+                ..ExecResult::default()
+            });
+        }
         return declare_list_all(state);
     }
     let mut stdout = String::new();
@@ -1279,24 +1446,97 @@ fn format_declare_line(name: &str, var: &Variable) -> String {
     }
 
     let flag_str = if flags.is_empty() {
-        "--".to_string()
+        "-- ".to_string()
     } else {
-        flags
+        format!("-{flags} ")
     };
 
     match &var.value {
-        VariableValue::Scalar(s) => format!("declare -{flag_str} {name}=\"{s}\"\n"),
+        VariableValue::Scalar(s) => format!("declare {flag_str}{name}=\"{s}\"\n"),
         VariableValue::IndexedArray(map) => {
             let elems: Vec<String> = map.iter().map(|(k, v)| format!("[{k}]=\"{v}\"")).collect();
-            format!("declare -{flag_str} {name}=({})\n", elems.join(" "))
+            format!("declare {flag_str}{name}=({})\n", elems.join(" "))
         }
         VariableValue::AssociativeArray(map) => {
             let mut elems: Vec<String> =
                 map.iter().map(|(k, v)| format!("[{k}]=\"{v}\"")).collect();
             elems.sort();
-            format!("declare -{flag_str} {name}=({})\n", elems.join(" "))
+            format!("declare {flag_str}{name}=({})\n", elems.join(" "))
         }
     }
+}
+
+/// Handle `declare [-flags] name+=value` — append to existing variable.
+fn declare_append_value(
+    state: &mut InterpreterState,
+    name: &str,
+    value: &str,
+    flag_attrs: VariableAttrs,
+    _make_assoc_array: bool,
+    _make_indexed_array: bool,
+) -> Result<(), RustBashError> {
+    // Handle array append: name+=(val1 val2 ...)
+    if let Some(inner) = value.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
+        // Find current max index + 1
+        let start_idx = match state.env.get(name) {
+            Some(var) => match &var.value {
+                VariableValue::IndexedArray(map) => {
+                    map.keys().next_back().map(|k| k + 1).unwrap_or(0)
+                }
+                VariableValue::Scalar(s) if s.is_empty() => 0,
+                VariableValue::Scalar(_) => 1,
+                VariableValue::AssociativeArray(_) => 0,
+            },
+            None => 0,
+        };
+
+        // Create array if it doesn't exist
+        if !state.env.contains_key(name) {
+            state.env.insert(
+                name.to_string(),
+                Variable {
+                    value: VariableValue::IndexedArray(std::collections::BTreeMap::new()),
+                    attrs: flag_attrs,
+                },
+            );
+        }
+
+        // Convert scalar to array if needed
+        if let Some(var) = state.env.get_mut(name)
+            && let VariableValue::Scalar(s) = &var.value
+        {
+            let mut map = std::collections::BTreeMap::new();
+            if !s.is_empty() {
+                map.insert(0, s.clone());
+            }
+            var.value = VariableValue::IndexedArray(map);
+        }
+
+        let words = shell_split_array_body(inner);
+        let mut idx = start_idx;
+        for word in &words {
+            let val = unquote_simple(word);
+            crate::interpreter::set_array_element(state, name, idx, val)?;
+            idx += 1;
+        }
+
+        if let Some(var) = state.env.get_mut(name) {
+            var.attrs.insert(flag_attrs);
+        }
+    } else {
+        // Scalar append
+        let current = state
+            .env
+            .get(name)
+            .map(|v| v.value.as_scalar().to_string())
+            .unwrap_or_default();
+        let new_val = format!("{current}{value}");
+        set_variable(state, name, new_val)?;
+        if let Some(var) = state.env.get_mut(name) {
+            var.attrs.insert(flag_attrs);
+        }
+    }
+    Ok(())
 }
 
 /// Handle `declare [-flags] name=value`.
@@ -1347,12 +1587,27 @@ fn declare_with_value(
         if !matches!(var.value, VariableValue::IndexedArray(_)) {
             var.value = VariableValue::IndexedArray(std::collections::BTreeMap::new());
         }
-        // Set element [0] if a value was provided.
-        if !value.is_empty() {
+        // Parse array literal (x y z) or set element [0].
+        if let Some(inner) = value.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
+            parse_and_set_indexed_array(state, name, inner)?;
+        } else if !value.is_empty() {
             crate::interpreter::set_array_element(state, name, 0, value.to_string())?;
         }
+    } else if let Some(inner) = value.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
+        // `declare name=(x y z)` without -a flag — auto-create indexed array.
+        let var = state
+            .env
+            .entry(name.to_string())
+            .or_insert_with(|| Variable {
+                value: VariableValue::IndexedArray(std::collections::BTreeMap::new()),
+                attrs: VariableAttrs::empty(),
+            });
+        var.attrs.insert(flag_attrs);
+        if !matches!(var.value, VariableValue::IndexedArray(_)) {
+            var.value = VariableValue::IndexedArray(std::collections::BTreeMap::new());
+        }
+        parse_and_set_indexed_array(state, name, inner)?;
     } else {
-        // Scalar: set attrs first (except READONLY), then assign value so transforms apply.
         let non_readonly_attrs = flag_attrs - VariableAttrs::READONLY;
         let var = state
             .env
@@ -1407,6 +1662,111 @@ fn declare_without_value(
         );
     }
     Ok(())
+}
+
+/// Parse an array literal body like `x y z` or `[0]="x" [1]="y"` and populate
+/// the named variable as an indexed array.
+fn parse_and_set_indexed_array(
+    state: &mut InterpreterState,
+    name: &str,
+    body: &str,
+) -> Result<(), RustBashError> {
+    // Split into shell-like words respecting double/single quotes.
+    let words = shell_split_array_body(body);
+    // Reset the array to empty.
+    if let Some(var) = state.env.get_mut(name) {
+        var.value = VariableValue::IndexedArray(std::collections::BTreeMap::new());
+    }
+    let mut idx: usize = 0;
+    for word in &words {
+        if let Some(rest) = word.strip_prefix('[') {
+            // [index]="value" form
+            if let Some(eq_pos) = rest.find("]=") {
+                let index_str = &rest[..eq_pos];
+                let value_part = &rest[eq_pos + 2..];
+                let value = unquote_simple(value_part);
+                if let Ok(i) = index_str.parse::<usize>() {
+                    crate::interpreter::set_array_element(state, name, i, value)?;
+                    idx = i + 1;
+                }
+            }
+        } else {
+            let value = unquote_simple(word);
+            crate::interpreter::set_array_element(state, name, idx, value)?;
+            idx += 1;
+        }
+    }
+    Ok(())
+}
+
+/// Simple shell word splitting for array bodies, respecting double/single quotes.
+fn shell_split_array_body(s: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        match c {
+            ' ' | '\t' | '\n' => {
+                if !current.is_empty() {
+                    words.push(std::mem::take(&mut current));
+                }
+                chars.next();
+            }
+            '"' => {
+                chars.next();
+                current.push('"');
+                while let Some(&ch) = chars.peek() {
+                    if ch == '"' {
+                        current.push('"');
+                        chars.next();
+                        break;
+                    }
+                    if ch == '\\' {
+                        chars.next();
+                        current.push('\\');
+                        if let Some(&esc) = chars.peek() {
+                            current.push(esc);
+                            chars.next();
+                        }
+                    } else {
+                        current.push(ch);
+                        chars.next();
+                    }
+                }
+            }
+            '\'' => {
+                chars.next();
+                current.push('\'');
+                while let Some(&ch) = chars.peek() {
+                    if ch == '\'' {
+                        current.push('\'');
+                        chars.next();
+                        break;
+                    }
+                    current.push(ch);
+                    chars.next();
+                }
+            }
+            _ => {
+                current.push(c);
+                chars.next();
+            }
+        }
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
+}
+
+/// Remove outer quotes from a simple value like `"foo"` or `'bar'`.
+fn unquote_simple(s: &str) -> String {
+    if s.len() >= 2
+        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
+    {
+        return s[1..s.len() - 1].to_string();
+    }
+    s.to_string()
 }
 
 // ── read ────────────────────────────────────────────────────────────
@@ -2223,33 +2583,174 @@ fn builtin_local(
     args: &[String],
     state: &mut InterpreterState,
 ) -> Result<ExecResult, RustBashError> {
-    // bash allows `local` at top level (it just acts like a normal assignment)
-    // but we only do scope tracking inside functions
+    // Parse flags similar to declare
+    let mut make_indexed_array = false;
+    let mut make_assoc_array = false;
+    let mut make_readonly = false;
+    let mut make_exported = false;
+    let mut make_integer = false;
+    let mut make_nameref = false;
+    let mut var_args: Vec<&String> = Vec::new();
+
     for arg in args {
-        if arg.starts_with('-') {
-            continue; // skip flags
+        if let Some(flags) = arg.strip_prefix('-') {
+            if flags.is_empty() {
+                var_args.push(arg);
+                continue;
+            }
+            for c in flags.chars() {
+                match c {
+                    'a' => make_indexed_array = true,
+                    'A' => make_assoc_array = true,
+                    'r' => make_readonly = true,
+                    'x' => make_exported = true,
+                    'i' => make_integer = true,
+                    'n' => make_nameref = true,
+                    _ => {}
+                }
+            }
+        } else {
+            var_args.push(arg);
         }
-        if let Some((name, value)) = arg.split_once('=') {
+    }
+
+    for arg in &var_args {
+        if let Some((raw_name, value)) = arg.split_once("+=") {
+            // local name+=value — append
+            let name = raw_name;
+            if let Some(scope) = state.local_scopes.last_mut() {
+                scope
+                    .entry(name.to_string())
+                    .or_insert_with(|| state.env.get(name).cloned());
+            }
+            if value.starts_with('(') && value.ends_with(')') {
+                // Array append
+                let inner = &value[1..value.len() - 1];
+                let start_idx = match state.env.get(name) {
+                    Some(var) => match &var.value {
+                        VariableValue::IndexedArray(map) => {
+                            map.keys().next_back().map(|k| k + 1).unwrap_or(0)
+                        }
+                        VariableValue::Scalar(s) if s.is_empty() => 0,
+                        VariableValue::Scalar(_) => 1,
+                        _ => 0,
+                    },
+                    None => 0,
+                };
+                if !state.env.contains_key(name) {
+                    state.env.insert(
+                        name.to_string(),
+                        Variable {
+                            value: VariableValue::IndexedArray(std::collections::BTreeMap::new()),
+                            attrs: VariableAttrs::empty(),
+                        },
+                    );
+                }
+                let words = shell_split_array_body(inner);
+                let mut idx = start_idx;
+                for word in &words {
+                    let val = unquote_simple(word);
+                    crate::interpreter::set_array_element(state, name, idx, val)?;
+                    idx += 1;
+                }
+            } else {
+                let current = state
+                    .env
+                    .get(name)
+                    .map(|v| v.value.as_scalar().to_string())
+                    .unwrap_or_default();
+                let new_val = format!("{current}{value}");
+                set_variable(state, name, new_val)?;
+            }
+        } else if let Some((name, value)) = arg.split_once('=') {
             // Save current value in the top local scope (if inside a function)
             if let Some(scope) = state.local_scopes.last_mut() {
                 scope
                     .entry(name.to_string())
                     .or_insert_with(|| state.env.get(name).cloned());
             }
-            set_variable(state, name, value.to_string())?;
+
+            if make_assoc_array {
+                if let Some(inner) = value.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
+                    state.env.insert(
+                        name.to_string(),
+                        Variable {
+                            value: VariableValue::AssociativeArray(
+                                std::collections::BTreeMap::new(),
+                            ),
+                            attrs: VariableAttrs::empty(),
+                        },
+                    );
+                    // Parse associative array body
+                    let words = shell_split_array_body(inner);
+                    for word in &words {
+                        if let Some(rest) = word.strip_prefix('[')
+                            && let Some(eq_pos) = rest.find("]=")
+                        {
+                            let key = &rest[..eq_pos];
+                            let val = unquote_simple(&rest[eq_pos + 2..]);
+                            if let Some(var) = state.env.get_mut(name)
+                                && let VariableValue::AssociativeArray(map) = &mut var.value
+                            {
+                                map.insert(key.to_string(), val);
+                            }
+                        }
+                    }
+                } else {
+                    set_variable(state, name, value.to_string())?;
+                }
+            } else if make_indexed_array || value.starts_with('(') && value.ends_with(')') {
+                if let Some(inner) = value.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
+                    state.env.insert(
+                        name.to_string(),
+                        Variable {
+                            value: VariableValue::IndexedArray(std::collections::BTreeMap::new()),
+                            attrs: VariableAttrs::empty(),
+                        },
+                    );
+                    parse_and_set_indexed_array(state, name, inner)?;
+                } else {
+                    set_variable(state, name, value.to_string())?;
+                }
+            } else {
+                set_variable(state, name, value.to_string())?;
+            }
+
+            // Apply attribute flags
+            if let Some(var) = state.env.get_mut(name) {
+                if make_readonly {
+                    var.attrs.insert(VariableAttrs::READONLY);
+                }
+                if make_exported {
+                    var.attrs.insert(VariableAttrs::EXPORTED);
+                }
+                if make_integer {
+                    var.attrs.insert(VariableAttrs::INTEGER);
+                }
+                if make_nameref {
+                    var.attrs.insert(VariableAttrs::NAMEREF);
+                }
+            }
         } else {
             // `local VAR` with no value — declare it as local with empty value
             if let Some(scope) = state.local_scopes.last_mut() {
                 scope
-                    .entry(arg.clone())
+                    .entry(arg.to_string())
                     .or_insert_with(|| state.env.get(arg.as_str()).cloned());
             }
             // Inside a function: always set to empty. Outside: only if undefined.
             if state.in_function_depth > 0 || !state.env.contains_key(arg.as_str()) {
+                let value = if make_indexed_array {
+                    VariableValue::IndexedArray(std::collections::BTreeMap::new())
+                } else if make_assoc_array {
+                    VariableValue::AssociativeArray(std::collections::BTreeMap::new())
+                } else {
+                    VariableValue::Scalar(String::new())
+                };
                 state.env.insert(
-                    arg.clone(),
+                    arg.to_string(),
                     Variable {
-                        value: VariableValue::Scalar(String::new()),
+                        value,
                         attrs: VariableAttrs::empty(),
                     },
                 );

@@ -68,7 +68,7 @@ await bash.exec('tail -n +2 /input.csv | sort -t, -k2 -n | head -1 > /youngest.t
 const youngest = bash.fs.readFileSync('/youngest.txt'); // "Bob,25\n"
 ```
 
-## Available Commands (79)
+## Available Commands (82)
 
 ### File System (17)
 
@@ -182,6 +182,13 @@ const youngest = bash.fs.readFileSync('/youngest.txt'); // "Bob,25\n"
 | `true` | Return exit code 0 |
 | `xargs` | Build and execute commands from stdin |
 | `yes` | Repeatedly output a string |
+
+### Test Helpers (2)
+
+| Command | Description |
+|---------|-------------|
+| `argv.py` | Print arguments as a Python list (Oils test helper) |
+| `printenv.py` | Print environment variables or 'None' (Oils test helper) |
 
 ### Network (optional, disabled by default)
 

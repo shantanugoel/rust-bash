@@ -30,3 +30,6 @@ Thumbs.db
 # Cloudflare
 .wrangler/
 .dev.vars
+oil/
+arith_*.txt
+xfail-*.log

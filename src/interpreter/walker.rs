@@ -362,6 +362,12 @@ enum Assignment {
         index: String,
         value: String,
     },
+    /// `name[index]+=value` — append to single array element
+    AppendArrayElement {
+        name: String,
+        index: String,
+        value: String,
+    },
     /// `name+=(val1 val2 ...)` — append to array
     AppendArray {
         name: String,
@@ -377,6 +383,7 @@ impl Assignment {
             Assignment::Scalar { name, .. }
             | Assignment::IndexedArray { name, .. }
             | Assignment::ArrayElement { name, .. }
+            | Assignment::AppendArrayElement { name, .. }
             | Assignment::AppendArray { name, .. }
             | Assignment::AppendScalar { name, .. } => name,
         }
@@ -445,11 +452,19 @@ fn process_assignment(
                 loc: None,
             };
             let expanded_index = expand_word_to_string_mut(&index_word, state)?;
-            Ok(Assignment::ArrayElement {
-                name: name.clone(),
-                index: expanded_index,
-                value,
-            })
+            if append {
+                Ok(Assignment::AppendArrayElement {
+                    name: name.clone(),
+                    index: expanded_index,
+                    value,
+                })
+            } else {
+                Ok(Assignment::ArrayElement {
+                    name: name.clone(),
+                    index: expanded_index,
+                    value,
+                })
+            }
         }
         (ast::AssignmentName::ArrayElementName(name, _), ast::AssignmentValue::Array(_)) => Err(
             RustBashError::Execution(format!("{name}: cannot assign array to array element")),
@@ -519,6 +534,43 @@ fn apply_assignment(
                     )));
                 }
                 set_array_element(state, &name, idx as usize, value)?;
+            }
+        }
+        Assignment::AppendArrayElement { name, index, value } => {
+            let is_assoc = state
+                .env
+                .get(&name)
+                .is_some_and(|v| matches!(v.value, VariableValue::AssociativeArray(_)));
+            if is_assoc {
+                let current = state
+                    .env
+                    .get(&name)
+                    .and_then(|v| match &v.value {
+                        VariableValue::AssociativeArray(map) => map.get(&index).cloned(),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                let new_val = format!("{current}{value}");
+                crate::interpreter::set_assoc_element(state, &name, index, new_val)?;
+            } else {
+                let idx = crate::interpreter::arithmetic::eval_arithmetic(&index, state)?;
+                if idx < 0 {
+                    return Err(RustBashError::Execution(format!(
+                        "negative array subscript: {idx}"
+                    )));
+                }
+                let uidx = idx as usize;
+                let current = state
+                    .env
+                    .get(&name)
+                    .and_then(|v| match &v.value {
+                        VariableValue::IndexedArray(map) => map.get(&uidx).cloned(),
+                        VariableValue::Scalar(s) if uidx == 0 => Some(s.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                let new_val = format!("{current}{value}");
+                set_array_element(state, &name, uidx, new_val)?;
             }
         }
         Assignment::AppendArray { name, elements } => {
@@ -695,11 +747,25 @@ fn execute_simple_command(
                         ast::AssignmentName::VariableName(n) => n.clone(),
                         ast::AssignmentName::ArrayElementName(n, _) => n.clone(),
                     };
-                    let value = match &assignment.value {
-                        ast::AssignmentValue::Scalar(w) => expand_word_to_string_mut(w, state)?,
-                        ast::AssignmentValue::Array(_) => String::new(),
-                    };
-                    args.push(format!("{name}={value}"));
+                    match &assignment.value {
+                        ast::AssignmentValue::Scalar(w) => {
+                            let value = expand_word_to_string_mut(w, state)?;
+                            args.push(format!("{name}={value}"));
+                        }
+                        ast::AssignmentValue::Array(items) => {
+                            let mut parts = Vec::new();
+                            for (opt_idx_word, val_word) in items {
+                                let val = expand_word_to_string_mut(val_word, state)?;
+                                if let Some(idx_word) = opt_idx_word {
+                                    let idx_str = expand_word_to_string_mut(idx_word, state)?;
+                                    parts.push(format!("[{idx_str}]={val}"));
+                                } else {
+                                    parts.push(val);
+                                }
+                            }
+                            args.push(format!("{name}=({})", parts.join(" ")));
+                        }
+                    }
                 }
                 ast::CommandPrefixOrSuffixItem::ProcessSubstitution(kind, subshell) => {
                     let path = expand_process_substitution(
@@ -732,6 +798,9 @@ fn execute_simple_command(
                     Assignment::ArrayElement {
                         name, index, value, ..
                     } => format!("{name}[{index}]={value}"),
+                    Assignment::AppendArrayElement {
+                        name, index, value, ..
+                    } => format!("{name}[{index}]+={value}"),
                     Assignment::AppendArray { name, .. } => format!("{name}+=(...)"),
                     Assignment::AppendScalar { name, value } => format!("{name}+={value}"),
                 })
