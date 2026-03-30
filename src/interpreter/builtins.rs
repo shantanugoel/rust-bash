@@ -52,6 +52,9 @@ pub(crate) fn execute_builtin(
         "alias" => builtin_alias(args, state).map(Some),
         "unalias" => builtin_unalias(args, state).map(Some),
         "printf" => builtin_printf(args, state).map(Some),
+        "sh" | "bash" => builtin_sh(args, state, stdin).map(Some),
+        "help" => builtin_help(args, state).map(Some),
+        "history" => Ok(Some(ExecResult::default())),
         _ => Ok(None),
     }
 }
@@ -123,6 +126,10 @@ pub(crate) fn builtin_names() -> &'static [&'static str] {
         "unalias",
         "printf",
         "exec",
+        "sh",
+        "bash",
+        "help",
+        "history",
     ]
 }
 
@@ -463,6 +470,30 @@ static EXEC_META: CommandMeta = CommandMeta {
     supports_help_flag: true,
 };
 
+static SH_META: CommandMeta = CommandMeta {
+    name: "sh",
+    synopsis: "sh [-c command_string] [file]",
+    description: "Execute commands from a string, file, or standard input.",
+    options: &[("-c", "read commands from the command_string operand")],
+    supports_help_flag: true,
+};
+
+static HELP_META: CommandMeta = CommandMeta {
+    name: "help",
+    synopsis: "help [pattern]",
+    description: "Display information about builtin commands.",
+    options: &[],
+    supports_help_flag: true,
+};
+
+static HISTORY_META: CommandMeta = CommandMeta {
+    name: "history",
+    synopsis: "history [n]",
+    description: "Display the command history list.",
+    options: &[],
+    supports_help_flag: true,
+};
+
 /// Return the `CommandMeta` for a shell builtin, if one exists.
 pub(crate) fn builtin_meta(name: &str) -> Option<&'static CommandMeta> {
     match name {
@@ -499,6 +530,9 @@ pub(crate) fn builtin_meta(name: &str) -> Option<&'static CommandMeta> {
         "unalias" => Some(&UNALIAS_META),
         "printf" => Some(&PRINTF_META),
         "exec" => Some(&EXEC_META),
+        "sh" | "bash" => Some(&SH_META),
+        "help" => Some(&HELP_META),
+        "history" => Some(&HISTORY_META),
         _ => None,
     }
 }
@@ -3384,6 +3418,193 @@ fn builtin_printf(
             ..ExecResult::default()
         })
     }
+}
+
+// ── sh / bash builtin ───────────────────────────────────────────────
+
+fn builtin_sh(
+    args: &[String],
+    state: &mut InterpreterState,
+    stdin: &str,
+) -> Result<ExecResult, RustBashError> {
+    if args.is_empty() {
+        if stdin.is_empty() {
+            return Ok(ExecResult::default());
+        }
+        let program = parse(stdin)?;
+        return run_in_subshell(state, &program, &[], None);
+    }
+
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "-c" {
+            i += 1;
+            if i < args.len() {
+                let cmd = &args[i];
+                let extra = &args[i + 1..];
+                // In bash: sh -c cmd arg0 arg1 → $0=arg0, $1=arg1
+                let shell_name_override = extra.first().map(|s| s.as_str());
+                let positional: Vec<String> = if extra.len() > 1 {
+                    extra[1..].iter().map(|s| s.to_string()).collect()
+                } else {
+                    Vec::new()
+                };
+                let program = parse(cmd)?;
+                return run_in_subshell(state, &program, &positional, shell_name_override);
+            } else {
+                return Ok(ExecResult {
+                    stderr: "sh: -c: option requires an argument\n".into(),
+                    exit_code: 2,
+                    ..ExecResult::default()
+                });
+            }
+        } else if arg.starts_with('-') && arg.len() > 1 {
+            i += 1;
+            continue;
+        } else {
+            let path = crate::interpreter::builtins::resolve_path(&state.cwd, arg);
+            let path_buf = std::path::PathBuf::from(&path);
+            match state.fs.read_file(&path_buf) {
+                Ok(bytes) => {
+                    let script = String::from_utf8_lossy(&bytes).to_string();
+                    let positional = args[i + 1..]
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect::<Vec<_>>();
+                    let program = parse(&script)?;
+                    return run_in_subshell(state, &program, &positional, None);
+                }
+                Err(e) => {
+                    return Ok(ExecResult {
+                        stderr: format!("sh: {}: {}\n", arg, e),
+                        exit_code: 127,
+                        ..ExecResult::default()
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(ExecResult::default())
+}
+
+/// Execute a parsed program in an isolated subshell, returning only
+/// stdout/stderr/exit_code. Mirrors `execute_subshell` in walker.rs.
+fn run_in_subshell(
+    state: &mut InterpreterState,
+    program: &brush_parser::ast::Program,
+    positional: &[String],
+    shell_name_override: Option<&str>,
+) -> Result<ExecResult, RustBashError> {
+    use std::collections::HashMap;
+    let cloned_fs = state.fs.deep_clone();
+    let mut sub_state = InterpreterState {
+        fs: cloned_fs,
+        env: state.env.clone(),
+        cwd: state.cwd.clone(),
+        functions: state.functions.clone(),
+        last_exit_code: state.last_exit_code,
+        commands: crate::interpreter::walker::clone_commands(&state.commands),
+        shell_opts: state.shell_opts.clone(),
+        shopt_opts: state.shopt_opts.clone(),
+        limits: state.limits.clone(),
+        counters: crate::interpreter::ExecutionCounters {
+            command_count: state.counters.command_count,
+            output_size: state.counters.output_size,
+            start_time: state.counters.start_time,
+            substitution_depth: state.counters.substitution_depth,
+            call_depth: 0,
+        },
+        network_policy: state.network_policy.clone(),
+        should_exit: false,
+        loop_depth: 0,
+        control_flow: None,
+        positional_params: if positional.is_empty() {
+            state.positional_params.clone()
+        } else {
+            positional.to_vec()
+        },
+        shell_name: shell_name_override
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| state.shell_name.clone()),
+        random_seed: state.random_seed,
+        local_scopes: Vec::new(),
+        in_function_depth: 0,
+        traps: state.traps.clone(),
+        in_trap: false,
+        errexit_suppressed: 0,
+        stdin_offset: 0,
+        dir_stack: state.dir_stack.clone(),
+        command_hash: state.command_hash.clone(),
+        aliases: state.aliases.clone(),
+        current_lineno: state.current_lineno,
+        shell_start_time: state.shell_start_time,
+        last_argument: state.last_argument.clone(),
+        call_stack: state.call_stack.clone(),
+        machtype: state.machtype.clone(),
+        hosttype: state.hosttype.clone(),
+        persistent_fds: state.persistent_fds.clone(),
+        next_auto_fd: state.next_auto_fd,
+        proc_sub_counter: state.proc_sub_counter,
+        proc_sub_prealloc: HashMap::new(),
+    };
+
+    let result = execute_program(program, &mut sub_state);
+
+    // Fold shared counters back into parent
+    state.counters.command_count = sub_state.counters.command_count;
+    state.counters.output_size = sub_state.counters.output_size;
+
+    result
+}
+
+// ── help builtin ────────────────────────────────────────────────────
+
+fn builtin_help(args: &[String], state: &InterpreterState) -> Result<ExecResult, RustBashError> {
+    if args.is_empty() {
+        // List all builtins with one-line descriptions
+        let mut stdout = String::from("Shell builtin commands:\n\n");
+        let mut names: Vec<&str> = builtin_names().to_vec();
+        names.sort();
+        for name in &names {
+            if let Some(meta) = builtin_meta(name) {
+                stdout.push_str(&format!("  {:<16} {}\n", name, meta.description));
+            } else {
+                stdout.push_str(&format!("  {}\n", name));
+            }
+        }
+        return Ok(ExecResult {
+            stdout,
+            ..ExecResult::default()
+        });
+    }
+
+    let name = &args[0];
+
+    // Check builtins first
+    if let Some(meta) = builtin_meta(name) {
+        return Ok(ExecResult {
+            stdout: crate::commands::format_help(meta),
+            ..ExecResult::default()
+        });
+    }
+
+    // Check registered commands
+    if let Some(cmd) = state.commands.get(name.as_str())
+        && let Some(meta) = cmd.meta()
+    {
+        return Ok(ExecResult {
+            stdout: crate::commands::format_help(meta),
+            ..ExecResult::default()
+        });
+    }
+
+    Ok(ExecResult {
+        stderr: format!("help: no help topics match '{}'\n", name),
+        exit_code: 1,
+        ..ExecResult::default()
+    })
 }
 
 #[cfg(test)]

@@ -171,6 +171,13 @@ fn execute_pipeline(
     state: &mut InterpreterState,
     stdin: &str,
 ) -> Result<ExecResult, RustBashError> {
+    let timed = pipeline.timed.is_some();
+    let start = if timed {
+        Some(crate::platform::Instant::now())
+    } else {
+        None
+    };
+
     let mut pipe_data = stdin.to_string();
     let mut combined_stderr = String::new();
     let mut exit_code = 0;
@@ -238,6 +245,18 @@ fn execute_pipeline(
             attrs: VariableAttrs::empty(),
         },
     );
+
+    // Emit timing output for `time` keyword
+    if let Some(start) = start {
+        let elapsed = start.elapsed();
+        let total_secs = elapsed.as_secs_f64();
+        let mins = total_secs as u64 / 60;
+        let secs = total_secs - (mins as f64 * 60.0);
+        combined_stderr.push_str(&format!(
+            "\nreal\t{}m{:.3}s\nuser\t0m0.000s\nsys\t0m0.000s\n",
+            mins, secs
+        ));
+    }
 
     Ok(ExecResult {
         stdout: pipe_data,

@@ -1188,6 +1188,769 @@ impl super::VirtualCommand for YesCommand {
     }
 }
 
+// ── sha1sum ──────────────────────────────────────────────────────────
+
+pub struct Sha1sumCommand;
+
+static SHA1SUM_META: CommandMeta = CommandMeta {
+    name: "sha1sum",
+    synopsis: "sha1sum [FILE ...]",
+    description: "Compute and check SHA1 message digest.",
+    options: &[],
+    supports_help_flag: true,
+};
+
+impl super::VirtualCommand for Sha1sumCommand {
+    fn name(&self) -> &str {
+        "sha1sum"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&SHA1SUM_META)
+    }
+
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
+        use sha1::Digest;
+
+        let mut files: Vec<&str> = Vec::new();
+        let mut opts_done = false;
+
+        for arg in args {
+            if !opts_done && arg == "--" {
+                opts_done = true;
+                continue;
+            }
+            if !opts_done && arg.starts_with('-') && arg.len() > 1 && arg != "-" {
+                // ignore flags
+            } else {
+                files.push(arg);
+            }
+        }
+
+        if files.is_empty() {
+            files.push("-");
+        }
+
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        let mut exit_code = 0;
+
+        for file in &files {
+            let data = if *file == "-" {
+                ctx.stdin.as_bytes().to_vec()
+            } else {
+                let path = resolve_path(file, ctx.cwd);
+                match ctx.fs.read_file(&path) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        stderr.push_str(&format!("sha1sum: {}: {}\n", file, e));
+                        exit_code = 1;
+                        continue;
+                    }
+                }
+            };
+
+            let mut hasher = sha1::Sha1::new();
+            hasher.update(&data);
+            let hash = hasher.finalize();
+            let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+            let display_name = if *file == "-" { "-" } else { file };
+            stdout.push_str(&format!("{}  {}\n", hex, display_name));
+        }
+
+        CommandResult {
+            stdout,
+            stderr,
+            exit_code,
+        }
+    }
+}
+
+// ── timeout ─────────────────────────────────────────────────────────
+
+pub struct TimeoutCommand;
+
+static TIMEOUT_META: CommandMeta = CommandMeta {
+    name: "timeout",
+    synopsis: "timeout [-k DURATION] [-s SIGNAL] DURATION COMMAND [ARG...]",
+    description: "Run a command with a time limit.",
+    options: &[
+        (
+            "-k DURATION",
+            "send a kill signal after DURATION (no-op in sandbox)",
+        ),
+        ("-s SIGNAL", "specify the signal to send (no-op in sandbox)"),
+    ],
+    supports_help_flag: true,
+};
+
+impl super::VirtualCommand for TimeoutCommand {
+    fn name(&self) -> &str {
+        "timeout"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&TIMEOUT_META)
+    }
+
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
+        let mut i = 0;
+        // Skip optional flags -k and -s (no-op)
+        while i < args.len() {
+            let arg = &args[i];
+            if arg == "-k" || arg == "--kill-after" {
+                i += 2; // skip flag + value
+            } else if arg == "-s" || arg == "--signal" {
+                i += 2;
+            } else if arg.starts_with("--kill-after=") || arg.starts_with("--signal=") {
+                i += 1;
+            } else {
+                break;
+            }
+        }
+
+        if i >= args.len() {
+            return CommandResult {
+                stderr: "timeout: missing operand\n".into(),
+                exit_code: 125,
+                ..Default::default()
+            };
+        }
+
+        let duration_str = &args[i];
+        i += 1;
+
+        let duration_secs: f64 = match duration_str.parse() {
+            Ok(d) => d,
+            Err(_) => {
+                return CommandResult {
+                    stderr: format!("timeout: invalid time interval '{}'\n", duration_str),
+                    exit_code: 125,
+                    ..Default::default()
+                };
+            }
+        };
+
+        if i >= args.len() {
+            return CommandResult {
+                stderr: "timeout: missing operand\n".into(),
+                exit_code: 125,
+                ..Default::default()
+            };
+        }
+
+        let exec = match ctx.exec {
+            Some(cb) => cb,
+            None => {
+                return CommandResult {
+                    stderr: "timeout: exec callback not available\n".into(),
+                    exit_code: 126,
+                    ..Default::default()
+                };
+            }
+        };
+
+        let cmd_line = args[i..].join(" ");
+        let start = crate::platform::Instant::now();
+
+        // NOTE: In this sandboxed, single-threaded interpreter there is no
+        // signal mechanism to preemptively kill the child.  We run the
+        // command synchronously and check elapsed time *after* it finishes,
+        // so a long-running command will block for its full duration.  The
+        // global `max_execution_time` limit may still interrupt, but with
+        // its own error rather than exit code 124.
+        match exec(&cmd_line) {
+            Ok(result) => {
+                let elapsed = start.elapsed();
+                if elapsed.as_secs_f64() > duration_secs {
+                    CommandResult {
+                        stdout: result.stdout,
+                        stderr: result.stderr,
+                        exit_code: 124,
+                    }
+                } else {
+                    result
+                }
+            }
+            Err(e) => {
+                let elapsed = start.elapsed();
+                if elapsed.as_secs_f64() > duration_secs {
+                    CommandResult {
+                        stderr: format!("{}\n", e),
+                        exit_code: 124,
+                        ..Default::default()
+                    }
+                } else {
+                    CommandResult {
+                        stderr: format!("timeout: {}\n", e),
+                        exit_code: 126,
+                        ..Default::default()
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── file ─────────────────────────────────────────────────────────────
+
+pub struct FileCommand;
+
+static FILE_META: CommandMeta = CommandMeta {
+    name: "file",
+    synopsis: "file FILE...",
+    description: "Determine file type.",
+    options: &[],
+    supports_help_flag: true,
+};
+
+impl super::VirtualCommand for FileCommand {
+    fn name(&self) -> &str {
+        "file"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&FILE_META)
+    }
+
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
+        if args.is_empty() {
+            return CommandResult {
+                stderr: "file: missing operand\n".into(),
+                exit_code: 1,
+                ..Default::default()
+            };
+        }
+
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        let mut exit_code = 0;
+
+        for arg in args {
+            if arg == "--" {
+                continue;
+            }
+            let path = resolve_path(arg, ctx.cwd);
+            let meta = match ctx.fs.stat(&path) {
+                Ok(m) => m,
+                Err(e) => {
+                    stderr.push_str(&format!("{}: cannot open ({})\n", arg, e));
+                    exit_code = 1;
+                    continue;
+                }
+            };
+
+            use crate::vfs::NodeType;
+            let file_type = match meta.node_type {
+                NodeType::Directory => "directory".to_string(),
+                NodeType::Symlink => "symbolic link".to_string(),
+                NodeType::File => match ctx.fs.read_file(&path) {
+                    Ok(data) => detect_file_type(&data, arg),
+                    Err(_) => "regular file".to_string(),
+                },
+            };
+
+            stdout.push_str(&format!("{}: {}\n", arg, file_type));
+        }
+
+        CommandResult {
+            stdout,
+            stderr,
+            exit_code,
+        }
+    }
+}
+
+fn detect_file_type(data: &[u8], name: &str) -> String {
+    if data.is_empty() {
+        return "empty".to_string();
+    }
+
+    // Magic-byte detection
+    if data.len() >= 8 && &data[0..8] == b"\x89PNG\r\n\x1a\n" {
+        return "PNG image data".to_string();
+    }
+    if data.len() >= 3 && &data[0..3] == b"\xff\xd8\xff" {
+        return "JPEG image data".to_string();
+    }
+    if data.len() >= 6 && (&data[0..6] == b"GIF87a" || &data[0..6] == b"GIF89a") {
+        return "GIF image data".to_string();
+    }
+    if data.len() >= 4 && &data[0..4] == b"\x7fELF" {
+        return "ELF executable".to_string();
+    }
+    if data.len() >= 2 && &data[0..2] == b"\x1f\x8b" {
+        return "gzip compressed data".to_string();
+    }
+    if data.len() >= 5 && &data[0..5] == b"%PDF-" {
+        return "PDF document".to_string();
+    }
+    if data.len() >= 4 && &data[0..4] == b"PK\x03\x04" {
+        return "Zip archive data".to_string();
+    }
+    if data.len() >= 263 && &data[257..262] == b"ustar" {
+        return "POSIX tar archive".to_string();
+    }
+
+    // Check if it looks like text
+    let sample = &data[..data.len().min(512)];
+    let is_text = sample
+        .iter()
+        .all(|&b| b == b'\n' || b == b'\r' || b == b'\t' || (0x20..0x7f).contains(&b));
+
+    if is_text {
+        // Check for JSON
+        let text = String::from_utf8_lossy(sample);
+        let trimmed = text.trim();
+        if (trimmed.starts_with('{') && trimmed.ends_with('}'))
+            || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+        {
+            return "JSON text data".to_string();
+        }
+        // Check for XML
+        if trimmed.starts_with("<?xml") {
+            return "XML document".to_string();
+        }
+
+        // Extension fallback
+        let ext = name.rsplit('.').next().unwrap_or("");
+        match ext {
+            "sh" | "bash" => return "Bourne-Again shell script, ASCII text".to_string(),
+            "py" => return "Python script, ASCII text".to_string(),
+            "rb" => return "Ruby script, ASCII text".to_string(),
+            "js" => return "JavaScript source, ASCII text".to_string(),
+            "ts" => return "TypeScript source, ASCII text".to_string(),
+            "rs" => return "Rust source, ASCII text".to_string(),
+            "c" => return "C source, ASCII text".to_string(),
+            "h" => return "C header, ASCII text".to_string(),
+            "cpp" | "cc" | "cxx" => return "C++ source, ASCII text".to_string(),
+            "java" => return "Java source, ASCII text".to_string(),
+            "go" => return "Go source, ASCII text".to_string(),
+            "pl" => return "Perl script, ASCII text".to_string(),
+            "html" | "htm" => return "HTML document, ASCII text".to_string(),
+            "css" => return "CSS source, ASCII text".to_string(),
+            "json" => return "JSON text data".to_string(),
+            "xml" => return "XML document".to_string(),
+            "yaml" | "yml" => return "YAML document, ASCII text".to_string(),
+            "toml" => return "TOML document, ASCII text".to_string(),
+            "md" => return "Markdown document, ASCII text".to_string(),
+            "txt" => return "ASCII text".to_string(),
+            _ => {}
+        }
+
+        return "ASCII text".to_string();
+    }
+
+    "data".to_string()
+}
+
+// ── bc ──────────────────────────────────────────────────────────────
+
+pub struct BcCommand;
+
+static BC_META: CommandMeta = CommandMeta {
+    name: "bc",
+    synopsis: "bc [-l] [file ...]",
+    description: "An arbitrary precision calculator language.",
+    options: &[("-l", "use the standard math library (set scale=20)")],
+    supports_help_flag: true,
+};
+
+impl super::VirtualCommand for BcCommand {
+    fn name(&self) -> &str {
+        "bc"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&BC_META)
+    }
+
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
+        let mut scale: u32 = 0;
+        let mut files: Vec<&str> = Vec::new();
+
+        for arg in args {
+            match arg.as_str() {
+                "-l" => scale = 20,
+                _ => files.push(arg),
+            }
+        }
+
+        let input = if !files.is_empty() {
+            let mut combined = String::new();
+            for f in &files {
+                let path = resolve_path(f, ctx.cwd);
+                match ctx.fs.read_file(&path) {
+                    Ok(bytes) => {
+                        combined.push_str(&String::from_utf8_lossy(&bytes));
+                        combined.push('\n');
+                    }
+                    Err(e) => {
+                        return CommandResult {
+                            stderr: format!("bc: {}: {}\n", f, e),
+                            exit_code: 1,
+                            ..Default::default()
+                        };
+                    }
+                }
+            }
+            combined
+        } else {
+            ctx.stdin.to_string()
+        };
+
+        let mut env = BcEnv {
+            scale,
+            vars: std::collections::HashMap::new(),
+        };
+
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        let mut exit_code = 0;
+
+        for raw_line in input.lines() {
+            // Split on semicolons for multi-statement lines
+            for stmt in raw_line.split(';') {
+                let stmt = stmt.trim();
+                if stmt.is_empty() || stmt == "quit" {
+                    continue;
+                }
+
+                // Check for scale assignment
+                if let Some(val_str) = stmt.strip_prefix("scale") {
+                    let val_str = val_str.trim();
+                    if let Some(val_str) = val_str.strip_prefix('=') {
+                        let val_str = val_str.trim();
+                        match val_str.parse::<u32>() {
+                            Ok(v) => {
+                                env.scale = v;
+                                continue;
+                            }
+                            Err(_) => {
+                                stderr.push_str(&format!("bc: parse error: {}\n", stmt));
+                                exit_code = 1;
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                // Check for variable assignment (simple: name = expr)
+                if let Some(eq_pos) = stmt.find('=') {
+                    let lhs = stmt[..eq_pos].trim();
+                    let rhs = stmt[eq_pos + 1..].trim();
+                    // Make sure LHS is identifier and not comparison
+                    if !lhs.is_empty()
+                        && lhs.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                        && lhs
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                        && !rhs.starts_with('=')
+                        && !stmt[..eq_pos].ends_with('!')
+                        && !stmt[..eq_pos].ends_with('<')
+                        && !stmt[..eq_pos].ends_with('>')
+                    {
+                        match bc_parse_expr(&mut BcParser::new(rhs), &env, 0) {
+                            Ok(val) => {
+                                env.vars.insert(lhs.to_string(), val);
+                                continue;
+                            }
+                            Err(e) => {
+                                stderr.push_str(&format!("bc: {}\n", e));
+                                exit_code = 1;
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                // Expression evaluation
+                match bc_parse_expr(&mut BcParser::new(stmt), &env, 0) {
+                    Ok(val) => {
+                        stdout.push_str(&bc_format_number(val, env.scale));
+                        stdout.push('\n');
+                    }
+                    Err(e) => {
+                        stderr.push_str(&format!("bc: {}\n", e));
+                        exit_code = 1;
+                    }
+                }
+            }
+        }
+
+        CommandResult {
+            stdout,
+            stderr,
+            exit_code,
+        }
+    }
+}
+
+struct BcEnv {
+    scale: u32,
+    vars: std::collections::HashMap<String, f64>,
+}
+
+struct BcParser<'a> {
+    input: &'a str,
+    pos: usize,
+}
+
+impl<'a> BcParser<'a> {
+    fn new(input: &'a str) -> Self {
+        Self { input, pos: 0 }
+    }
+
+    fn skip_ws(&mut self) {
+        while self.pos < self.input.len() && self.input.as_bytes()[self.pos].is_ascii_whitespace() {
+            self.pos += 1;
+        }
+    }
+
+    fn peek(&mut self) -> Option<char> {
+        self.skip_ws();
+        self.input[self.pos..].chars().next()
+    }
+
+    fn peek_two(&mut self) -> Option<&'a str> {
+        self.skip_ws();
+        if self.pos + 1 < self.input.len() {
+            Some(&self.input[self.pos..self.pos + 2])
+        } else {
+            None
+        }
+    }
+
+    fn advance(&mut self) {
+        if self.pos < self.input.len() {
+            self.pos += self.input[self.pos..]
+                .chars()
+                .next()
+                .map_or(0, |c| c.len_utf8());
+        }
+    }
+
+    fn at_end(&mut self) -> bool {
+        self.skip_ws();
+        self.pos >= self.input.len()
+    }
+}
+
+fn bc_parse_expr(parser: &mut BcParser, env: &BcEnv, min_prec: u8) -> Result<f64, String> {
+    let mut left = bc_parse_unary(parser, env)?;
+
+    loop {
+        if parser.at_end() {
+            break;
+        }
+
+        let (op, prec, right_assoc) = match parser.peek_two() {
+            Some("==") => ("==", 1, false),
+            Some("!=") => ("!=", 1, false),
+            Some("<=") => ("<=", 2, false),
+            Some(">=") => (">=", 2, false),
+            _ => match parser.peek() {
+                Some('<') => ("<", 2, false),
+                Some('>') => (">", 2, false),
+                Some('+') => ("+", 3, false),
+                Some('-') => ("-", 3, false),
+                Some('*') => ("*", 4, false),
+                Some('/') => ("/", 4, false),
+                Some('%') => ("%", 4, false),
+                Some('^') => ("^", 5, true),
+                _ => break,
+            },
+        };
+
+        if prec < min_prec {
+            break;
+        }
+
+        // Consume operator
+        for _ in 0..op.len() {
+            parser.advance();
+        }
+
+        let next_min = if right_assoc { prec } else { prec + 1 };
+        let right = bc_parse_expr(parser, env, next_min)?;
+
+        left = match op {
+            "+" => left + right,
+            "-" => left - right,
+            "*" => left * right,
+            "/" => {
+                if right == 0.0 {
+                    return Err("divide by zero".to_string());
+                }
+                left / right
+            }
+            "%" => {
+                if right == 0.0 {
+                    return Err("divide by zero".to_string());
+                }
+                left % right
+            }
+            "^" => left.powf(right),
+            "==" => {
+                if (left - right).abs() < f64::EPSILON {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            "!=" => {
+                if (left - right).abs() >= f64::EPSILON {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            "<" => {
+                if left < right {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            ">" => {
+                if left > right {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            "<=" => {
+                if left <= right {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            ">=" => {
+                if left >= right {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            _ => unreachable!(),
+        };
+    }
+
+    Ok(left)
+}
+
+fn bc_parse_unary(parser: &mut BcParser, env: &BcEnv) -> Result<f64, String> {
+    match parser.peek() {
+        Some('-') => {
+            parser.advance();
+            let val = bc_parse_unary(parser, env)?;
+            Ok(-val)
+        }
+        Some('+') => {
+            parser.advance();
+            bc_parse_unary(parser, env)
+        }
+        _ => bc_parse_primary(parser, env),
+    }
+}
+
+fn bc_parse_primary(parser: &mut BcParser, env: &BcEnv) -> Result<f64, String> {
+    parser.skip_ws();
+
+    if parser.peek() == Some('(') {
+        parser.advance();
+        let val = bc_parse_expr(parser, env, 0)?;
+        if parser.peek() != Some(')') {
+            return Err("expected ')'".to_string());
+        }
+        parser.advance();
+        return Ok(val);
+    }
+
+    // Number
+    let start = parser.pos;
+    let input = parser.input;
+    while parser.pos < input.len() {
+        let ch = input.as_bytes()[parser.pos];
+        if ch.is_ascii_digit() || ch == b'.' {
+            parser.pos += 1;
+        } else {
+            break;
+        }
+    }
+
+    if parser.pos > start {
+        let num_str = &input[start..parser.pos];
+        return num_str
+            .parse::<f64>()
+            .map_err(|_| format!("invalid number: {}", num_str));
+    }
+
+    // Variable name
+    let var_start = parser.pos;
+    while parser.pos < input.len() {
+        let ch = input.as_bytes()[parser.pos];
+        if ch.is_ascii_alphanumeric() || ch == b'_' {
+            parser.pos += 1;
+        } else {
+            break;
+        }
+    }
+
+    if parser.pos > var_start {
+        let name = &input[var_start..parser.pos];
+        if name == "scale" {
+            return Ok(env.scale as f64);
+        }
+        return Ok(*env.vars.get(name).unwrap_or(&0.0));
+    }
+
+    Err(format!("parse error at position {}", parser.pos))
+}
+
+fn bc_format_number(val: f64, scale: u32) -> String {
+    if scale == 0 {
+        // Truncate towards zero
+        let truncated = val as i64;
+        return truncated.to_string();
+    }
+
+    let formatted = format!("{:.prec$}", val, prec = scale as usize);
+    // Remove trailing zeros after decimal, but keep at least `scale` digits? No, bc keeps them.
+    formatted
+}
+
+// ── clear ───────────────────────────────────────────────────────────
+
+pub struct ClearCommand;
+
+static CLEAR_META: CommandMeta = CommandMeta {
+    name: "clear",
+    synopsis: "clear",
+    description: "Clear the terminal screen.",
+    options: &[],
+    supports_help_flag: true,
+};
+
+impl super::VirtualCommand for ClearCommand {
+    fn name(&self) -> &str {
+        "clear"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&CLEAR_META)
+    }
+
+    fn execute(&self, _args: &[String], _ctx: &CommandContext) -> CommandResult {
+        CommandResult {
+            stdout: "\x1b[2J\x1b[H".to_string(),
+            ..Default::default()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

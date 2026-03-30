@@ -281,19 +281,19 @@ Fixture-based comparison test suite that records expected output from real `/bin
 
 Add a `--help` handler to the command dispatch layer (or per-command). When any command receives `--help` as the first argument, print a usage summary to stdout and exit 0. Cover all ~58 existing commands and every new command added in M7. Consider a declarative approach (e.g., a `CommandMeta` struct with name, synopsis, description, options) to avoid per-command boilerplate.
 
-### M7.2 — Core Utility Commands
+### ✅ M7.2 — Core Utility Commands
 
 Implement commonly-used utility commands that AI agents encounter:
 
-- `timeout [-k kill_delay] [-s signal] duration command` — run command with time limit, exit 124 on timeout.
-- `time [-p] pipeline` — shell keyword (not just a command) that wraps an entire pipeline with timing; report wall-clock, user, and system time to stderr. `-p` for POSIX format. Must handle `time cmd1 | cmd2` as a single timed unit.
-- `readlink [-f|-e|-m] path` — resolve symlinks. `-f` canonicalize (all components must exist).
-- `rmdir [-p] dir` — remove empty directories. `-p` removes parent directories too.
-- `du [-s|-h|-a|-d depth] [path]` — estimate file space usage by walking VFS tree.
-- `sha1sum [files]` — SHA-1 hash (add `sha1` crate alongside existing `sha2`).
-- `fgrep` / `egrep` — register as aliases for `grep -F` / `grep -E`. Deprecated but widely used in existing scripts.
-- `sh [-c command]` — alias for `bash`. Run a subshell. `sh -c "..."` is very common.
-- `bc [-l]` — arbitrary precision calculator. Basic arithmetic, comparison, and `scale` support. Covers `echo "1.5 * 3" | bc` pattern.
+- ✅ `timeout [-k kill_delay] [-s signal] duration command` — run command with time limit, exit 124 on timeout.
+- ✅ `time [-p] pipeline` — shell keyword (not just a command) that wraps an entire pipeline with timing; report wall-clock, user, and system time to stderr. `-p` for POSIX format. Must handle `time cmd1 | cmd2` as a single timed unit.
+- ✅ `readlink [-f|-e|-m] path` — resolve symlinks. `-f` canonicalize (all components must exist).
+- ✅ `rmdir [-p] dir` — remove empty directories. `-p` removes parent directories too.
+- ✅ `du [-s|-h|-a|-d depth] [path]` — estimate file space usage by walking VFS tree.
+- ✅ `sha1sum [files]` — SHA-1 hash (add `sha1` crate alongside existing `sha2`).
+- ✅ `fgrep` / `egrep` — register as aliases for `grep -F` / `grep -E`. Deprecated but widely used in existing scripts.
+- ✅ `sh [-c command]` — alias for `bash`. Run a subshell. `sh -c "..."` is very common.
+- ✅ `bc [-l]` — arbitrary precision calculator. Basic arithmetic, comparison, and `scale` support. Covers `echo "1.5 * 3" | bc` pattern.
 
 ### M7.3 — Compression and Archiving
 
@@ -306,24 +306,24 @@ Implement archive and compression commands for AI agents working with bundled da
 
 **Prerequisite audit**: Before implementing, verify that binary data flows as `Vec<u8>` through the entire pipeline path (command stdout → pipe → next command stdin). If any intermediate step converts to `String`, binary data (gzip output, tar archives) will be corrupted. just-bash uses latin1 strings internally for byte transparency — Rust's `Vec<u8>` is naturally correct, but audit the pipe/redirect/capture paths.
 
-### M7.4 — Binary and File Inspection
+### ✅ M7.4 — Binary and File Inspection
 
 Commands for inspecting file contents and types:
 
-- `file [files]` — detect file type via magic bytes + extension mapping.
-- `strings [-n min_length] [files]` — extract printable strings from binary data.
+- ✅ `file [files]` — detect file type via magic bytes + extension mapping.
+- ✅ `strings [-n min_length] [files]` — extract printable strings from binary data.
 - `od [-A addr_format] [-t type] [files]` — octal/hex/decimal dump.
-- `split [-l lines|-b bytes] [file [prefix]]` — split file into chunks.
+- ✅ `split [-l lines|-b bytes] [file [prefix]]` — split file into chunks.
 
-### M7.5 — Search
+### ✅ M7.5 — Search
 
-- `rg [pattern] [path]` — ripgrep-compatible recursive search. Respects `.gitignore`, smart case by default, vimgrep output format. Reuses existing `grep` search infrastructure with ripgrep-style defaults (recursive, smart-case, file-type filters via `-t`/`-T`, glob via `-g`).
+- ✅ `rg [pattern] [path]` — ripgrep-compatible recursive search. Respects `.gitignore`, smart case by default, vimgrep output format. Reuses existing `grep` search infrastructure with ripgrep-style defaults (recursive, smart-case, file-type filters via `-t`/`-T`, glob via `-g`).
 
-### M7.6 — Shell Utility Commands
+### ✅ M7.6 — Shell Utility Commands
 
-- `help [command]` — display help for builtins and commands. Comprehensive built-in help database (just-bash has 650+ lines of help text). Can share metadata from M7.1's `--help` infrastructure.
-- `clear` — output ANSI clear-screen escape sequence.
-- `history` — display command history. Integrates with existing REPL history tracking.
+- ✅ `help [command]` — display help for builtins and commands. Comprehensive built-in help database (just-bash has 650+ lines of help text). Can share metadata from M7.1's `--help` infrastructure.
+- ✅ `clear` — output ANSI clear-screen escape sequence.
+- ✅ `history` — display command history. Integrates with existing REPL history tracking.
 
 ### ✅ M7.7 — Default Filesystem Layout and Command Resolution
 

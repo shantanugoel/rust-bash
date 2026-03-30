@@ -813,3 +813,11 @@ vars-special.test:$PWD is set
 vars-special.test:$PWD is not only set, but exported
 vars-special.test:$OSTYPE is non-empty
 vars-special.test:$HOSTNAME
+alias.test:unalias -a
+builtin-cd.test:remove pwd dir
+builtin-meta.test:command -V nonexistent
+builtin-type.test:type -> not found
+pipeline.test:Exit code is last status
+vars-special.test:$$ looks like a PID
+vars-special.test:$UID and $EUID
+vars-special.test:$?

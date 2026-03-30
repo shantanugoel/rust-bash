@@ -5765,3 +5765,306 @@ fn user_seeded_bin_file_not_clobbered() {
     let r = sh.exec("cat /bin/custom").unwrap();
     assert_eq!(r.stdout, "custom content");
 }
+
+// ── M7 Phase 3: New Commands ─────────────────────────────────────────
+
+// ── timeout ──────────────────────────────────────────────────────────
+
+#[test]
+fn timeout_command_within_time() {
+    let mut sh = shell();
+    let r = sh.exec("timeout 10 echo hello").unwrap();
+    assert_eq!(r.stdout, "hello\n");
+    assert_eq!(r.exit_code, 0);
+}
+
+// ── time keyword ─────────────────────────────────────────────────────
+
+#[test]
+fn time_keyword_produces_timing_stderr() {
+    let mut sh = shell();
+    let r = sh.exec("time echo hello").unwrap();
+    assert_eq!(r.stdout, "hello\n");
+    assert!(r.stderr.contains("real\t"));
+    assert!(r.stderr.contains("user\t"));
+    assert!(r.stderr.contains("sys\t"));
+}
+
+// ── readlink ─────────────────────────────────────────────────────────
+
+#[test]
+fn readlink_symlink() {
+    let mut sh = shell();
+    sh.exec("echo data > /target.txt").unwrap();
+    sh.exec("ln -s /target.txt /link.txt").unwrap();
+    let r = sh.exec("readlink /link.txt").unwrap();
+    assert_eq!(r.stdout, "/target.txt\n");
+}
+
+#[test]
+fn readlink_f_canonicalize() {
+    let mut sh = shell();
+    sh.exec("mkdir -p /a/b").unwrap();
+    sh.exec("echo x > /a/b/file.txt").unwrap();
+    sh.exec("ln -s /a/b/file.txt /link").unwrap();
+    let r = sh.exec("readlink -f /link").unwrap();
+    assert_eq!(r.stdout, "/a/b/file.txt\n");
+}
+
+// ── rmdir ────────────────────────────────────────────────────────────
+
+#[test]
+fn rmdir_empty_directory() {
+    let mut sh = shell();
+    sh.exec("mkdir /emptydir").unwrap();
+    let r = sh.exec("rmdir /emptydir").unwrap();
+    assert_eq!(r.exit_code, 0);
+}
+
+#[test]
+fn rmdir_nonempty_fails() {
+    let mut sh = shell();
+    sh.exec("mkdir /nonempty && echo x > /nonempty/file.txt")
+        .unwrap();
+    let r = sh.exec("rmdir /nonempty").unwrap();
+    assert_eq!(r.exit_code, 1);
+    assert!(r.stderr.contains("not empty") || r.stderr.contains("Not empty"));
+}
+
+// ── du ───────────────────────────────────────────────────────────────
+
+#[test]
+fn du_summary() {
+    let mut sh = shell();
+    sh.exec("mkdir -p /dutest && echo hello > /dutest/file.txt")
+        .unwrap();
+    let r = sh.exec("du -s /dutest").unwrap();
+    assert_eq!(r.exit_code, 0);
+    assert!(r.stdout.contains("/dutest"));
+}
+
+// ── sha1sum ──────────────────────────────────────────────────────────
+
+#[test]
+fn sha1sum_known_hash() {
+    let mut sh = shell();
+    let r = sh.exec("echo -n hello | sha1sum").unwrap();
+    assert!(
+        r.stdout
+            .starts_with("aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d")
+    );
+}
+
+// ── fgrep / egrep ────────────────────────────────────────────────────
+
+#[test]
+fn fgrep_fixed_string() {
+    let mut sh = shell();
+    let r = sh.exec("echo 'hello world' | fgrep hello").unwrap();
+    assert_eq!(r.stdout, "hello world\n");
+}
+
+#[test]
+fn egrep_extended_regex() {
+    let mut sh = shell();
+    let r = sh.exec("echo 'cat' | egrep 'cat|dog'").unwrap();
+    assert_eq!(r.stdout, "cat\n");
+}
+
+// ── sh / bash builtin ───────────────────────────────────────────────
+
+#[test]
+fn sh_c_executes_string() {
+    let mut sh = shell();
+    let r = sh.exec("sh -c 'echo hi'").unwrap();
+    assert_eq!(r.stdout, "hi\n");
+}
+
+#[test]
+fn bash_c_executes_string() {
+    let mut sh = shell();
+    let r = sh.exec("bash -c 'echo hi'").unwrap();
+    assert_eq!(r.stdout, "hi\n");
+}
+
+#[test]
+fn sh_script_file() {
+    let mut sh = shell();
+    sh.exec("echo 'echo from script' > /test.sh").unwrap();
+    let r = sh.exec("sh /test.sh").unwrap();
+    assert_eq!(r.stdout, "from script\n");
+}
+
+// ── bc ───────────────────────────────────────────────────────────────
+
+#[test]
+fn bc_basic_arithmetic() {
+    let mut sh = shell();
+    let r = sh.exec("echo '2+3' | bc").unwrap();
+    assert_eq!(r.stdout, "5\n");
+}
+
+#[test]
+fn bc_multiplication() {
+    let mut sh = shell();
+    let r = sh.exec("echo '6*7' | bc").unwrap();
+    assert_eq!(r.stdout, "42\n");
+}
+
+#[test]
+fn bc_division_with_scale() {
+    let mut sh = shell();
+    let r = sh.exec("echo 'scale=2; 10/3' | bc").unwrap();
+    assert_eq!(r.stdout, "3.33\n");
+}
+
+#[test]
+fn bc_exponentiation() {
+    let mut sh = shell();
+    let r = sh.exec("echo '2^10' | bc").unwrap();
+    assert_eq!(r.stdout, "1024\n");
+}
+
+// ── file ─────────────────────────────────────────────────────────────
+
+#[test]
+fn file_detect_png() {
+    let mut files = HashMap::new();
+    files.insert(
+        "/image.png".into(),
+        b"\x89PNG\r\n\x1a\nrest of data".to_vec(),
+    );
+    let mut sh = RustBashBuilder::new().files(files).build().unwrap();
+    let r = sh.exec("file /image.png").unwrap();
+    assert!(r.stdout.contains("PNG"));
+}
+
+#[test]
+fn file_detect_directory() {
+    let mut sh = shell();
+    sh.exec("mkdir /testdir").unwrap();
+    let r = sh.exec("file /testdir").unwrap();
+    assert!(r.stdout.contains("directory"));
+}
+
+#[test]
+fn file_detect_text() {
+    let mut sh = shell();
+    sh.exec("echo 'hello world' > /plain.txt").unwrap();
+    let r = sh.exec("file /plain.txt").unwrap();
+    assert!(r.stdout.contains("text") || r.stdout.contains("ASCII"));
+}
+
+// ── strings ──────────────────────────────────────────────────────────
+
+#[test]
+fn strings_extract_ascii() {
+    let mut sh = shell();
+    // Create content with printable strings surrounded by non-printable bytes
+    sh.exec("printf 'hello\\x00\\x01\\x02world\\x00' > /bin.dat")
+        .unwrap();
+    let r = sh.exec("strings /bin.dat").unwrap();
+    assert!(r.stdout.contains("hello"));
+    assert!(r.stdout.contains("world"));
+}
+
+// ── split ────────────────────────────────────────────────────────────
+
+#[test]
+fn split_by_lines() {
+    let mut sh = shell();
+    sh.exec("printf 'a\\nb\\nc\\nd\\n' > /input.txt").unwrap();
+    let r = sh.exec("split -l 2 /input.txt").unwrap();
+    assert_eq!(r.exit_code, 0);
+    let r = sh.exec("cat xaa").unwrap();
+    assert_eq!(r.stdout, "a\nb\n");
+    let r = sh.exec("cat xab").unwrap();
+    assert_eq!(r.stdout, "c\nd\n");
+}
+
+// ── rg (ripgrep) ────────────────────────────────────────────────────
+
+#[test]
+fn rg_recursive_search() {
+    let mut sh = shell();
+    sh.exec("mkdir -p /searchdir/sub").unwrap();
+    sh.exec("echo 'hello world' > /searchdir/file1.txt")
+        .unwrap();
+    sh.exec("echo 'hello there' > /searchdir/sub/file2.txt")
+        .unwrap();
+    let r = sh.exec("rg hello /searchdir").unwrap();
+    assert_eq!(r.exit_code, 0);
+    assert!(r.stdout.contains("hello world"));
+    assert!(r.stdout.contains("hello there"));
+}
+
+#[test]
+fn rg_case_insensitive() {
+    let mut sh = shell();
+    sh.exec("echo 'Hello World' > /rifile.txt").unwrap();
+    let r = sh.exec("rg -i hello /rifile.txt").unwrap();
+    assert!(r.stdout.contains("Hello World"));
+}
+
+// ── help builtin ────────────────────────────────────────────────────
+
+#[test]
+fn help_lists_builtins() {
+    let mut sh = shell();
+    let r = sh.exec("help").unwrap();
+    assert!(r.stdout.contains("cd"));
+    assert!(r.stdout.contains("export"));
+    assert!(r.stdout.contains("exit"));
+}
+
+#[test]
+fn help_specific_builtin() {
+    let mut sh = shell();
+    let r = sh.exec("help cd").unwrap();
+    assert!(r.stdout.contains("cd"));
+    assert!(r.stdout.contains("Change"));
+}
+
+// ── clear ────────────────────────────────────────────────────────────
+
+#[test]
+fn clear_outputs_ansi_escape() {
+    let mut sh = shell();
+    let r = sh.exec("clear").unwrap();
+    assert!(r.stdout.contains("\x1b[2J"));
+    assert!(r.stdout.contains("\x1b[H"));
+}
+
+// ── history ──────────────────────────────────────────────────────────
+
+#[test]
+fn history_returns_empty() {
+    let mut sh = shell();
+    let r = sh.exec("history").unwrap();
+    assert_eq!(r.exit_code, 0);
+    assert_eq!(r.stdout, "");
+}
+
+#[test]
+fn sh_c_isolates_state() {
+    let mut sh = shell();
+    sh.exec("x=old").unwrap();
+    sh.exec("sh -c 'x=new'").unwrap();
+    let r = sh.exec("echo $x").unwrap();
+    assert_eq!(r.stdout, "old\n");
+}
+
+#[test]
+fn sh_c_positional_params() {
+    let mut sh = shell();
+    let r = sh.exec("sh -c 'echo $0 $1' foo bar").unwrap();
+    assert_eq!(r.stdout, "foo bar\n");
+}
+
+#[test]
+fn file_empty_file() {
+    let mut sh = shell();
+    sh.exec("touch /empty").unwrap();
+    let r = sh.exec("file /empty").unwrap();
+    assert!(r.stdout.contains("empty"), "got: {}", r.stdout);
+}

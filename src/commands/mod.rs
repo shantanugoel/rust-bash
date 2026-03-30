@@ -773,6 +773,60 @@ impl VirtualCommand for BracketCommand {
     }
 }
 
+/// `fgrep` — alias for `grep -F`.
+pub struct FgrepCommand;
+
+static FGREP_META: CommandMeta = CommandMeta {
+    name: "fgrep",
+    synopsis: "fgrep [OPTIONS] PATTERN [FILE ...]",
+    description: "Equivalent to grep -F (fixed-string search).",
+    options: &[],
+    supports_help_flag: true,
+};
+
+impl VirtualCommand for FgrepCommand {
+    fn name(&self) -> &str {
+        "fgrep"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&FGREP_META)
+    }
+
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
+        let mut new_args = vec!["-F".to_string()];
+        new_args.extend(args.iter().cloned());
+        text::GrepCommand.execute(&new_args, ctx)
+    }
+}
+
+/// `egrep` — alias for `grep -E`.
+pub struct EgrepCommand;
+
+static EGREP_META: CommandMeta = CommandMeta {
+    name: "egrep",
+    synopsis: "egrep [OPTIONS] PATTERN [FILE ...]",
+    description: "Equivalent to grep -E (extended regexp search).",
+    options: &[],
+    supports_help_flag: true,
+};
+
+impl VirtualCommand for EgrepCommand {
+    fn name(&self) -> &str {
+        "egrep"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&EGREP_META)
+    }
+
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
+        let mut new_args = vec!["-E".to_string()];
+        new_args.extend(args.iter().cloned());
+        text::GrepCommand.execute(&new_args, ctx)
+    }
+}
+
 /// Register the default set of commands.
 pub fn register_default_commands() -> HashMap<String, Box<dyn VirtualCommand>> {
     let mut commands: HashMap<String, Box<dyn VirtualCommand>> = HashMap::new();
@@ -849,6 +903,23 @@ pub fn register_default_commands() -> HashMap<String, Box<dyn VirtualCommand>> {
         Box::new(jq_cmd::JqCommand),
         // M2.3: awk
         Box::new(awk::AwkCommand),
+        // M7.2: core utility commands
+        Box::new(utils::Sha1sumCommand),
+        Box::new(utils::TimeoutCommand),
+        Box::new(utils::FileCommand),
+        Box::new(utils::BcCommand),
+        Box::new(utils::ClearCommand),
+        Box::new(FgrepCommand),
+        Box::new(EgrepCommand),
+        // M7.4: binary and file inspection
+        Box::new(text::StringsCommand),
+        // M7.5: search commands
+        Box::new(text::RgCommand),
+        // M7.2: file operations
+        Box::new(file_ops::ReadlinkCommand),
+        Box::new(file_ops::RmdirCommand),
+        Box::new(file_ops::DuCommand),
+        Box::new(file_ops::SplitCommand),
     ];
     for cmd in defaults {
         commands.insert(cmd.name().to_string(), cmd);

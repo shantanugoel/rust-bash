@@ -3880,6 +3880,463 @@ fn unexpand_line(line: &str, tab_width: usize, convert_all: bool) -> String {
     }
 }
 
+// ── strings ─────────────────────────────────────────────────────────
+
+pub struct StringsCommand;
+
+static STRINGS_META: CommandMeta = CommandMeta {
+    name: "strings",
+    synopsis: "strings [-n MIN] [FILE ...]",
+    description: "Print the sequences of printable characters in files.",
+    options: &[("-n MIN", "set minimum string length (default 4)")],
+    supports_help_flag: true,
+};
+
+impl super::VirtualCommand for StringsCommand {
+    fn name(&self) -> &str {
+        "strings"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&STRINGS_META)
+    }
+
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
+        let mut min_len: usize = 4;
+        let mut files: Vec<&str> = Vec::new();
+        let mut i = 0;
+
+        while i < args.len() {
+            let arg = &args[i];
+            if arg == "-n" {
+                i += 1;
+                if i < args.len() {
+                    min_len = args[i].parse().unwrap_or(4);
+                }
+            } else if let Some(v) = arg.strip_prefix("-n") {
+                min_len = v.parse().unwrap_or(4);
+            } else if arg == "-a" || arg == "--" {
+                // -a is default behavior, skip
+            } else {
+                files.push(arg);
+            }
+            i += 1;
+        }
+
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        let mut exit_code = 0;
+
+        let sources: Vec<(&str, Vec<u8>)> = if files.is_empty() {
+            vec![("-", ctx.stdin.as_bytes().to_vec())]
+        } else {
+            let mut v = Vec::new();
+            for f in &files {
+                if *f == "-" {
+                    v.push(("-", ctx.stdin.as_bytes().to_vec()));
+                } else {
+                    let path = resolve_path(f, ctx.cwd);
+                    match ctx.fs.read_file(&path) {
+                        Ok(data) => v.push((*f, data)),
+                        Err(e) => {
+                            stderr.push_str(&format!("strings: {}: {}\n", f, e));
+                            exit_code = 1;
+                        }
+                    }
+                }
+            }
+            v
+        };
+
+        for (_name, data) in &sources {
+            let mut run = String::new();
+            for &byte in data.iter() {
+                if (0x20..0x7f).contains(&byte) {
+                    run.push(byte as char);
+                } else {
+                    if run.len() >= min_len {
+                        stdout.push_str(&run);
+                        stdout.push('\n');
+                    }
+                    run.clear();
+                }
+            }
+            if run.len() >= min_len {
+                stdout.push_str(&run);
+                stdout.push('\n');
+            }
+        }
+
+        CommandResult {
+            stdout,
+            stderr,
+            exit_code,
+        }
+    }
+}
+
+// ── rg (ripgrep) ────────────────────────────────────────────────────
+
+pub struct RgCommand;
+
+static RG_META: CommandMeta = CommandMeta {
+    name: "rg",
+    synopsis: "rg [OPTIONS] PATTERN [PATH ...]",
+    description: "Recursively search for a pattern in files.",
+    options: &[
+        ("-i, --ignore-case", "case insensitive search"),
+        ("-n, --line-number", "show line numbers (default)"),
+        ("-l, --files-with-matches", "only show matching file names"),
+        ("-c, --count", "show match count per file"),
+        ("-w, --word-regexp", "only match whole words"),
+        ("-t TYPE", "only search files of TYPE"),
+        ("-T TYPE", "exclude files of TYPE"),
+        ("-g GLOB", "include or exclude files matching GLOB"),
+        ("--vimgrep", "show results in vimgrep format"),
+    ],
+    supports_help_flag: true,
+};
+
+impl super::VirtualCommand for RgCommand {
+    fn name(&self) -> &str {
+        "rg"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&RG_META)
+    }
+
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
+        let mut case_insensitive = false;
+        let mut show_line_numbers = true;
+        let mut files_only = false;
+        let mut count_only = false;
+        let mut word_regexp = false;
+        let mut vimgrep = false;
+        let mut type_includes: Vec<&str> = Vec::new();
+        let mut type_excludes: Vec<&str> = Vec::new();
+        let mut globs: Vec<&str> = Vec::new();
+        let mut pattern: Option<&str> = None;
+        let mut paths: Vec<&str> = Vec::new();
+        let mut i = 0;
+
+        while i < args.len() {
+            let arg = &args[i];
+            match arg.as_str() {
+                "-i" | "--ignore-case" => case_insensitive = true,
+                "-n" | "--line-number" => show_line_numbers = true,
+                "-l" | "--files-with-matches" => files_only = true,
+                "-c" | "--count" => count_only = true,
+                "-w" | "--word-regexp" => word_regexp = true,
+                "--vimgrep" => vimgrep = true,
+                "--no-line-number" | "-N" => show_line_numbers = false,
+                "-t" => {
+                    i += 1;
+                    if i < args.len() {
+                        type_includes.push(&args[i]);
+                    }
+                }
+                "-T" => {
+                    i += 1;
+                    if i < args.len() {
+                        type_excludes.push(&args[i]);
+                    }
+                }
+                "-g" => {
+                    i += 1;
+                    if i < args.len() {
+                        globs.push(&args[i]);
+                    }
+                }
+                _ if arg.starts_with("--type=") => {
+                    type_includes.push(&arg[7..]);
+                }
+                _ if arg.starts_with("-g") && arg.len() > 2 => {
+                    globs.push(&arg[2..]);
+                }
+                _ if arg.starts_with('-') && arg.len() > 1 && !arg.starts_with("--") => {
+                    // Combined short flags
+                    for c in arg[1..].chars() {
+                        match c {
+                            'i' => case_insensitive = true,
+                            'n' => show_line_numbers = true,
+                            'l' => files_only = true,
+                            'c' => count_only = true,
+                            'w' => word_regexp = true,
+                            _ => {}
+                        }
+                    }
+                }
+                _ if pattern.is_none() => pattern = Some(arg),
+                _ => paths.push(arg),
+            }
+            i += 1;
+        }
+
+        let pattern = match pattern {
+            Some(p) => p,
+            None => {
+                return CommandResult {
+                    stderr: "rg: no pattern given\n".into(),
+                    exit_code: 2,
+                    ..Default::default()
+                };
+            }
+        };
+
+        // Build regex
+        let mut pat = if word_regexp {
+            format!(r"\b{}\b", pattern)
+        } else {
+            pattern.to_string()
+        };
+
+        if case_insensitive {
+            pat = format!("(?i){}", pat);
+        }
+
+        let re = match Regex::new(&pat) {
+            Ok(r) => r,
+            Err(e) => {
+                return CommandResult {
+                    stderr: format!("rg: regex error: {}\n", e),
+                    exit_code: 2,
+                    ..Default::default()
+                };
+            }
+        };
+
+        // If no paths, search cwd recursively
+        if paths.is_empty() {
+            paths.push(".");
+        }
+
+        // Load .gitignore patterns from VFS
+        let gitignore_patterns = load_gitignore_patterns(ctx);
+
+        // Collect files to search
+        let mut file_contents: Vec<(String, String)> = Vec::new();
+        for p in &paths {
+            let path = resolve_path(p, ctx.cwd);
+            match ctx.fs.stat(&path) {
+                Ok(meta) if meta.node_type == crate::vfs::NodeType::Directory => {
+                    rg_collect_dir(
+                        &path,
+                        ctx,
+                        &type_includes,
+                        &type_excludes,
+                        &globs,
+                        &gitignore_patterns,
+                        &mut file_contents,
+                    );
+                }
+                Ok(_) => {
+                    if let Ok(bytes) = ctx.fs.read_file(&path) {
+                        file_contents
+                            .push((p.to_string(), String::from_utf8_lossy(&bytes).to_string()));
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+
+        file_contents.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut stdout = String::new();
+        let mut any_match = false;
+
+        for (filename, content) in &file_contents {
+            let mut file_match_count = 0usize;
+
+            for (line_idx, line) in content.lines().enumerate() {
+                if re.is_match(line) {
+                    file_match_count += 1;
+                    any_match = true;
+
+                    if !count_only && !files_only {
+                        if vimgrep {
+                            // vimgrep format: file:line:col:text
+                            if let Some(m) = re.find(line) {
+                                stdout.push_str(&format!(
+                                    "{}:{}:{}:{}\n",
+                                    filename,
+                                    line_idx + 1,
+                                    m.start() + 1,
+                                    line
+                                ));
+                            }
+                        } else if show_line_numbers {
+                            stdout.push_str(&format!("{}:{}:{}\n", filename, line_idx + 1, line));
+                        } else {
+                            stdout.push_str(&format!("{}:{}\n", filename, line));
+                        }
+                    }
+                }
+            }
+
+            if count_only && file_match_count > 0 {
+                stdout.push_str(&format!("{}:{}\n", filename, file_match_count));
+            }
+            if files_only && file_match_count > 0 {
+                stdout.push_str(filename);
+                stdout.push('\n');
+            }
+        }
+
+        CommandResult {
+            stdout,
+            exit_code: if any_match { 0 } else { 1 },
+            ..Default::default()
+        }
+    }
+}
+
+fn rg_type_extensions(type_name: &str) -> &'static [&'static str] {
+    match type_name {
+        "py" | "python" => &["py"],
+        "js" | "javascript" => &["js", "jsx", "mjs"],
+        "ts" | "typescript" => &["ts", "tsx"],
+        "rs" | "rust" => &["rs"],
+        "go" => &["go"],
+        "c" => &["c", "h"],
+        "cpp" => &["cpp", "cc", "cxx", "hpp", "hxx"],
+        "java" => &["java"],
+        "rb" | "ruby" => &["rb"],
+        "sh" | "shell" => &["sh", "bash"],
+        "html" => &["html", "htm"],
+        "css" => &["css"],
+        "json" => &["json"],
+        "yaml" | "yml" => &["yaml", "yml"],
+        "xml" => &["xml"],
+        "md" | "markdown" => &["md"],
+        "txt" => &["txt"],
+        "toml" => &["toml"],
+        _ => &[],
+    }
+}
+
+fn rg_file_matches_type(name: &str, types: &[&str]) -> bool {
+    if types.is_empty() {
+        return true;
+    }
+    let ext = name.rsplit('.').next().unwrap_or("");
+    types.iter().any(|t| rg_type_extensions(t).contains(&ext))
+}
+
+fn rg_file_excluded_type(name: &str, types: &[&str]) -> bool {
+    if types.is_empty() {
+        return false;
+    }
+    let ext = name.rsplit('.').next().unwrap_or("");
+    types.iter().any(|t| rg_type_extensions(t).contains(&ext))
+}
+
+fn load_gitignore_patterns(ctx: &CommandContext) -> Vec<String> {
+    let mut patterns = Vec::new();
+    for gitignore_path in &[
+        std::path::PathBuf::from("/.gitignore"),
+        std::path::PathBuf::from(ctx.cwd).join(".gitignore"),
+    ] {
+        if let Ok(bytes) = ctx.fs.read_file(gitignore_path) {
+            let content = String::from_utf8_lossy(&bytes);
+            for line in content.lines() {
+                let line = line.trim();
+                if !line.is_empty() && !line.starts_with('#') {
+                    patterns.push(line.to_string());
+                }
+            }
+        }
+    }
+    patterns
+}
+
+fn rg_is_gitignored(name: &str, gitignore_patterns: &[String]) -> bool {
+    for pat in gitignore_patterns {
+        let pat_clean = pat.trim_end_matches('/');
+        if glob_match(pat_clean, name) {
+            return true;
+        }
+    }
+    false
+}
+
+fn rg_collect_dir(
+    dir: &std::path::Path,
+    ctx: &CommandContext,
+    type_includes: &[&str],
+    type_excludes: &[&str],
+    globs: &[&str],
+    gitignore_patterns: &[String],
+    result: &mut Vec<(String, String)>,
+) {
+    let entries = match ctx.fs.readdir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    let mut sorted = entries;
+    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+
+    for entry in &sorted {
+        // Skip hidden files/directories
+        if entry.name.starts_with('.') {
+            continue;
+        }
+
+        if rg_is_gitignored(&entry.name, gitignore_patterns) {
+            continue;
+        }
+
+        let child = dir.join(&entry.name);
+
+        match entry.node_type {
+            crate::vfs::NodeType::Directory => {
+                rg_collect_dir(
+                    &child,
+                    ctx,
+                    type_includes,
+                    type_excludes,
+                    globs,
+                    gitignore_patterns,
+                    result,
+                );
+            }
+            crate::vfs::NodeType::File => {
+                if !rg_file_matches_type(&entry.name, type_includes) {
+                    continue;
+                }
+                if rg_file_excluded_type(&entry.name, type_excludes) {
+                    continue;
+                }
+                // Check glob filters
+                if !globs.is_empty() {
+                    let matches_any = globs.iter().any(|g| {
+                        if let Some(neg) = g.strip_prefix('!') {
+                            !glob_match(neg, &entry.name)
+                        } else {
+                            glob_match(g, &entry.name)
+                        }
+                    });
+                    if !matches_any {
+                        continue;
+                    }
+                }
+
+                let display = child.to_string_lossy().to_string();
+                if let Ok(bytes) = ctx.fs.read_file(&child) {
+                    // Skip binary files
+                    let sample = &bytes[..bytes.len().min(512)];
+                    if sample.contains(&0) {
+                        continue;
+                    }
+                    result.push((display, String::from_utf8_lossy(&bytes).to_string()));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
