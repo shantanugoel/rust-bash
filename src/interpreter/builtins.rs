@@ -1231,6 +1231,7 @@ fn declare_print(
         stdout,
         stderr,
         exit_code,
+        stdout_bytes: None,
     })
 }
 
@@ -2457,6 +2458,7 @@ fn builtin_type(
         stdout,
         stderr,
         exit_code,
+        stdout_bytes: None,
     })
 }
 
@@ -2548,6 +2550,7 @@ fn builtin_command(
             cwd: &cwd,
             env: &env,
             stdin,
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &network_policy,
             exec: None,
@@ -2559,6 +2562,7 @@ fn builtin_command(
             stdout: cmd_result.stdout,
             stderr: cmd_result.stderr,
             exit_code: cmd_result.exit_code,
+            stdout_bytes: cmd_result.stdout_bytes,
         });
     }
 
@@ -2688,6 +2692,7 @@ fn builtin_builtin(
             cwd: &cwd,
             env: &env,
             stdin,
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &network_policy,
             exec: None,
@@ -2698,6 +2703,7 @@ fn builtin_builtin(
             stdout: cmd_result.stdout,
             stderr: cmd_result.stderr,
             exit_code: cmd_result.exit_code,
+            stdout_bytes: cmd_result.stdout_bytes,
         });
     }
 
@@ -3374,6 +3380,7 @@ fn builtin_alias(
         stdout,
         stderr,
         exit_code,
+        stdout_bytes: None,
     })
 }
 
@@ -3584,6 +3591,7 @@ fn run_in_subshell(
         next_auto_fd: state.next_auto_fd,
         proc_sub_counter: state.proc_sub_counter,
         proc_sub_prealloc: HashMap::new(),
+        pipe_stdin_bytes: None,
     };
 
     let result = execute_program(program, &mut sub_state);
@@ -3694,6 +3702,7 @@ mod tests {
             next_auto_fd: 10,
             proc_sub_counter: 0,
             proc_sub_prealloc: HashMap::new(),
+            pipe_stdin_bytes: None,
         }
     }
 

@@ -295,16 +295,16 @@ Implement commonly-used utility commands that AI agents encounter:
 - ✅ `sh [-c command]` — alias for `bash`. Run a subshell. `sh -c "..."` is very common.
 - ✅ `bc [-l]` — arbitrary precision calculator. Basic arithmetic, comparison, and `scale` support. Covers `echo "1.5 * 3" | bc` pattern.
 
-### M7.3 — Compression and Archiving
+### ✅ M7.3 — Compression and Archiving
 
 Implement archive and compression commands for AI agents working with bundled data:
 
-- `gzip [-d|-c|-k|-f|-r|-1..-9] [files]` — compress files. Via `flate2` crate.
-- `gunzip [files]` — decompress (alias for `gzip -d`).
-- `zcat [files]` — decompress to stdout (alias for `gzip -dc`).
-- `tar [-c|-x|-t|-f archive] [files]` — create, extract, list archives. Support gzip compression (`-z`). Via `tar` crate + `flate2`.
+- ✅ `gzip [-d|-c|-k|-f|-r|-1..-9] [files]` — compress files. Via `flate2` crate.
+- ✅ `gunzip [files]` — decompress (alias for `gzip -d`).
+- ✅ `zcat [files]` — decompress to stdout (alias for `gzip -dc`).
+- ✅ `tar [-c|-x|-t|-f archive] [files]` — create, extract, list archives. Support gzip compression (`-z`). Via `tar` crate + `flate2`.
 
-**Prerequisite audit**: Before implementing, verify that binary data flows as `Vec<u8>` through the entire pipeline path (command stdout → pipe → next command stdin). If any intermediate step converts to `String`, binary data (gzip output, tar archives) will be corrupted. just-bash uses latin1 strings internally for byte transparency — Rust's `Vec<u8>` is naturally correct, but audit the pipe/redirect/capture paths.
+**Binary data path**: `CommandResult.stdout_bytes` and `CommandContext.stdin_bytes` carry `Vec<u8>` through pipelines without UTF-8 conversion. `InterpreterState.pipe_stdin_bytes` propagates binary between pipeline stages.
 
 ### ✅ M7.4 — Binary and File Inspection
 

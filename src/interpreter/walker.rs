@@ -179,6 +179,7 @@ fn execute_pipeline(
     };
 
     let mut pipe_data = stdin.to_string();
+    let mut pipe_data_bytes: Option<Vec<u8>> = None;
     let mut combined_stderr = String::new();
     let mut exit_code = 0;
     let mut exit_codes: Vec<i32> = Vec::new();
@@ -198,12 +199,23 @@ fn execute_pipeline(
         if idx > 0 {
             state.stdin_offset = 0;
         }
+        // Propagate binary data from previous stage via interpreter state
+        state.pipe_stdin_bytes = pipe_data_bytes.take();
         let r = execute_command(command, state, &pipe_data)?;
-        pipe_data = r.stdout;
+        // If the command produced binary output, use it for next stage
+        if let Some(bytes) = r.stdout_bytes {
+            pipe_data_bytes = Some(bytes);
+            pipe_data = String::new();
+        } else {
+            pipe_data = r.stdout;
+            pipe_data_bytes = None;
+        }
         combined_stderr.push_str(&r.stderr);
         exit_code = r.exit_code;
         exit_codes.push(r.exit_code);
     }
+    // Clear any leftover binary state
+    state.pipe_stdin_bytes = None;
 
     // Multi-stage pipelines operate on ephemeral pipe data — restore the
     // caller's stdin offset so enclosing loops (e.g. `while read`) are not
@@ -258,10 +270,18 @@ fn execute_pipeline(
         ));
     }
 
+    // At the pipeline boundary, convert binary output to lossy string if needed
+    let final_stdout = if let Some(bytes) = pipe_data_bytes {
+        String::from_utf8_lossy(&bytes).into_owned()
+    } else {
+        pipe_data
+    };
+
     Ok(ExecResult {
-        stdout: pipe_data,
+        stdout: final_stdout,
         stderr: combined_stderr,
         exit_code,
+        stdout_bytes: None,
     })
 }
 
@@ -757,6 +777,7 @@ fn execute_simple_command(
                 stdout: crate::commands::format_help(meta),
                 stderr: String::new(),
                 exit_code: 0,
+                stdout_bytes: None,
             });
         }
         for a in &assignments {
@@ -1266,6 +1287,7 @@ fn execute_subshell(
         next_auto_fd: state.next_auto_fd,
         proc_sub_counter: state.proc_sub_counter,
         proc_sub_prealloc: HashMap::new(),
+        pipe_stdin_bytes: None,
     };
 
     let result = execute_compound_list(list, &mut sub_state, stdin);
@@ -1433,6 +1455,7 @@ fn make_exec_callback(
             next_auto_fd: 10,
             proc_sub_counter: 0,
             proc_sub_prealloc: HashMap::new(),
+            pipe_stdin_bytes: None,
         };
 
         let result = execute_program(&program, &mut sub_state)?;
@@ -1440,6 +1463,7 @@ fn make_exec_callback(
             stdout: result.stdout,
             stderr: result.stderr,
             exit_code: result.exit_code,
+            stdout_bytes: None,
         })
     }
 }
@@ -1544,6 +1568,7 @@ fn dispatch_command(
                 stdout: crate::commands::format_help(meta),
                 stderr: String::new(),
                 exit_code: 0,
+                stdout_bytes: None,
             });
         }
         // Check registered commands
@@ -1555,6 +1580,7 @@ fn dispatch_command(
                 stdout: crate::commands::format_help(meta),
                 stderr: String::new(),
                 exit_code: 0,
+                stdout_bytes: None,
             });
         }
         // No meta or supports_help_flag == false → fall through to normal dispatch
@@ -1582,6 +1608,8 @@ fn dispatch_command(
         let limits = state.limits.clone();
         let network_policy = state.network_policy.clone();
 
+        // Take binary pipe data from interpreter state before borrowing state for callback
+        let binary_stdin = state.pipe_stdin_bytes.take();
         let exec_callback = make_exec_callback(state);
 
         let ctx = CommandContext {
@@ -1589,6 +1617,7 @@ fn dispatch_command(
             cwd: &cwd,
             env: &env,
             stdin,
+            stdin_bytes: binary_stdin.as_deref(),
             limits: &limits,
             network_policy: &network_policy,
             exec: Some(&exec_callback),
@@ -1610,6 +1639,7 @@ fn dispatch_command(
             stdout: cmd_result.stdout,
             stderr: cmd_result.stderr,
             exit_code: cmd_result.exit_code,
+            stdout_bytes: cmd_result.stdout_bytes,
         });
     }
 
@@ -1618,6 +1648,7 @@ fn dispatch_command(
         stdout: String::new(),
         stderr: format!("{name}: command not found\n"),
         exit_code: 127,
+        stdout_bytes: None,
     })
 }
 
@@ -2235,6 +2266,7 @@ fn apply_write_redirect(
     if is_dev_null(path) || is_dev_zero(path) {
         if fd_num == 1 {
             result.stdout.clear();
+            result.stdout_bytes = None;
         } else if fd_num == 2 {
             result.stderr.clear();
         }
@@ -2263,16 +2295,22 @@ fn apply_write_redirect(
         }
         result.exit_code = 1;
     } else {
-        let content = if fd_num == 1 {
-            result.stdout.clone()
+        let content_bytes: Vec<u8> = if fd_num == 1 {
+            // Prefer binary bytes when available (e.g. gzip output)
+            if let Some(bytes) = result.stdout_bytes.take() {
+                bytes
+            } else {
+                result.stdout.as_bytes().to_vec()
+            }
         } else if fd_num == 2 {
-            result.stderr.clone()
+            result.stderr.as_bytes().to_vec()
         } else {
             return write_to_persistent_fd(fd_num, result, state);
         };
-        write_or_append(state, path, &content, append)?;
+        write_or_append_bytes(state, path, &content_bytes, append)?;
         if fd_num == 1 {
             result.stdout.clear();
+            result.stdout_bytes = None;
         } else if fd_num == 2 {
             result.stderr.clear();
         }
@@ -2514,6 +2552,7 @@ fn make_proc_sub_state(state: &mut InterpreterState) -> InterpreterState {
         next_auto_fd: 10,
         proc_sub_counter: state.proc_sub_counter,
         proc_sub_prealloc: HashMap::new(),
+        pipe_stdin_bytes: None,
     }
 }
 
@@ -2527,24 +2566,33 @@ fn write_or_append(
     content: &str,
     append: bool,
 ) -> Result<(), RustBashError> {
+    write_or_append_bytes(state, path, content.as_bytes(), append)
+}
+
+fn write_or_append_bytes(
+    state: &InterpreterState,
+    path: &str,
+    content: &[u8],
+    append: bool,
+) -> Result<(), RustBashError> {
     let p = Path::new(path);
 
     if append {
         if state.fs.exists(p) {
             state
                 .fs
-                .append_file(p, content.as_bytes())
+                .append_file(p, content)
                 .map_err(|e| RustBashError::Execution(e.to_string()))?;
         } else {
             state
                 .fs
-                .write_file(p, content.as_bytes())
+                .write_file(p, content)
                 .map_err(|e| RustBashError::Execution(e.to_string()))?;
         }
     } else {
         state
             .fs
-            .write_file(p, content.as_bytes())
+            .write_file(p, content)
             .map_err(|e| RustBashError::Execution(e.to_string()))?;
     }
     Ok(())

@@ -1201,6 +1201,7 @@ mod tests {
             next_auto_fd: 10,
             proc_sub_counter: 0,
             proc_sub_prealloc: HashMap::new(),
+            pipe_stdin_bytes: None,
         }
     }
 

@@ -1186,6 +1186,7 @@ fn exec_callback_available_to_commands() {
                         stdout: r.stdout,
                         stderr: r.stderr,
                         exit_code: r.exit_code,
+                        stdout_bytes: None,
                     },
                     Err(e) => CommandResult {
                         stderr: format!("{e}\n"),
@@ -4071,6 +4072,7 @@ fn builder_custom_command_overrides_builtin() {
                 stdout: format!("custom: {}\n", args.join(" ")),
                 stderr: String::new(),
                 exit_code: 0,
+                stdout_bytes: None,
             }
         }
     }
@@ -6261,4 +6263,190 @@ fn format_help_no_flags_section_when_empty() {
 
     let help = format_help(&TEST_META);
     assert!(!help.contains("Flag support:"), "got: {}", help);
+}
+
+// ── M7.3: Compression and archiving ──────────────────────────────
+
+#[test]
+fn gzip_compress_and_gunzip_roundtrip_file() {
+    let mut sh = shell();
+    sh.exec("echo 'hello compression' > /tmp_test_file.txt")
+        .unwrap();
+    let r = sh.exec("gzip /tmp_test_file.txt").unwrap();
+    assert_eq!(r.exit_code, 0, "gzip stderr: {}", r.stderr);
+
+    let r = sh.exec("gunzip /tmp_test_file.txt.gz").unwrap();
+    assert_eq!(r.exit_code, 0, "gunzip stderr: {}", r.stderr);
+
+    let r = sh.exec("cat /tmp_test_file.txt").unwrap();
+    assert_eq!(r.stdout, "hello compression\n");
+}
+
+#[test]
+fn gzip_keep_flag() {
+    let mut sh = shell();
+    sh.exec("echo 'keep me' > /keep_test.txt").unwrap();
+    sh.exec("gzip -k /keep_test.txt").unwrap();
+
+    // Both original and .gz should exist
+    let r = sh.exec("test -f /keep_test.txt && echo yes").unwrap();
+    assert_eq!(r.stdout, "yes\n");
+    let r = sh.exec("test -f /keep_test.txt.gz && echo yes").unwrap();
+    assert_eq!(r.stdout, "yes\n");
+}
+
+#[test]
+fn gzip_c_pipe_gunzip_binary_pipeline() {
+    let mut sh = shell();
+    sh.exec("echo 'binary pipeline test' > /pipe_test.txt")
+        .unwrap();
+    let r = sh.exec("gzip -c /pipe_test.txt | gunzip").unwrap();
+    assert_eq!(r.stdout, "binary pipeline test\n");
+    assert_eq!(r.exit_code, 0);
+}
+
+#[test]
+fn gzip_stdin_pipe_gunzip_roundtrip() {
+    let mut sh = shell();
+    let r = sh.exec("echo 'stdin roundtrip' | gzip | gunzip").unwrap();
+    assert_eq!(r.stdout, "stdin roundtrip\n");
+    assert_eq!(r.exit_code, 0);
+}
+
+#[test]
+fn zcat_outputs_to_stdout() {
+    let mut sh = shell();
+    sh.exec("echo 'zcat content' > /zcat_test.txt").unwrap();
+    sh.exec("gzip -k /zcat_test.txt").unwrap();
+    let r = sh.exec("zcat /zcat_test.txt.gz").unwrap();
+    assert_eq!(r.stdout, "zcat content\n");
+    // Original .gz should still exist
+    let r2 = sh.exec("test -f /zcat_test.txt.gz && echo yes").unwrap();
+    assert_eq!(r2.stdout, "yes\n");
+}
+
+#[test]
+fn gzip_decompress_flag() {
+    let mut sh = shell();
+    sh.exec("echo 'decompress flag' > /dflag.txt").unwrap();
+    sh.exec("gzip /dflag.txt").unwrap();
+    let r = sh.exec("gzip -d /dflag.txt.gz").unwrap();
+    assert_eq!(r.exit_code, 0, "stderr: {}", r.stderr);
+    let r = sh.exec("cat /dflag.txt").unwrap();
+    assert_eq!(r.stdout, "decompress flag\n");
+}
+
+#[test]
+fn gzip_nonexistent_file_error() {
+    let mut sh = shell();
+    let r = sh.exec("gzip /no_such_file.txt").unwrap();
+    assert_ne!(r.exit_code, 0);
+    assert!(r.stderr.contains("no_such_file.txt"));
+}
+
+#[test]
+fn gzip_redirect_binary_to_file() {
+    let mut sh = shell();
+    sh.exec("echo 'redirect test' > /redir.txt").unwrap();
+    sh.exec("gzip -c /redir.txt > /redir.txt.gz").unwrap();
+    // Verify the .gz file is non-empty and valid gzip
+    sh.exec("gunzip /redir.txt.gz").unwrap();
+    let r = sh.exec("cat /redir.txt").unwrap();
+    assert_eq!(r.stdout, "redirect test\n");
+}
+
+#[test]
+fn tar_create_extract_roundtrip() {
+    let mut sh = shell();
+    sh.exec("echo 'tar content' > /tar_test.txt").unwrap();
+    let r = sh.exec("tar cf /archive.tar tar_test.txt").unwrap();
+    assert_eq!(r.exit_code, 0, "create stderr: {}", r.stderr);
+
+    sh.exec("rm /tar_test.txt").unwrap();
+    let r = sh.exec("tar xf /archive.tar").unwrap();
+    assert_eq!(r.exit_code, 0, "extract stderr: {}", r.stderr);
+
+    let r = sh.exec("cat /tar_test.txt").unwrap();
+    assert_eq!(r.stdout, "tar content\n");
+}
+
+#[test]
+fn tar_list_contents() {
+    let mut sh = shell();
+    sh.exec("echo 'file1' > /tl1.txt").unwrap();
+    sh.exec("echo 'file2' > /tl2.txt").unwrap();
+    sh.exec("tar cf /list.tar tl1.txt tl2.txt").unwrap();
+
+    let r = sh.exec("tar tf /list.tar").unwrap();
+    assert_eq!(r.exit_code, 0, "stderr: {}", r.stderr);
+    assert!(r.stdout.contains("tl1.txt"), "stdout: {}", r.stdout);
+    assert!(r.stdout.contains("tl2.txt"), "stdout: {}", r.stdout);
+}
+
+#[test]
+fn tar_with_gzip_flag() {
+    let mut sh = shell();
+    sh.exec("echo 'gzipped tar' > /tgz_test.txt").unwrap();
+    let r = sh.exec("tar czf /archive.tar.gz tgz_test.txt").unwrap();
+    assert_eq!(r.exit_code, 0, "create stderr: {}", r.stderr);
+
+    sh.exec("rm /tgz_test.txt").unwrap();
+    let r = sh.exec("tar xzf /archive.tar.gz").unwrap();
+    assert_eq!(r.exit_code, 0, "extract stderr: {}", r.stderr);
+
+    let r = sh.exec("cat /tgz_test.txt").unwrap();
+    assert_eq!(r.stdout, "gzipped tar\n");
+}
+
+#[test]
+fn tar_directory() {
+    let mut sh = shell();
+    sh.exec("mkdir -p /tardir").unwrap();
+    sh.exec("echo 'a' > /tardir/a.txt").unwrap();
+    sh.exec("echo 'b' > /tardir/b.txt").unwrap();
+    let r = sh.exec("tar cf /dir.tar tardir").unwrap();
+    assert_eq!(r.exit_code, 0, "stderr: {}", r.stderr);
+
+    sh.exec("rm -r /tardir").unwrap();
+    let r = sh.exec("tar xf /dir.tar").unwrap();
+    assert_eq!(r.exit_code, 0, "extract stderr: {}", r.stderr);
+
+    let r = sh.exec("cat /tardir/a.txt").unwrap();
+    assert_eq!(r.stdout, "a\n");
+    let r = sh.exec("cat /tardir/b.txt").unwrap();
+    assert_eq!(r.stdout, "b\n");
+}
+
+#[test]
+fn tar_verbose_output() {
+    let mut sh = shell();
+    sh.exec("echo 'verbose' > /vtar.txt").unwrap();
+    let r = sh.exec("tar cvf /v.tar vtar.txt").unwrap();
+    assert_eq!(r.exit_code, 0);
+    assert!(r.stdout.contains("vtar.txt"), "stdout: {}", r.stdout);
+}
+
+#[test]
+fn tar_change_directory() {
+    let mut sh = shell();
+    sh.exec("mkdir -p /src_dir").unwrap();
+    sh.exec("echo 'from src' > /src_dir/data.txt").unwrap();
+    sh.exec("mkdir -p /dst_dir").unwrap();
+
+    let r = sh.exec("tar -C /src_dir -cf /cd.tar data.txt").unwrap();
+    assert_eq!(r.exit_code, 0, "create stderr: {}", r.stderr);
+
+    let r = sh.exec("tar -C /dst_dir -xf /cd.tar").unwrap();
+    assert_eq!(r.exit_code, 0, "extract stderr: {}", r.stderr);
+
+    let r = sh.exec("cat /dst_dir/data.txt").unwrap();
+    assert_eq!(r.stdout, "from src\n");
+}
+
+#[test]
+fn gzip_empty_input() {
+    let mut sh = shell();
+    let r = sh.exec("echo -n '' | gzip | gunzip").unwrap();
+    assert_eq!(r.exit_code, 0);
+    assert_eq!(r.stdout, "");
 }

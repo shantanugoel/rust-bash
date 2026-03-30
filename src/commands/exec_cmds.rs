@@ -247,6 +247,7 @@ impl super::VirtualCommand for XargsCommand {
             stdout,
             stderr,
             exit_code: last_exit,
+            stdout_bytes: None,
         }
     }
 }
@@ -379,6 +380,7 @@ impl super::VirtualCommand for FindCommand {
             stdout: out.stdout,
             stderr: out.stderr,
             exit_code: out.exit_code,
+            stdout_bytes: None,
         }
     }
 }
@@ -902,6 +904,7 @@ mod tests {
             cwd: "/",
             env,
             stdin,
+            stdin_bytes: None,
             limits,
             network_policy,
             exec,

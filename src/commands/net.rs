@@ -537,6 +537,7 @@ impl super::VirtualCommand for CurlCommand {
                 stdout,
                 stderr,
                 exit_code,
+                stdout_bytes: None,
             };
         }
     }
@@ -647,6 +648,7 @@ mod tests {
             cwd: "/",
             env,
             stdin: "",
+            stdin_bytes: None,
             limits,
             network_policy: np,
             exec: None,

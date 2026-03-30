@@ -806,6 +806,7 @@ impl super::VirtualCommand for GrepCommand {
                                 stdout: String::new(),
                                 stderr,
                                 exit_code: 0,
+                                stdout_bytes: None,
                             };
                         }
 
@@ -873,6 +874,7 @@ impl super::VirtualCommand for GrepCommand {
             stdout,
             stderr,
             exit_code: if exit_match { 0 } else { 1 },
+            stdout_bytes: None,
         }
     }
 }
@@ -1173,6 +1175,7 @@ impl super::VirtualCommand for SortCommand {
             stdout,
             stderr,
             exit_code: 0,
+            stdout_bytes: None,
         }
     }
 }
@@ -1301,6 +1304,7 @@ impl super::VirtualCommand for UniqCommand {
             stdout,
             stderr,
             exit_code: 0,
+            stdout_bytes: None,
         }
     }
 }
@@ -1446,6 +1450,7 @@ impl super::VirtualCommand for CutCommand {
             stdout,
             stderr,
             exit_code: 0,
+            stdout_bytes: None,
         }
     }
 }
@@ -2166,6 +2171,7 @@ impl super::VirtualCommand for RevCommand {
             stdout,
             stderr,
             exit_code: 0,
+            stdout_bytes: None,
         }
     }
 }
@@ -2274,6 +2280,7 @@ impl super::VirtualCommand for FoldCommand {
             stdout,
             stderr,
             exit_code: 0,
+            stdout_bytes: None,
         }
     }
 }
@@ -2340,6 +2347,7 @@ impl super::VirtualCommand for NlCommand {
             stdout,
             stderr,
             exit_code: 0,
+            stdout_bytes: None,
         }
     }
 }
@@ -3064,6 +3072,7 @@ impl super::VirtualCommand for TacCommand {
             stdout,
             stderr,
             exit_code: 0,
+            stdout_bytes: None,
         }
     }
 }
@@ -3590,6 +3599,7 @@ impl super::VirtualCommand for FmtCommand {
             stdout,
             stderr,
             exit_code: 0,
+            stdout_bytes: None,
         }
     }
 }
@@ -3740,6 +3750,7 @@ impl super::VirtualCommand for ColumnCommand {
                 stdout,
                 stderr,
                 exit_code: 0,
+                stdout_bytes: None,
             }
         } else {
             // Fill columns mode (newspaper style)
@@ -3774,6 +3785,7 @@ impl super::VirtualCommand for ColumnCommand {
                 stdout,
                 stderr,
                 exit_code: 0,
+                stdout_bytes: None,
             }
         }
     }
@@ -3859,6 +3871,7 @@ impl super::VirtualCommand for ExpandCommand {
             stdout,
             stderr,
             exit_code: 0,
+            stdout_bytes: None,
         }
     }
 }
@@ -3942,6 +3955,7 @@ impl super::VirtualCommand for UnexpandCommand {
             stdout,
             stderr,
             exit_code: 0,
+            stdout_bytes: None,
         }
     }
 }
@@ -4157,6 +4171,7 @@ impl super::VirtualCommand for StringsCommand {
             stdout,
             stderr,
             exit_code,
+            stdout_bytes: None,
         }
     }
 }
@@ -4569,6 +4584,7 @@ mod tests {
             cwd: "/",
             env,
             stdin,
+            stdin_bytes: None,
             limits,
             network_policy,
             exec: None,
@@ -4750,6 +4766,7 @@ mod tests {
             cwd: "/project",
             env: &env,
             stdin: "",
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,
@@ -4775,6 +4792,7 @@ mod tests {
             cwd: "/proj",
             env: &env,
             stdin: "",
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,
@@ -4799,6 +4817,7 @@ mod tests {
             cwd: "/proj2",
             env: &env,
             stdin: "",
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,
@@ -5039,6 +5058,7 @@ mod tests {
             cwd: "/rtest",
             env: &env,
             stdin: "",
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,
@@ -5229,6 +5249,7 @@ mod tests {
             cwd: "/nomatch",
             env: &env,
             stdin: "",
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,

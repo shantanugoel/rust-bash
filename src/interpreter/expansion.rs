@@ -261,6 +261,7 @@ fn execute_command_substitution(
         next_auto_fd: state.next_auto_fd,
         proc_sub_counter: state.proc_sub_counter,
         proc_sub_prealloc: HashMap::new(),
+        pipe_stdin_bytes: None,
     };
 
     let result = execute_program(&program, &mut sub_state);

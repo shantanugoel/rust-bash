@@ -255,6 +255,7 @@ impl super::VirtualCommand for SedCommand {
                 stdout,
                 stderr,
                 exit_code,
+                stdout_bytes: None,
             }
         }
     }
@@ -1353,6 +1354,7 @@ mod tests {
             cwd: "/",
             env: &env,
             stdin,
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,
@@ -1369,6 +1371,7 @@ mod tests {
             cwd: "/",
             env: &env,
             stdin,
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,

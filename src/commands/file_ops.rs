@@ -129,6 +129,7 @@ impl super::VirtualCommand for CpCommand {
             stdout: String::new(),
             stderr,
             exit_code,
+            stdout_bytes: None,
         }
     }
 }
@@ -242,6 +243,7 @@ impl super::VirtualCommand for MvCommand {
             stdout: String::new(),
             stderr,
             exit_code,
+            stdout_bytes: None,
         }
     }
 }
@@ -349,6 +351,7 @@ impl super::VirtualCommand for RmCommand {
             stdout: String::new(),
             stderr,
             exit_code,
+            stdout_bytes: None,
         }
     }
 }
@@ -417,6 +420,7 @@ impl super::VirtualCommand for TeeCommand {
             stdout: data.to_string(),
             stderr,
             exit_code,
+            stdout_bytes: None,
         }
     }
 }
@@ -495,6 +499,7 @@ impl super::VirtualCommand for StatCommand {
             stdout,
             stderr,
             exit_code,
+            stdout_bytes: None,
         }
     }
 }
@@ -572,6 +577,7 @@ impl super::VirtualCommand for ChmodCommand {
             stdout: String::new(),
             stderr,
             exit_code,
+            stdout_bytes: None,
         }
     }
 }
@@ -756,6 +762,7 @@ impl super::VirtualCommand for ReadlinkCommand {
             stdout,
             stderr,
             exit_code,
+            stdout_bytes: None,
         }
     }
 }
@@ -1006,6 +1013,7 @@ impl super::VirtualCommand for DuCommand {
             stdout,
             stderr,
             exit_code,
+            stdout_bytes: None,
         }
     }
 }
@@ -1301,6 +1309,7 @@ mod tests {
             cwd: "/",
             env,
             stdin: "",
+            stdin_bytes: None,
             limits,
             network_policy,
             exec: None,
@@ -1457,6 +1466,7 @@ mod tests {
             cwd: "/",
             env: &env,
             stdin: "piped data",
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &np,
             exec: None,
@@ -1478,6 +1488,7 @@ mod tests {
             cwd: "/",
             env: &env,
             stdin: "more",
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &np,
             exec: None,

@@ -1,6 +1,7 @@
 //! Command trait and built-in command implementations.
 
 pub(crate) mod awk;
+pub(crate) mod compression;
 pub(crate) mod diff_cmd;
 pub(crate) mod exec_cmds;
 pub(crate) mod file_ops;
@@ -26,6 +27,9 @@ pub struct CommandResult {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: i32,
+    /// Binary output for commands that produce non-text data (e.g. gzip).
+    /// When set, pipeline propagation uses this instead of `stdout`.
+    pub stdout_bytes: Option<Vec<u8>>,
 }
 
 /// Callback type for sub-command execution (e.g. `xargs`, `find -exec`).
@@ -37,6 +41,9 @@ pub struct CommandContext<'a> {
     pub cwd: &'a str,
     pub env: &'a HashMap<String, String>,
     pub stdin: &'a str,
+    /// Binary input from a previous pipeline stage (e.g. gzip output).
+    /// Commands that handle binary input check this first, falling back to `stdin`.
+    pub stdin_bytes: Option<&'a [u8]>,
     pub limits: &'a ExecutionLimits,
     pub network_policy: &'a NetworkPolicy,
     pub exec: Option<ExecCallback<'a>>,
@@ -192,6 +199,7 @@ impl VirtualCommand for EchoCommand {
             stdout,
             stderr: String::new(),
             exit_code: 0,
+            stdout_bytes: None,
         }
     }
 }
@@ -388,6 +396,7 @@ impl VirtualCommand for CatCommand {
             stdout: output,
             stderr,
             exit_code,
+            stdout_bytes: None,
         }
     }
 }
@@ -418,6 +427,7 @@ impl VirtualCommand for PwdCommand {
             stdout: format!("{}\n", ctx.cwd),
             stderr: String::new(),
             exit_code: 0,
+            stdout_bytes: None,
         }
     }
 }
@@ -454,6 +464,7 @@ impl VirtualCommand for TouchCommand {
                 stdout: String::new(),
                 stderr: "touch: missing file operand\n".to_string(),
                 exit_code: 1,
+                stdout_bytes: None,
             };
         }
 
@@ -486,6 +497,7 @@ impl VirtualCommand for TouchCommand {
             stdout: String::new(),
             stderr,
             exit_code,
+            stdout_bytes: None,
         }
     }
 }
@@ -532,6 +544,7 @@ impl VirtualCommand for MkdirCommand {
                 stdout: String::new(),
                 stderr: "mkdir: missing operand\n".to_string(),
                 exit_code: 1,
+                stdout_bytes: None,
             };
         }
 
@@ -561,6 +574,7 @@ impl VirtualCommand for MkdirCommand {
             stdout: String::new(),
             stderr,
             exit_code,
+            stdout_bytes: None,
         }
     }
 }
@@ -689,6 +703,7 @@ impl VirtualCommand for LsCommand {
             stdout: out.stdout,
             stderr: out.stderr,
             exit_code: out.exit_code,
+            stdout_bytes: None,
         }
     }
 }
@@ -1022,6 +1037,11 @@ pub fn register_default_commands() -> HashMap<String, Box<dyn VirtualCommand>> {
         Box::new(file_ops::RmdirCommand),
         Box::new(file_ops::DuCommand),
         Box::new(file_ops::SplitCommand),
+        // M7.3: compression and archiving
+        Box::new(compression::GzipCommand),
+        Box::new(compression::GunzipCommand),
+        Box::new(compression::ZcatCommand),
+        Box::new(compression::TarCommand),
     ];
     for cmd in defaults {
         commands.insert(cmd.name().to_string(), cmd);
@@ -1063,6 +1083,7 @@ mod tests {
             cwd: "/",
             env: &env,
             stdin: "",
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &np,
             exec: None,
@@ -1080,6 +1101,7 @@ mod tests {
             cwd: "/",
             env: &env,
             stdin: "",
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &np,
             exec: None,
@@ -1096,6 +1118,7 @@ mod tests {
             cwd: "/",
             env: &env,
             stdin: "",
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &np,
             exec: None,
@@ -1112,6 +1135,7 @@ mod tests {
             cwd: "/",
             env: &env,
             stdin: "",
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &np,
             exec: None,
@@ -1128,6 +1152,7 @@ mod tests {
             cwd: "/",
             env: &env,
             stdin: "",
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &np,
             exec: None,
@@ -1144,6 +1169,7 @@ mod tests {
             cwd: "/",
             env: &env,
             stdin: "",
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &np,
             exec: None,
@@ -1160,6 +1186,7 @@ mod tests {
             cwd: "/",
             env: &env,
             stdin: "",
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &np,
             exec: None,
@@ -1176,6 +1203,7 @@ mod tests {
             cwd: "/",
             env: &env,
             stdin: "",
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &np,
             exec: None,
@@ -1192,6 +1220,7 @@ mod tests {
             cwd: "/",
             env: &env,
             stdin: "",
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &np,
             exec: None,
@@ -1207,6 +1236,7 @@ mod tests {
             cwd: "/",
             env: &env,
             stdin: "",
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &np,
             exec: None,

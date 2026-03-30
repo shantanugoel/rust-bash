@@ -39,6 +39,7 @@ impl VirtualCommand for AwkCommand {
                 stdout: String::new(),
                 stderr: format!("awk: {e}\n"),
                 exit_code: 2,
+                stdout_bytes: None,
             },
         }
     }
@@ -197,6 +198,7 @@ fn run_awk(args: &[String], ctx: &CommandContext) -> Result<CommandResult, Strin
         stdout,
         stderr,
         exit_code,
+        stdout_bytes: None,
     })
 }
 
@@ -246,6 +248,7 @@ mod tests {
             cwd: "/",
             env: &env,
             stdin,
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,
@@ -263,6 +266,7 @@ mod tests {
             cwd: "/",
             env: &env,
             stdin,
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,
@@ -284,6 +288,7 @@ mod tests {
             cwd: "/",
             env: &env,
             stdin: "",
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,
@@ -430,6 +435,7 @@ mod tests {
             cwd: "/",
             env: &env,
             stdin: "hello world\n",
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,

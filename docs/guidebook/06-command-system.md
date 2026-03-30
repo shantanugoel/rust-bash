@@ -230,6 +230,18 @@ Pure computation or environment lookups:
 | `whoami` / `hostname` / `uname` | Return sandbox-configured values |
 | `yes` | Repeat output (with iteration limit!) |
 
+### Compression and Archiving
+
+Commands that compress, decompress, and archive binary data. These use `stdout_bytes`/`stdin_bytes`
+for byte-transparent pipeline propagation (binary data is never corrupted by UTF-8 conversion).
+
+| Command | Key Flags | Notes |
+|---------|-----------|-------|
+| `gzip` | `-d`, `-c`, `-k`, `-f`, `-1`..`-9` | Compress files via `flate2` crate |
+| `gunzip` | `-c`, `-k`, `-f` | Decompress (equivalent to `gzip -d`) |
+| `zcat` | | Decompress to stdout (equivalent to `gzip -dc`) |
+| `tar` | `-c`, `-x`, `-t`, `-f`, `-z`, `-v`, `-C` | Create, extract, list archives. `-z` for gzip compression |
+
 ### Network
 
 | Command | Notes |

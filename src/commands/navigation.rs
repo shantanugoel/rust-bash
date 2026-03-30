@@ -81,6 +81,7 @@ impl super::VirtualCommand for RealpathCommand {
             stdout,
             stderr,
             exit_code,
+            stdout_bytes: None,
         }
     }
 }
@@ -379,6 +380,7 @@ mod tests {
             cwd: "/",
             env,
             stdin: "",
+            stdin_bytes: None,
             limits,
             network_policy,
             exec: None,

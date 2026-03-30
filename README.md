@@ -366,7 +366,7 @@ interactive REPL with readline support:
 
 ## Built-in Commands
 
-### Registered commands (62)
+### Registered commands (66)
 
 | Category | Commands |
 |----------|----------|
@@ -376,6 +376,7 @@ interactive REPL with readline support:
 | **Text processing** | `sed`, `awk`, `jq`, `diff` |
 | **Navigation** | `realpath`, `basename`, `dirname`, `tree`, `find` |
 | **Utilities** | `expr`, `date`, `sleep`, `seq`, `env`, `printenv`, `which`, `base64`, `md5sum`, `sha256sum`, `whoami`, `hostname`, `uname`, `yes`, `xargs` |
+| **Compression** | `gzip`, `gunzip`, `zcat`, `tar` |
 | **Network** | `curl` |
 
 ### Interpreter builtins (18)

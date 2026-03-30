@@ -37,6 +37,8 @@ pub struct ExecResult {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: i32,
+    /// Binary output for commands that produce non-text data.
+    pub stdout_bytes: Option<Vec<u8>>,
 }
 
 // ── Variable types ──────────────────────────────────────────────────
@@ -308,6 +310,9 @@ pub struct InterpreterState {
     /// each redirect resolves to its own pre-allocated path regardless of the order
     /// in which `get_stdin_from_redirects` / `apply_output_redirects` visit them.
     pub(crate) proc_sub_prealloc: HashMap<usize, String>,
+    /// Binary data from the previous pipeline stage, set by `execute_pipeline()`
+    /// and consumed by `dispatch_command()` to populate `CommandContext::stdin_bytes`.
+    pub(crate) pipe_stdin_bytes: Option<Vec<u8>>,
 }
 
 // ── Parsing ──────────────────────────────────────────────────────────
@@ -747,6 +752,7 @@ mod tests {
             next_auto_fd: 10,
             proc_sub_counter: 0,
             proc_sub_prealloc: HashMap::new(),
+            pipe_stdin_bytes: None,
         }
     }
 }

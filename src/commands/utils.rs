@@ -923,6 +923,7 @@ impl super::VirtualCommand for Md5sumCommand {
             stdout,
             stderr,
             exit_code,
+            stdout_bytes: None,
         }
     }
 }
@@ -1002,6 +1003,7 @@ impl super::VirtualCommand for Sha256sumCommand {
             stdout,
             stderr,
             exit_code,
+            stdout_bytes: None,
         }
     }
 }
@@ -1277,6 +1279,7 @@ impl super::VirtualCommand for Sha1sumCommand {
             stdout,
             stderr,
             exit_code,
+            stdout_bytes: None,
         }
     }
 }
@@ -1383,6 +1386,7 @@ impl super::VirtualCommand for TimeoutCommand {
                         stdout: result.stdout,
                         stderr: result.stderr,
                         exit_code: 124,
+                        stdout_bytes: None,
                     }
                 } else {
                     result
@@ -1474,6 +1478,7 @@ impl super::VirtualCommand for FileCommand {
             stdout,
             stderr,
             exit_code,
+            stdout_bytes: None,
         }
     }
 }
@@ -1701,6 +1706,7 @@ impl super::VirtualCommand for BcCommand {
             stdout,
             stderr,
             exit_code,
+            stdout_bytes: None,
         }
     }
 }
@@ -2013,6 +2019,7 @@ mod tests {
             cwd: "/",
             env,
             stdin: "",
+            stdin_bytes: None,
             limits,
             network_policy,
             exec: None,
@@ -2031,6 +2038,7 @@ mod tests {
             cwd: "/",
             env,
             stdin,
+            stdin_bytes: None,
             limits,
             network_policy,
             exec: None,

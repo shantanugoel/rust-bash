@@ -111,6 +111,7 @@ fn execute_jq(args: &[String], ctx: &CommandContext) -> Result<CommandResult, Co
         stdout,
         stderr,
         exit_code,
+        stdout_bytes: None,
     })
 }
 
@@ -498,6 +499,7 @@ mod tests {
             cwd: "/",
             env: &env,
             stdin,
+            stdin_bytes: None,
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,
