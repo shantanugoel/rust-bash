@@ -315,3 +315,41 @@ Commands report errors via stderr and exit code, not by returning Rust errors:
 - Exit code 127: command not found (set by interpreter, not commands)
 
 Error messages should follow the format: `command_name: message` (e.g., `cat: /nonexistent: No such file or directory`).
+
+### `unknown_option()` Helper
+
+The `unknown_option(cmd, option)` helper in `src/commands/mod.rs` produces standardized error messages for unrecognized flags, matching bash/GNU conventions:
+
+- Long options (`--foo`): `cmd: unrecognized option '--foo'`
+- Short options (`-x`): `cmd: invalid option -- 'x'`
+
+Both return exit code 2. Commands should call this instead of crafting ad-hoc error messages:
+
+```rust
+use crate::commands::unknown_option;
+
+// In a command's flag parsing:
+_ => return unknown_option("mycommand", arg),
+```
+
+## FlagInfo and FlagStatus Metadata
+
+`CommandMeta` includes an optional `flags` field for introspection of per-command flag support status:
+
+```rust
+pub enum FlagStatus {
+    Supported,  // Fully implemented
+    Stubbed,    // Accepted but incomplete
+    Ignored,    // Recognized but silently ignored
+}
+
+pub struct FlagInfo {
+    pub flag: &'static str,       // e.g. "-n" or "--number"
+    pub description: &'static str,
+    pub status: FlagStatus,
+}
+```
+
+Commands declare their flag metadata in a static array referenced by `CommandMeta::flags`. When `flags` is non-empty, `format_help()` appends a "Flag support" section to the `--help` output showing each flag's status.
+
+Default `flags` to `&[]` for commands that haven't been annotated yet — this is backward-compatible and doesn't affect existing behavior.

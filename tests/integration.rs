@@ -6068,3 +6068,197 @@ fn file_empty_file() {
     let r = sh.exec("file /empty").unwrap();
     assert!(r.stdout.contains("empty"), "got: {}", r.stdout);
 }
+
+// ── M7.8: Command Fidelity Infrastructure ──────────────────────────
+
+#[test]
+fn unknown_option_wc_long() {
+    let mut sh = shell();
+    let r = sh.exec("wc --bogus 2>&1").unwrap();
+    assert!(
+        r.stdout.contains("wc: unrecognized option '--bogus'"),
+        "got: {}",
+        r.stdout
+    );
+}
+
+#[test]
+fn unknown_option_wc_short() {
+    let mut sh = shell();
+    let r = sh.exec("wc -z 2>&1").unwrap();
+    assert!(
+        r.stdout.contains("wc: invalid option -- 'z'"),
+        "got: {}",
+        r.stdout
+    );
+}
+
+#[test]
+fn unknown_option_wc_exit_code() {
+    let mut sh = shell();
+    let r = sh.exec("wc --bogus").unwrap();
+    assert_eq!(r.exit_code, 2);
+}
+
+#[test]
+fn unknown_option_sort_long() {
+    let mut sh = shell();
+    let r = sh.exec("sort --fake 2>&1").unwrap();
+    assert!(
+        r.stdout.contains("sort: unrecognized option '--fake'"),
+        "got: {}",
+        r.stdout
+    );
+}
+
+#[test]
+fn unknown_option_sort_short() {
+    let mut sh = shell();
+    let r = sh.exec("sort -z 2>&1").unwrap();
+    assert!(
+        r.stdout.contains("sort: invalid option -- 'z'"),
+        "got: {}",
+        r.stdout
+    );
+}
+
+#[test]
+fn unknown_option_head() {
+    let mut sh = shell();
+    let r = sh.exec("head --bogus 2>&1").unwrap();
+    assert!(
+        r.stdout.contains("head: unrecognized option '--bogus'"),
+        "got: {}",
+        r.stdout
+    );
+    let r2 = sh.exec("head --bogus").unwrap();
+    assert_eq!(r2.exit_code, 2);
+}
+
+#[test]
+fn unknown_option_tail() {
+    let mut sh = shell();
+    let r = sh.exec("tail --bogus 2>&1").unwrap();
+    assert!(
+        r.stdout.contains("tail: unrecognized option '--bogus'"),
+        "got: {}",
+        r.stdout
+    );
+    let r2 = sh.exec("tail --bogus").unwrap();
+    assert_eq!(r2.exit_code, 2);
+}
+
+#[test]
+fn valid_flags_still_work_wc() {
+    let mut sh = shell();
+    sh.exec("echo -e 'a b\\nc d' > /wc_test.txt").unwrap();
+    let r = sh.exec("wc -l /wc_test.txt").unwrap();
+    assert_eq!(r.exit_code, 0);
+    assert!(r.stdout.contains("2"), "got: {}", r.stdout);
+}
+
+#[test]
+fn valid_combined_flags_wc() {
+    let mut sh = shell();
+    sh.exec("echo hello > /wc_combo.txt").unwrap();
+    let r = sh.exec("wc -lw /wc_combo.txt").unwrap();
+    assert_eq!(r.exit_code, 0);
+}
+
+#[test]
+fn double_dash_stops_flag_parsing() {
+    let mut sh = shell();
+    // After --, -z should be treated as a filename, not a flag
+    let r = sh.exec("wc -- -z 2>&1").unwrap();
+    // Should be a file-not-found error, not an invalid option error
+    assert!(!r.stdout.contains("invalid option"), "got: {}", r.stdout);
+}
+
+#[test]
+fn flag_info_metadata_accessible() {
+    use rust_bash::commands::{FlagInfo, FlagStatus};
+
+    let fi = FlagInfo {
+        flag: "-n",
+        description: "test",
+        status: FlagStatus::Supported,
+    };
+    assert_eq!(fi.flag, "-n");
+    assert_eq!(fi.status, FlagStatus::Supported);
+
+    let stubbed = FlagInfo {
+        flag: "-P",
+        description: "test",
+        status: FlagStatus::Stubbed,
+    };
+    assert_eq!(stubbed.status, FlagStatus::Stubbed);
+
+    let ignored = FlagInfo {
+        flag: "-t",
+        description: "test",
+        status: FlagStatus::Ignored,
+    };
+    assert_eq!(ignored.status, FlagStatus::Ignored);
+    assert_ne!(FlagStatus::Supported, FlagStatus::Stubbed);
+}
+
+#[test]
+fn unknown_option_helper_format() {
+    use rust_bash::commands::unknown_option;
+
+    let long = unknown_option("grep", "--nonexistent");
+    assert_eq!(long.stderr, "grep: unrecognized option '--nonexistent'\n");
+    assert_eq!(long.exit_code, 2);
+    assert_eq!(long.stdout, "");
+
+    let short = unknown_option("wc", "-z");
+    assert_eq!(short.stderr, "wc: invalid option -- 'z'\n");
+    assert_eq!(short.exit_code, 2);
+}
+
+#[test]
+fn format_help_includes_flag_info() {
+    use rust_bash::commands::{CommandMeta, FlagInfo, FlagStatus, format_help};
+
+    static TEST_META: CommandMeta = CommandMeta {
+        name: "test_cmd",
+        synopsis: "test_cmd [OPTIONS]",
+        description: "A test command.",
+        options: &[("-n", "a flag")],
+        supports_help_flag: true,
+        flags: &[
+            FlagInfo {
+                flag: "-n",
+                description: "a flag",
+                status: FlagStatus::Supported,
+            },
+            FlagInfo {
+                flag: "-x",
+                description: "experimental",
+                status: FlagStatus::Stubbed,
+            },
+        ],
+    };
+
+    let help = format_help(&TEST_META);
+    assert!(help.contains("Flag support:"), "got: {}", help);
+    assert!(help.contains("[supported]"), "got: {}", help);
+    assert!(help.contains("[stubbed]"), "got: {}", help);
+}
+
+#[test]
+fn format_help_no_flags_section_when_empty() {
+    use rust_bash::commands::{CommandMeta, format_help};
+
+    static TEST_META: CommandMeta = CommandMeta {
+        name: "test_cmd",
+        synopsis: "test_cmd",
+        description: "A test command.",
+        options: &[],
+        supports_help_flag: true,
+        flags: &[],
+    };
+
+    let help = format_help(&TEST_META);
+    assert!(!help.contains("Flag support:"), "got: {}", help);
+}

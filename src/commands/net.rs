@@ -336,6 +336,7 @@ static CURL_META: CommandMeta = CommandMeta {
         ("-s, --silent", "silent mode"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for CurlCommand {

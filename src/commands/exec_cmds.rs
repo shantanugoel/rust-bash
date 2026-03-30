@@ -31,6 +31,7 @@ static XARGS_META: CommandMeta = CommandMeta {
         ("-0", "use NUL as input delimiter"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for XargsCommand {
@@ -300,6 +301,7 @@ static FIND_META: CommandMeta = CommandMeta {
         ("-print", "print the full file name"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for FindCommand {

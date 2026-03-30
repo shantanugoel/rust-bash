@@ -839,6 +839,7 @@ static DIFF_META: CommandMeta = CommandMeta {
         ("--label LABEL", "use LABEL instead of file name"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for DiffCommand {

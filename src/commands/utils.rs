@@ -23,6 +23,7 @@ static EXPR_META: CommandMeta = CommandMeta {
     description: "Evaluate expressions.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for ExprCommand {
@@ -277,6 +278,7 @@ static DATE_META: CommandMeta = CommandMeta {
     description: "Display the current date and time.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for DateCommand {
@@ -316,6 +318,7 @@ static SLEEP_META: CommandMeta = CommandMeta {
     description: "Delay for a specified amount of time.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for SleepCommand {
@@ -388,6 +391,7 @@ static SEQ_META: CommandMeta = CommandMeta {
     description: "Print a sequence of numbers.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for SeqCommand {
@@ -557,6 +561,7 @@ static ENV_META: CommandMeta = CommandMeta {
     description: "Print the current environment.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for EnvCommand {
@@ -594,6 +599,7 @@ static PRINTENV_META: CommandMeta = CommandMeta {
     description: "Print all or part of environment.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for PrintenvCommand {
@@ -652,6 +658,7 @@ static WHICH_META: CommandMeta = CommandMeta {
     description: "Locate a command.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for WhichCommand {
@@ -732,6 +739,7 @@ static BASE64_META: CommandMeta = CommandMeta {
         ("-w COLS", "wrap encoded lines after COLS characters"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for Base64Command {
@@ -850,6 +858,7 @@ static MD5SUM_META: CommandMeta = CommandMeta {
     description: "Compute and check MD5 message digest.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for Md5sumCommand {
@@ -928,6 +937,7 @@ static SHA256SUM_META: CommandMeta = CommandMeta {
     description: "Compute and check SHA256 message digest.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for Sha256sumCommand {
@@ -1006,6 +1016,7 @@ static WHOAMI_META: CommandMeta = CommandMeta {
     description: "Print effective user name.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for WhoamiCommand {
@@ -1040,6 +1051,7 @@ static HOSTNAME_META: CommandMeta = CommandMeta {
     description: "Show the system's host name.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for HostnameCommand {
@@ -1080,6 +1092,7 @@ static UNAME_META: CommandMeta = CommandMeta {
         ("-m", "print the machine hardware name"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for UnameCommand {
@@ -1156,6 +1169,7 @@ static YES_META: CommandMeta = CommandMeta {
     description: "Output a string repeatedly until killed.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for YesCommand {
@@ -1198,6 +1212,7 @@ static SHA1SUM_META: CommandMeta = CommandMeta {
     description: "Compute and check SHA1 message digest.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for Sha1sumCommand {
@@ -1282,6 +1297,7 @@ static TIMEOUT_META: CommandMeta = CommandMeta {
         ("-s SIGNAL", "specify the signal to send (no-op in sandbox)"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for TimeoutCommand {
@@ -1402,6 +1418,7 @@ static FILE_META: CommandMeta = CommandMeta {
     description: "Determine file type.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for FileCommand {
@@ -1554,6 +1571,7 @@ static BC_META: CommandMeta = CommandMeta {
     description: "An arbitrary precision calculator language.",
     options: &[("-l", "use the standard math library (set scale=20)")],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for BcCommand {
@@ -1932,6 +1950,7 @@ static CLEAR_META: CommandMeta = CommandMeta {
     description: "Clear the terminal screen.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for ClearCommand {

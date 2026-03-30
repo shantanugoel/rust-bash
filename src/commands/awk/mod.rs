@@ -20,6 +20,7 @@ static AWK_META: CommandMeta = CommandMeta {
         ("-f FILE", "read the awk program from FILE"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl VirtualCommand for AwkCommand {

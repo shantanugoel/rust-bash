@@ -334,14 +334,14 @@ Currently `RustBashBuilder::build()` creates an empty VFS with only the cwd. `wh
 - **Default environment variables**: Set sensible defaults for `PATH` (`/usr/bin:/bin`), `HOME`, `USER`, `HOSTNAME`, `OSTYPE` (`linux-gnu`), `MACHTYPE` (`x86_64-pc-linux-gnu`), `HOSTTYPE` (`x86_64`), `SHELL` (`/bin/bash`), `BASH` (`/bin/bash`), `BASH_VERSION`, `IFS`, `PWD`, `OLDPWD`, `TERM` (`xterm-256color`) unless the caller overrides them.
 - **Fix `which` command**: Replace hardcoded `REGISTERED_COMMANDS`/`SHELL_BUILTINS` list lookups with actual PATH-based resolution — iterate PATH directories, check VFS file existence, return the real resolved path. Fall back to checking builtins and functions.
 
-### M7.8 — Command Fidelity Infrastructure
+### ✅ M7.8 — Command Fidelity Infrastructure
 
 Add infrastructure for systematic command correctness:
 
-- **Unknown-flag error handling**: Add a consistent `unknown_option(cmd, flag)` helper that all commands use when encountering unrecognized flags. Return non-zero exit code with a message matching bash format (`cmd: invalid option -- 'x'` / `cmd: unrecognized option '--foo'`).
-- **Path-argument fidelity for file-oriented commands**: Add shared conformance tests (and helper utilities where useful) for commands that receive shell-expanded path operands. Mixed file/directory operand sets must follow bash/GNU tool behavior per command instead of failing uniformly on the first directory or treating every operand as the same kind of path. Examples: `ls *` should list regular files directly while also listing directory operands correctly, and `grep pattern *` should still process file operands while reporting directory operands in non-recursive mode.
-- **Comparison test suite**: Fixture-based tests that run scripts against real bash and assert matching stdout/stderr/exit code. Record expected output in fixture files for offline replay. Enables differential testing without requiring bash at every `cargo test`.
-- **Per-command flag metadata**: Each command exports a declarative flag list (name, type, implemented vs stubbed). Enables coverage tracking and systematic fuzzing of flag combinations.
+- ✅ **Unknown-flag error handling**: Add a consistent `unknown_option(cmd, flag)` helper that all commands use when encountering unrecognized flags. Return non-zero exit code with a message matching bash format (`cmd: invalid option -- 'x'` / `cmd: unrecognized option '--foo'`).
+- ✅ **Path-argument fidelity for file-oriented commands**: Add shared conformance tests (and helper utilities where useful) for commands that receive shell-expanded path operands. Mixed file/directory operand sets must follow bash/GNU tool behavior per command instead of failing uniformly on the first directory or treating every operand as the same kind of path. Examples: `ls *` should list regular files directly while also listing directory operands correctly, and `grep pattern *` should still process file operands while reporting directory operands in non-recursive mode.
+- ✅ **Comparison test suite**: Fixture-based tests that run scripts against real bash and assert matching stdout/stderr/exit code. Record expected output in fixture files for offline replay. Enables differential testing without requiring bash at every `cargo test`.
+- ✅ **Per-command flag metadata**: Each command exports a declarative flag list (name, type, implemented vs stubbed). Enables coverage tracking and systematic fuzzing of flag combinations.
 
 ### M7.9 — AI Agent Documentation (`AGENTS.md`)
 

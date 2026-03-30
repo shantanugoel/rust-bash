@@ -23,6 +23,7 @@ static CP_META: CommandMeta = CommandMeta {
     description: "Copy files and directories.",
     options: &[("-r, -R", "copy directories recursively")],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for CpCommand {
@@ -163,6 +164,7 @@ static MV_META: CommandMeta = CommandMeta {
     description: "Move (rename) files and directories.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for MvCommand {
@@ -260,6 +262,7 @@ static RM_META: CommandMeta = CommandMeta {
         ("-f", "ignore nonexistent files, never prompt"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for RmCommand {
@@ -360,6 +363,7 @@ static TEE_META: CommandMeta = CommandMeta {
     description: "Read from stdin and write to stdout and files.",
     options: &[("-a", "append to the given files, do not overwrite")],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for TeeCommand {
@@ -427,6 +431,7 @@ static STAT_META: CommandMeta = CommandMeta {
     description: "Display file status.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for StatCommand {
@@ -504,6 +509,7 @@ static CHMOD_META: CommandMeta = CommandMeta {
     description: "Change file mode bits.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for ChmodCommand {
@@ -580,6 +586,7 @@ static LN_META: CommandMeta = CommandMeta {
     description: "Make links between files.",
     options: &[("-s", "make symbolic links instead of hard links")],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for LnCommand {
@@ -662,6 +669,7 @@ static READLINK_META: CommandMeta = CommandMeta {
         ("-m", "canonicalize without existence requirement"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for ReadlinkCommand {
@@ -799,6 +807,7 @@ static RMDIR_META: CommandMeta = CommandMeta {
     description: "Remove empty directories.",
     options: &[("-p", "remove DIRECTORY and its ancestors")],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for RmdirCommand {
@@ -906,6 +915,7 @@ static DU_META: CommandMeta = CommandMeta {
         ),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for DuCommand {
@@ -1100,6 +1110,7 @@ static SPLIT_META: CommandMeta = CommandMeta {
         ("-a N", "generate suffixes of length N (default 2)"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for SplitCommand {

@@ -1,0 +1,76 @@
+# Path-argument fidelity tests — verify commands correctly handle various
+# path patterns (absolute, relative, nonexistent, etc.).
+
+[[cases]]
+name = "ls nonexistent path"
+script = "ls /nonexistent 2>&1; echo $?"
+stdout = "ls: cannot access '/nonexistent': No such file or directory: /nonexistent\n2\n"
+exit_code = 0
+
+[[cases]]
+name = "cat nonexistent file"
+script = "cat /nonexistent 2>&1; echo $?"
+stdout = "cat: /nonexistent: No such file or directory: /nonexistent\n1\n"
+exit_code = 0
+
+[[cases]]
+name = "echo with trailing newline"
+script = "echo hello"
+stdout = "hello\n"
+exit_code = 0
+
+[[cases]]
+name = "pwd shows absolute path"
+script = "pwd"
+stdout = "/\n"
+exit_code = 0
+
+[[cases]]
+name = "mkdir and ls new directory"
+script = "mkdir /testdir && ls /testdir"
+stdout = ""
+exit_code = 0
+
+[[cases]]
+name = "touch and cat round-trip"
+script = '''
+echo "content" > /file.txt
+cat /file.txt
+'''
+stdout = "content\n"
+exit_code = 0
+
+[[cases]]
+name = "relative path after cd"
+script = '''
+mkdir -p /a/b
+cd /a
+echo hello > b/file.txt
+cat b/file.txt
+'''
+stdout = "hello\n"
+exit_code = 0
+
+[[cases]]
+name = "cat directory produces error"
+script = "mkdir /mydir; cat /mydir 2>&1; echo $?"
+stdout = "cat: /mydir: Is a directory: /mydir\n1\n"
+exit_code = 0
+
+[[cases]]
+name = "wc nonexistent file"
+script = "wc /nonexistent 2>&1; echo $?"
+stdout = "/nonexistent: No such file or directory: /nonexistent\n1\n"
+exit_code = 0
+
+[[cases]]
+name = "head nonexistent file"
+script = "head /nonexistent 2>&1; echo $?"
+stdout = "/nonexistent: No such file or directory: /nonexistent\n1\n"
+exit_code = 0
+
+[[cases]]
+name = "tail nonexistent file"
+script = "tail /nonexistent 2>&1; echo $?"
+stdout = "/nonexistent: No such file or directory: /nonexistent\n1\n"
+exit_code = 0

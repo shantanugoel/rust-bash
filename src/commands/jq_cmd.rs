@@ -23,6 +23,7 @@ static JQ_META: CommandMeta = CommandMeta {
         ("--argjson NAME JSON", "set variable $NAME to JSON value"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl VirtualCommand for JqCommand {

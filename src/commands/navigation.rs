@@ -23,6 +23,7 @@ static REALPATH_META: CommandMeta = CommandMeta {
     description: "Print the resolved absolute pathname.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for RealpathCommand {
@@ -94,6 +95,7 @@ static BASENAME_META: CommandMeta = CommandMeta {
     description: "Strip directory and suffix from filenames.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for BasenameCommand {
@@ -165,6 +167,7 @@ static DIRNAME_META: CommandMeta = CommandMeta {
     description: "Strip last component from file name.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for DirnameCommand {
@@ -235,6 +238,7 @@ static TREE_META: CommandMeta = CommandMeta {
     description: "List contents of directories in a tree-like format.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for TreeCommand {

@@ -493,6 +493,119 @@ fn matches_glob_filters(filename: &str, include_globs: &[&str], exclude_globs: &
     true
 }
 
+static GREP_FLAGS: &[super::FlagInfo] = &[
+    super::FlagInfo {
+        flag: "-i",
+        description: "ignore case distinctions",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-v",
+        description: "invert match",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-n",
+        description: "line numbers",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-c",
+        description: "count matching lines",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-l",
+        description: "files with matches",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-L",
+        description: "files without matches",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-F",
+        description: "fixed strings",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-E",
+        description: "extended regex",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-P",
+        description: "perl regex",
+        status: super::FlagStatus::Stubbed,
+    },
+    super::FlagInfo {
+        flag: "-w",
+        description: "word regexp",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-x",
+        description: "line regexp",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-r",
+        description: "recursive search",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-o",
+        description: "only matching part",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-H",
+        description: "with filename",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-h",
+        description: "no filename",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-q",
+        description: "quiet mode",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-A",
+        description: "after context lines",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-B",
+        description: "before context lines",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-C",
+        description: "context lines",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-m",
+        description: "max match count",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "--include",
+        description: "include file glob",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "--exclude",
+        description: "exclude file glob",
+        status: super::FlagStatus::Supported,
+    },
+];
+
 static GREP_META: CommandMeta = CommandMeta {
     name: "grep",
     synopsis: "grep [OPTIONS] PATTERN [FILE ...]",
@@ -536,6 +649,7 @@ static GREP_META: CommandMeta = CommandMeta {
         ("--exclude=GLOB", "skip files matching GLOB"),
     ],
     supports_help_flag: true,
+    flags: GREP_FLAGS,
 };
 
 impl super::VirtualCommand for GrepCommand {
@@ -883,6 +997,44 @@ fn grep_with_context(
 
 pub struct SortCommand;
 
+static SORT_FLAGS: &[super::FlagInfo] = &[
+    super::FlagInfo {
+        flag: "-r",
+        description: "reverse sort order",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-n",
+        description: "numeric sort",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-u",
+        description: "unique lines only",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-k",
+        description: "sort key field",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-t",
+        description: "field separator",
+        status: super::FlagStatus::Supported,
+    },
+    super::FlagInfo {
+        flag: "-f",
+        description: "fold lower to upper case",
+        status: super::FlagStatus::Ignored,
+    },
+    super::FlagInfo {
+        flag: "-s",
+        description: "stable sort",
+        status: super::FlagStatus::Ignored,
+    },
+];
+
 static SORT_META: CommandMeta = CommandMeta {
     name: "sort",
     synopsis: "sort [-rnuk KEY] [-t SEP] [FILE ...]",
@@ -895,6 +1047,7 @@ static SORT_META: CommandMeta = CommandMeta {
         ("-t SEP", "use SEP as the field separator"),
     ],
     supports_help_flag: true,
+    flags: SORT_FLAGS,
 };
 
 impl super::VirtualCommand for SortCommand {
@@ -923,7 +1076,9 @@ impl super::VirtualCommand for SortCommand {
                 i += 1;
                 continue;
             }
-            if !opts_done && arg.starts_with('-') && arg.len() > 1 {
+            if !opts_done && arg.starts_with("--") {
+                return super::unknown_option("sort", arg);
+            } else if !opts_done && arg.starts_with('-') && arg.len() > 1 {
                 let mut chars = arg[1..].chars().peekable();
                 while let Some(c) = chars.next() {
                     match c {
@@ -963,7 +1118,10 @@ impl super::VirtualCommand for SortCommand {
                             }
                             break;
                         }
-                        _ => {}
+                        'f' | 's' => {} // accepted but silently ignored
+                        _ => {
+                            return super::unknown_option("sort", &format!("-{}", c));
+                        }
                     }
                 }
             } else {
@@ -1063,6 +1221,7 @@ static UNIQ_META: CommandMeta = CommandMeta {
         ("-u", "only print unique lines"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for UniqCommand {
@@ -1160,6 +1319,7 @@ static CUT_META: CommandMeta = CommandMeta {
         ("-c CHARS", "select only these character positions"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for CutCommand {
@@ -1319,6 +1479,7 @@ static HEAD_META: CommandMeta = CommandMeta {
         ("-c NUM", "print the first NUM bytes"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for HeadCommand {
@@ -1364,6 +1525,8 @@ impl super::VirtualCommand for HeadCommand {
                 && arg[1..].chars().all(|c| c.is_ascii_digit())
             {
                 num_lines = arg[1..].parse().unwrap_or(10);
+            } else if !opts_done && arg.starts_with('-') && arg.len() > 1 {
+                return super::unknown_option("head", arg);
             } else {
                 files.push(arg);
             }
@@ -1424,6 +1587,7 @@ static TAIL_META: CommandMeta = CommandMeta {
     description: "Output the last part of files.",
     options: &[("-n NUM", "print the last NUM lines (default 10)")],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for TailCommand {
@@ -1469,6 +1633,8 @@ impl super::VirtualCommand for TailCommand {
                 && arg[1..].chars().all(|c| c.is_ascii_digit())
             {
                 num_lines = arg[1..].parse().unwrap_or(10);
+            } else if !opts_done && arg.starts_with('-') && arg.len() > 1 {
+                return super::unknown_option("tail", arg);
             } else {
                 files.push(arg);
             }
@@ -1517,6 +1683,7 @@ static OD_META: CommandMeta = CommandMeta {
         ("-t TYPE", "select output format (e.g. x1, o2)"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for OdCommand {
@@ -1650,6 +1817,7 @@ static WC_META: CommandMeta = CommandMeta {
         ("-c", "print the byte count"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for WcCommand {
@@ -1673,13 +1841,17 @@ impl super::VirtualCommand for WcCommand {
                 opts_done = true;
                 continue;
             }
-            if !opts_done && arg.starts_with('-') && arg.len() > 1 {
+            if !opts_done && arg.starts_with("--") {
+                return super::unknown_option("wc", arg);
+            } else if !opts_done && arg.starts_with('-') && arg.len() > 1 {
                 for c in arg[1..].chars() {
                     match c {
                         'l' => show_lines = true,
                         'w' => show_words = true,
                         'c' => show_bytes = true,
-                        _ => {}
+                        _ => {
+                            return super::unknown_option("wc", &format!("-{}", c));
+                        }
                     }
                 }
             } else {
@@ -1808,6 +1980,7 @@ static TR_META: CommandMeta = CommandMeta {
         ("-s", "squeeze repeated output characters"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for TrCommand {
@@ -1949,6 +2122,7 @@ static REV_META: CommandMeta = CommandMeta {
     description: "Reverse lines characterwise.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for RevCommand {
@@ -2009,6 +2183,7 @@ static FOLD_META: CommandMeta = CommandMeta {
         ("-s", "break at spaces"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for FoldCommand {
@@ -2113,6 +2288,7 @@ static NL_META: CommandMeta = CommandMeta {
     description: "Number lines of files.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for NlCommand {
@@ -2178,6 +2354,7 @@ static PRINTF_CMD_META: CommandMeta = CommandMeta {
     description: "Format and print data.",
     options: &[("-v VAR", "assign the output to shell variable VAR")],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for PrintfCommand {
@@ -2726,6 +2903,7 @@ static PASTE_META: CommandMeta = CommandMeta {
     description: "Merge lines of files.",
     options: &[("-d DELIM", "use DELIM instead of TAB as delimiter")],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for PasteCommand {
@@ -2815,6 +2993,7 @@ static TAC_META: CommandMeta = CommandMeta {
     description: "Concatenate and print files in reverse.",
     options: &[("-s SEP", "use SEP as the record separator")],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for TacCommand {
@@ -2903,6 +3082,7 @@ static COMM_META: CommandMeta = CommandMeta {
         ("-3", "suppress column 3 (lines common to both)"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for CommCommand {
@@ -3054,6 +3234,7 @@ static JOIN_META: CommandMeta = CommandMeta {
         ("-o FORMAT", "output format specification"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for JoinCommand {
@@ -3304,6 +3485,7 @@ static FMT_META: CommandMeta = CommandMeta {
         ("-s", "split long lines only, do not refill"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for FmtCommand {
@@ -3452,6 +3634,7 @@ static COLUMN_META: CommandMeta = CommandMeta {
         ("-o SEP", "specify output column separator"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for ColumnCommand {
@@ -3606,6 +3789,7 @@ static EXPAND_META: CommandMeta = CommandMeta {
     description: "Convert tabs to spaces.",
     options: &[("-t STOPS", "set tab stops")],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for ExpandCommand {
@@ -3692,6 +3876,7 @@ static UNEXPAND_META: CommandMeta = CommandMeta {
         ("-t NUM", "set tab width (default 8)"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for UnexpandCommand {
@@ -3890,6 +4075,7 @@ static STRINGS_META: CommandMeta = CommandMeta {
     description: "Print the sequences of printable characters in files.",
     options: &[("-n MIN", "set minimum string length (default 4)")],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for StringsCommand {
@@ -3995,6 +4181,7 @@ static RG_META: CommandMeta = CommandMeta {
         ("--vimgrep", "show results in vimgrep format"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for RgCommand {

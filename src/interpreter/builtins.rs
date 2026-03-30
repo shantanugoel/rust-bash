@@ -141,6 +141,7 @@ static CD_META: CommandMeta = CommandMeta {
     description: "Change the shell working directory.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static EXIT_META: CommandMeta = CommandMeta {
@@ -149,6 +150,7 @@ static EXIT_META: CommandMeta = CommandMeta {
     description: "Exit the shell.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static EXPORT_META: CommandMeta = CommandMeta {
@@ -157,6 +159,7 @@ static EXPORT_META: CommandMeta = CommandMeta {
     description: "Set export attribute for shell variables.",
     options: &[("-n", "remove the export property from each name")],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static UNSET_META: CommandMeta = CommandMeta {
@@ -168,6 +171,7 @@ static UNSET_META: CommandMeta = CommandMeta {
         ("-v", "treat each name as a shell variable"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static SET_META: CommandMeta = CommandMeta {
@@ -195,6 +199,7 @@ static SET_META: CommandMeta = CommandMeta {
         ),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static SHIFT_META: CommandMeta = CommandMeta {
@@ -203,6 +208,7 @@ static SHIFT_META: CommandMeta = CommandMeta {
     description: "Shift positional parameters.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static READONLY_META: CommandMeta = CommandMeta {
@@ -211,6 +217,7 @@ static READONLY_META: CommandMeta = CommandMeta {
     description: "Mark shell variables as unchangeable.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static DECLARE_META: CommandMeta = CommandMeta {
@@ -229,6 +236,7 @@ static DECLARE_META: CommandMeta = CommandMeta {
         ("-p", "display attributes and values"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static READ_META: CommandMeta = CommandMeta {
@@ -244,6 +252,7 @@ static READ_META: CommandMeta = CommandMeta {
         ("-p PROMPT", "output PROMPT before reading"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static EVAL_META: CommandMeta = CommandMeta {
@@ -252,6 +261,7 @@ static EVAL_META: CommandMeta = CommandMeta {
     description: "Execute arguments as a shell command.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static SOURCE_META: CommandMeta = CommandMeta {
@@ -260,6 +270,7 @@ static SOURCE_META: CommandMeta = CommandMeta {
     description: "Execute commands from a file in the current shell.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static BREAK_META: CommandMeta = CommandMeta {
@@ -268,6 +279,7 @@ static BREAK_META: CommandMeta = CommandMeta {
     description: "Exit for, while, or until loops.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static CONTINUE_META: CommandMeta = CommandMeta {
@@ -276,6 +288,7 @@ static CONTINUE_META: CommandMeta = CommandMeta {
     description: "Resume the next iteration of the enclosing loop.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static COLON_META: CommandMeta = CommandMeta {
@@ -284,6 +297,7 @@ static COLON_META: CommandMeta = CommandMeta {
     description: "No effect; the command does nothing.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static LET_META: CommandMeta = CommandMeta {
@@ -292,6 +306,7 @@ static LET_META: CommandMeta = CommandMeta {
     description: "Evaluate arithmetic expressions.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static LOCAL_META: CommandMeta = CommandMeta {
@@ -300,6 +315,7 @@ static LOCAL_META: CommandMeta = CommandMeta {
     description: "Define local variables.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static RETURN_META: CommandMeta = CommandMeta {
@@ -308,6 +324,7 @@ static RETURN_META: CommandMeta = CommandMeta {
     description: "Return from a shell function.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static TRAP_META: CommandMeta = CommandMeta {
@@ -319,6 +336,7 @@ static TRAP_META: CommandMeta = CommandMeta {
         ("-p", "display trap commands for each signal"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static SHOPT_META: CommandMeta = CommandMeta {
@@ -335,6 +353,7 @@ static SHOPT_META: CommandMeta = CommandMeta {
         ("-p", "display in a form that may be reused as input"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static TYPE_META: CommandMeta = CommandMeta {
@@ -347,6 +366,7 @@ static TYPE_META: CommandMeta = CommandMeta {
         ("-p", "print the file name of the disk file"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static COMMAND_META: CommandMeta = CommandMeta {
@@ -359,6 +379,7 @@ static COMMAND_META: CommandMeta = CommandMeta {
         ("-p", "use a default value for PATH"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static BUILTIN_CMD_META: CommandMeta = CommandMeta {
@@ -367,6 +388,7 @@ static BUILTIN_CMD_META: CommandMeta = CommandMeta {
     description: "Execute shell builtins.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static GETOPTS_META: CommandMeta = CommandMeta {
@@ -375,6 +397,7 @@ static GETOPTS_META: CommandMeta = CommandMeta {
     description: "Parse option arguments.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static MAPFILE_META: CommandMeta = CommandMeta {
@@ -391,6 +414,7 @@ static MAPFILE_META: CommandMeta = CommandMeta {
         ("-s COUNT", "discard the first COUNT lines"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static PUSHD_META: CommandMeta = CommandMeta {
@@ -399,6 +423,7 @@ static PUSHD_META: CommandMeta = CommandMeta {
     description: "Add directories to stack.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static POPD_META: CommandMeta = CommandMeta {
@@ -407,6 +432,7 @@ static POPD_META: CommandMeta = CommandMeta {
     description: "Remove directories from stack.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static DIRS_META: CommandMeta = CommandMeta {
@@ -420,6 +446,7 @@ static DIRS_META: CommandMeta = CommandMeta {
         ("-l", "use full pathnames"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static HASH_META: CommandMeta = CommandMeta {
@@ -428,6 +455,7 @@ static HASH_META: CommandMeta = CommandMeta {
     description: "Remember or display program locations.",
     options: &[("-r", "forget all remembered locations")],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static WAIT_META: CommandMeta = CommandMeta {
@@ -436,6 +464,7 @@ static WAIT_META: CommandMeta = CommandMeta {
     description: "Wait for job completion and return exit status.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static ALIAS_META: CommandMeta = CommandMeta {
@@ -444,6 +473,7 @@ static ALIAS_META: CommandMeta = CommandMeta {
     description: "Define or display aliases.",
     options: &[("-p", "print all defined aliases in a reusable format")],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static UNALIAS_META: CommandMeta = CommandMeta {
@@ -452,6 +482,7 @@ static UNALIAS_META: CommandMeta = CommandMeta {
     description: "Remove alias definitions.",
     options: &[("-a", "remove all alias definitions")],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static PRINTF_META: CommandMeta = CommandMeta {
@@ -460,6 +491,7 @@ static PRINTF_META: CommandMeta = CommandMeta {
     description: "Format and print data.",
     options: &[("-v VAR", "assign the output to shell variable VAR")],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static EXEC_META: CommandMeta = CommandMeta {
@@ -468,6 +500,7 @@ static EXEC_META: CommandMeta = CommandMeta {
     description: "Replace the shell with the given command.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static SH_META: CommandMeta = CommandMeta {
@@ -476,6 +509,7 @@ static SH_META: CommandMeta = CommandMeta {
     description: "Execute commands from a string, file, or standard input.",
     options: &[("-c", "read commands from the command_string operand")],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static HELP_META: CommandMeta = CommandMeta {
@@ -484,6 +518,7 @@ static HELP_META: CommandMeta = CommandMeta {
     description: "Display information about builtin commands.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 static HISTORY_META: CommandMeta = CommandMeta {
@@ -492,6 +527,7 @@ static HISTORY_META: CommandMeta = CommandMeta {
     description: "Display the command history list.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 /// Return the `CommandMeta` for a shell builtin, if one exists.

@@ -42,6 +42,25 @@ pub struct CommandContext<'a> {
     pub exec: Option<ExecCallback<'a>>,
 }
 
+/// Support status of a command flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlagStatus {
+    /// Fully implemented with correct behavior.
+    Supported,
+    /// Accepted but behavior is stubbed/incomplete.
+    Stubbed,
+    /// Recognized but silently ignored.
+    Ignored,
+}
+
+/// Metadata about a single command flag.
+#[derive(Debug, Clone)]
+pub struct FlagInfo {
+    pub flag: &'static str,
+    pub description: &'static str,
+    pub status: FlagStatus,
+}
+
 /// Declarative metadata for a command, used by --help and the help builtin.
 pub struct CommandMeta {
     pub name: &'static str,
@@ -49,6 +68,7 @@ pub struct CommandMeta {
     pub description: &'static str,
     pub options: &'static [(&'static str, &'static str)],
     pub supports_help_flag: bool,
+    pub flags: &'static [FlagInfo],
 }
 
 /// Format help text from `CommandMeta` for display via `--help`.
@@ -60,7 +80,39 @@ pub fn format_help(meta: &CommandMeta) -> String {
             out.push_str(&format!("  {:<20} {}\n", flag, desc));
         }
     }
+    if !meta.flags.is_empty() {
+        out.push_str("\nFlag support:\n");
+        for fi in meta.flags {
+            let status_label = match fi.status {
+                FlagStatus::Supported => "supported",
+                FlagStatus::Stubbed => "stubbed",
+                FlagStatus::Ignored => "ignored",
+            };
+            out.push_str(&format!(
+                "  {:<20} {} [{}]\n",
+                fi.flag, fi.description, status_label
+            ));
+        }
+    }
     out
+}
+
+/// Standard error for unrecognized options, matching bash/GNU conventions.
+pub fn unknown_option(cmd: &str, option: &str) -> CommandResult {
+    let msg = if option.starts_with("--") {
+        format!("{}: unrecognized option '{}'\n", cmd, option)
+    } else {
+        format!(
+            "{}: invalid option -- '{}'\n",
+            cmd,
+            option.trim_start_matches('-')
+        )
+    };
+    CommandResult {
+        stderr: msg,
+        exit_code: 2,
+        ..Default::default()
+    }
 }
 
 /// Trait for commands that can be registered and executed.
@@ -87,6 +139,7 @@ static ECHO_META: CommandMeta = CommandMeta {
         ("-E", "disable interpretation of backslash escapes"),
     ],
     supports_help_flag: false,
+    flags: &[],
 };
 
 impl VirtualCommand for EchoCommand {
@@ -200,6 +253,7 @@ static TRUE_META: CommandMeta = CommandMeta {
     description: "Do nothing, successfully.",
     options: &[],
     supports_help_flag: false,
+    flags: &[],
 };
 
 impl VirtualCommand for TrueCommand {
@@ -225,6 +279,7 @@ static FALSE_META: CommandMeta = CommandMeta {
     description: "Do nothing, unsuccessfully.",
     options: &[],
     supports_help_flag: false,
+    flags: &[],
 };
 
 impl VirtualCommand for FalseCommand {
@@ -253,6 +308,7 @@ static CAT_META: CommandMeta = CommandMeta {
     description: "Concatenate files and print on standard output.",
     options: &[("-n, --number", "number all output lines")],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl VirtualCommand for CatCommand {
@@ -345,6 +401,7 @@ static PWD_META: CommandMeta = CommandMeta {
     description: "Print the current working directory.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl VirtualCommand for PwdCommand {
@@ -374,6 +431,7 @@ static TOUCH_META: CommandMeta = CommandMeta {
     description: "Update file access and modification times, creating files if needed.",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl VirtualCommand for TouchCommand {
@@ -441,6 +499,7 @@ static MKDIR_META: CommandMeta = CommandMeta {
     description: "Create directories.",
     options: &[("-p, --parents", "create parent directories as needed")],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl VirtualCommand for MkdirCommand {
@@ -509,6 +568,44 @@ impl VirtualCommand for MkdirCommand {
 /// The `ls` command: list directory contents.
 pub struct LsCommand;
 
+static LS_FLAGS: &[FlagInfo] = &[
+    FlagInfo {
+        flag: "-a",
+        description: "show hidden entries",
+        status: FlagStatus::Supported,
+    },
+    FlagInfo {
+        flag: "-l",
+        description: "long listing format",
+        status: FlagStatus::Supported,
+    },
+    FlagInfo {
+        flag: "-1",
+        description: "one entry per line",
+        status: FlagStatus::Supported,
+    },
+    FlagInfo {
+        flag: "-R",
+        description: "recursive listing",
+        status: FlagStatus::Supported,
+    },
+    FlagInfo {
+        flag: "-t",
+        description: "sort by modification time",
+        status: FlagStatus::Ignored,
+    },
+    FlagInfo {
+        flag: "-S",
+        description: "sort by file size",
+        status: FlagStatus::Ignored,
+    },
+    FlagInfo {
+        flag: "-h",
+        description: "human-readable sizes",
+        status: FlagStatus::Ignored,
+    },
+];
+
 static LS_META: CommandMeta = CommandMeta {
     name: "ls",
     synopsis: "ls [-alR1] [FILE ...]",
@@ -520,6 +617,7 @@ static LS_META: CommandMeta = CommandMeta {
         ("-R", "list subdirectories recursively"),
     ],
     supports_help_flag: true,
+    flags: LS_FLAGS,
 };
 
 impl VirtualCommand for LsCommand {
@@ -724,6 +822,7 @@ static TEST_META: CommandMeta = CommandMeta {
         ("n1 -lt n2", "first integer is less than second"),
     ],
     supports_help_flag: false,
+    flags: &[],
 };
 
 impl VirtualCommand for TestCommand {
@@ -749,6 +848,7 @@ static BRACKET_META: CommandMeta = CommandMeta {
     description: "Evaluate conditional expression (synonym for test).",
     options: &[],
     supports_help_flag: false,
+    flags: &[],
 };
 
 impl VirtualCommand for BracketCommand {
@@ -782,6 +882,7 @@ static FGREP_META: CommandMeta = CommandMeta {
     description: "Equivalent to grep -F (fixed-string search).",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl VirtualCommand for FgrepCommand {
@@ -809,6 +910,7 @@ static EGREP_META: CommandMeta = CommandMeta {
     description: "Equivalent to grep -E (extended regexp search).",
     options: &[],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl VirtualCommand for EgrepCommand {

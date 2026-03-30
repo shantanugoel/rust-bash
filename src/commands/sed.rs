@@ -98,6 +98,7 @@ static SED_META: CommandMeta = CommandMeta {
         ("-f FILE", "add the contents of FILE to the commands"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl super::VirtualCommand for SedCommand {
