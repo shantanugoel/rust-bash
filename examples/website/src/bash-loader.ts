@@ -43,7 +43,9 @@ function ensureInit(): Promise<unknown> {
  * (or very quickly) instead of waiting for the full download + compile.
  */
 export function preloadWasm(): void {
-  ensureInit(); // starts the fetch; result is cached in wasmReady
+  // The rejected promise remains cached in `wasmReady` and will be surfaced when
+  // createBash() awaits it; this only prevents noisy transient unhandled rejections.
+  void ensureInit().catch(() => {});
 }
 
 export async function createBash(options: {

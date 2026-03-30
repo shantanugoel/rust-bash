@@ -158,6 +158,7 @@ export class TerminalUI {
         `\r\n\x1b[31m⚠ Failed to load WASM: ${msg}\x1b[0m\r\n` +
         'Make sure you have run: ./scripts/build-wasm.sh\r\n',
       );
+      this.showPrompt();
     }
   }
 
@@ -296,6 +297,11 @@ export class TerminalUI {
   private handleTabCompletion(): void {
     const input = this.lineBuffer;
     if (!input) return;
+    if (!this.bash) {
+      // The prompt is shown before WASM finishes loading, so completion must
+      // tolerate a brief pre-shell window instead of crashing on undefined bash.
+      return;
+    }
 
     // If no space yet, complete command names
     const spaceIdx = input.indexOf(' ');
