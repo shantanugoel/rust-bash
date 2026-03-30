@@ -2,7 +2,7 @@
  * Client-side agent loop.
  *
  * Uses the OpenAI npm package to talk to the Cloudflare Worker proxy
- * at `/api`, which forwards to Google Gemini 2.5 Flash.
+ * at `/api`, which forwards to Google Gemini 3.1 Flash Lite Preview.
  *
  * The agent loop is a pure async generator that yields AgentEvents.
  * Terminal rendering is handled by the caller — this module has no
@@ -50,7 +50,7 @@ function createClient(): OpenAI {
 const MAX_TURNS = 8;
 const MAX_STDOUT = 5000;
 const MAX_STDERR = 2000;
-const MODEL = 'gemini-2.5-flash';
+const MODEL = 'gemini-3.1-flash-lite-preview';
 
 type BashToolArgs = {
   command: string;

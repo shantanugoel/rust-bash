@@ -164,7 +164,7 @@ npx wrangler pages deploy dist/ --project-name rust-bash-website
 | `GEMINI_API_KEY` | Yes, by default | Default Google Gemini API key. Used when `LLM_API_KEY` is not set. |
 | `LLM_API_KEY` | Optional | API key for another OpenAI-compatible provider. Overrides `GEMINI_API_KEY` when set. |
 | `LLM_BASE_URL` | Optional | OpenAI-compatible API base URL. Defaults to `https://generativelanguage.googleapis.com/v1beta/openai/`. |
-| `LLM_MODEL` | Optional | Upstream model name. Defaults to `gemini-2.5-flash`. |
+| `LLM_MODEL` | Optional | Upstream model name. Defaults to `gemini-3.1-flash-lite-preview`. |
 
 `LLM_BASE_URL` should be the provider's OpenAI-compatible base URL; the function
 appends `chat/completions` to it.
@@ -209,4 +209,4 @@ command, the cached response appears immediately. This ensures:
 - **Tailwind CSS** — Utility styling
 - **OpenAI SDK** — Chat completions client (pointed at the configured proxy)
 - **Cloudflare Pages** — Hosting + Functions (Workers)
-- **Google Gemini 2.5 Flash** — default LLM (free tier)
+- **Google Gemini 3.1 Flash Lite Preview** — default LLM

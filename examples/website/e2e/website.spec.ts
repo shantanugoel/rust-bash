@@ -205,7 +205,7 @@ test.describe('rust-bash website', () => {
           id: 'chatcmpl-test',
           object: 'chat.completion',
           created: 0,
-          model: 'gemini-2.5-flash',
+          model: 'gemini-3.1-flash-lite-preview',
           choices: [
             {
               index: 0,

@@ -2,7 +2,7 @@
  * Cloudflare Pages Function — LLM proxy.
  *
  * Proxies requests to a configurable OpenAI-compatible endpoint.
- * Defaults to Google Gemini 2.5 Flash. Rate limited to 10 req/min/IP.
+ * Defaults to Google Gemini 3.1 Flash Lite Preview. Rate limited to 10 req/min/IP.
  */
 
 /// <reference types="@cloudflare/workers-types" />
@@ -22,7 +22,7 @@ const RATE_WINDOW_MS = 60_000;
 const LOCALHOST_HOSTNAMES = new Set(['localhost', '127.0.0.1']);
 const DEFAULT_LLM_BASE_URL =
   'https://generativelanguage.googleapis.com/v1beta/openai/';
-const DEFAULT_LLM_MODEL = 'gemini-2.5-flash';
+const DEFAULT_LLM_MODEL = 'gemini-3.1-flash-lite-preview';
 
 function isRateLimited(ip: string): boolean {
   const now = Date.now();
