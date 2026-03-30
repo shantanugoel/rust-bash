@@ -2,8 +2,9 @@
 
 A sandboxed bash interpreter built in Rust. Execute bash scripts safely with a virtual filesystem — no containers, no VMs, no host access.
 
-> **Status: Pre-alpha / Milestones 1–5 Complete** — Core interpreter, text processing,
-> execution safety, filesystem backends, CLI binary, C FFI, WASM target, npm package, and AI SDK integration are implemented.
+> **Status: Pre-alpha / Milestones 1–7 Complete** — Core interpreter, text processing,
+> execution safety, filesystem backends, CLI binary, C FFI, WASM target, npm package,
+> AI SDK integration, shell language completeness, and command coverage are implemented.
 
 ### 🌐 [Try it in the browser →](https://rustbash.dev)
 
@@ -366,24 +367,27 @@ interactive REPL with readline support:
 
 ## Built-in Commands
 
-### Registered commands (66)
+### Registered commands (80)
 
 | Category | Commands |
 |----------|----------|
 | **Core** | `echo`, `cat`, `true`, `false`, `pwd`, `touch`, `mkdir`, `ls`, `test`, `[` |
-| **File ops** | `cp`, `mv`, `rm`, `tee`, `stat`, `chmod`, `ln` |
-| **Text** | `grep`, `sort`, `uniq`, `cut`, `head`, `tail`, `wc`, `tr`, `rev`, `fold`, `nl`, `printf`, `paste`, `tac`, `comm`, `join`, `fmt`, `column`, `expand`, `unexpand` |
+| **File ops** | `cp`, `mv`, `rm`, `tee`, `stat`, `chmod`, `ln`, `readlink`, `rmdir`, `du`, `split` |
+| **Text** | `grep`, `egrep`, `fgrep`, `sort`, `uniq`, `cut`, `head`, `tail`, `wc`, `tr`, `rev`, `fold`, `nl`, `printf`, `paste`, `od`, `tac`, `comm`, `join`, `fmt`, `column`, `expand`, `unexpand`, `strings` |
 | **Text processing** | `sed`, `awk`, `jq`, `diff` |
+| **Search** | `rg` |
 | **Navigation** | `realpath`, `basename`, `dirname`, `tree`, `find` |
-| **Utilities** | `expr`, `date`, `sleep`, `seq`, `env`, `printenv`, `which`, `base64`, `md5sum`, `sha256sum`, `whoami`, `hostname`, `uname`, `yes`, `xargs` |
+| **Utilities** | `expr`, `date`, `sleep`, `seq`, `env`, `printenv`, `which`, `base64`, `md5sum`, `sha1sum`, `sha256sum`, `whoami`, `hostname`, `uname`, `yes`, `xargs`, `timeout`, `file`, `bc`, `clear` |
 | **Compression** | `gzip`, `gunzip`, `zcat`, `tar` |
-| **Network** | `curl` |
+| **Network** | `curl` *(feature-gated)* |
 
-### Interpreter builtins (18)
+All commands support `--help` for built-in usage information.
 
-`exit`, `cd`, `export`, `unset`, `set`, `shift`, `readonly`, `declare`, `read`, `eval`, `source` / `.`, `break`, `continue`, `:`, `let`, `local`, `return`, `trap`
+### Interpreter builtins (40)
 
-Additionally, `if`/`then`/`elif`/`else`/`fi`, `for`/`while`/`until`/`do`/`done`, `case`/`esac`, `((...))`, and `[[ ]]` are handled as shell syntax by the interpreter.
+`exit`, `cd`, `export`, `unset`, `set`, `shift`, `readonly`, `declare`, `read`, `eval`, `source` / `.`, `break`, `continue`, `:` / `colon`, `let`, `local`, `return`, `trap`, `shopt`, `type`, `command`, `builtin`, `getopts`, `mapfile` / `readarray`, `pushd`, `popd`, `dirs`, `hash`, `wait`, `alias`, `unalias`, `printf`, `exec`, `sh` / `bash`, `help`, `history`
+
+Additionally, `if`/`then`/`elif`/`else`/`fi`, `for`/`while`/`until`/`do`/`done`, `case`/`esac`, `((...))`, `[[ ]]`, and `time` are handled as shell syntax by the interpreter.
 
 ## Configuration (Rust)
 
@@ -565,9 +569,8 @@ The following milestones track the project's progress:
 - ✅ **Milestone 5.2**: C FFI — shared library, generated C header, JSON config, 6 exported functions
 - ✅ **Milestone 5.3**: WASM target — `wasm32-unknown-unknown`, npm package `@rust-bash/core` with TypeScript types
 - ✅ **Milestone 5.4**: AI SDK integration — framework-agnostic tool definitions, MCP server, documented adapters
-- ✅ **Milestone 6.12**: Differential testing — 2,731 test cases across three suites (comparison fixtures, command spec tests, upstream Oils bash conformance tests)
-- Planned: Shell language completeness — arrays, shopt, process substitution (M6)
-- Planned: Command coverage — `--help` for all commands, missing utilities (M7)
+- ✅ **Milestone 6**: Shell language completeness — arrays, shopt, process substitution, special variables, advanced redirections, missing builtins, differential testing
+- ✅ **Milestone 7**: Command coverage & discoverability — 80 commands with `--help`, compression/archiving, search (`rg`), binary inspection, command fidelity infrastructure, AI agent documentation
 - Planned: Embedded runtimes — SQLite, yq, Python, JavaScript (M8)
 - Planned: Platform features — cancellation, lazy files, AST transforms, fuzz testing (M9)
 

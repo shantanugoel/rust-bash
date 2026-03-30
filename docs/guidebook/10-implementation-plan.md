@@ -9,8 +9,8 @@
 | M3 | Execution Safety | Limits enforcement, network policy |
 | M4 | Filesystem Backends | OverlayFs, ReadWriteFs, MountableFs |
 | M5 | Integration | C FFI, WASM, CLI binary, AI SDK wrapper |
-| M6 | Shell Language Completeness | Arrays, shopt, process substitution, special vars, advanced redirections, missing builtins, differential testing |
-| M7 | Command Coverage & Discoverability | Missing commands, `--help` for all commands, AI agent docs, agent workflow tests |
+| ✅ M6 | Shell Language Completeness | Arrays, shopt, process substitution, special vars, advanced redirections, missing builtins, differential testing |
+| ✅ M7 | Command Coverage & Discoverability | Missing commands, `--help` for all commands, compression/archiving, command fidelity, AI agent docs |
 | M8 | Embedded Runtimes & Data Formats | Python, JavaScript, SQLite, yq, xan, runtime boundary hardening |
 | M9 | Platform, Security & Execution API | Cancellation, lazy files, AST transforms, sandbox API, fuzz testing, threat model, binary encoding, network enhancements, VFS fidelity |
 
@@ -312,7 +312,7 @@ Commands for inspecting file contents and types:
 
 - ✅ `file [files]` — detect file type via magic bytes + extension mapping.
 - ✅ `strings [-n min_length] [files]` — extract printable strings from binary data.
-- `od [-A addr_format] [-t type] [files]` — octal/hex/decimal dump.
+- ✅ `od [-A addr_format] [-t type] [files]` — octal/hex/decimal dump.
 - ✅ `split [-l lines|-b bytes] [file [prefix]]` — split file into chunks.
 
 ### ✅ M7.5 — Search
@@ -343,7 +343,7 @@ Add infrastructure for systematic command correctness:
 - ✅ **Comparison test suite**: Fixture-based tests that run scripts against real bash and assert matching stdout/stderr/exit code. Record expected output in fixture files for offline replay. Enables differential testing without requiring bash at every `cargo test`.
 - ✅ **Per-command flag metadata**: Each command exports a declarative flag list (name, type, implemented vs stubbed). Enables coverage tracking and systematic fuzzing of flag combinations.
 
-### M7.9 — AI Agent Documentation (`AGENTS.md`) ✅
+### ✅ M7.9 — AI Agent Documentation (`AGENTS.md`)
 
 Ship a purpose-built `AGENTS.md` in the npm package and alongside the CLI binary. This is the primary interface documentation for AI agents consuming rust-bash. Inspired by just-bash's `AGENTS.npm.md` which ships as `dist/AGENTS.md`.
 
@@ -541,7 +541,6 @@ M7.1 (--help) ─────────── (independent — can start anyti
 M7.2–M7.6 ─────────────── (independent — new command implementations)
 M7.7 (default fs layout) ─ (should happen early — affects M7.2+ command testing)
 M7.9 (AGENTS.md) ──────── (after M7.1–M7.6 — needs command list to document)
-M7.10 (agent tests) ───── (after M7.2+ — needs commands to test workflows)
 M8.1–M8.3 ─────────────── (depend on M1 command infrastructure)
 M8.4–M8.5 ─────────────── (require design exploration — feature-gated)
 M8.7 (runtime hardening)   (alongside M8.4/M8.5 — design with runtimes)
@@ -555,7 +554,7 @@ M9.10 (VFS fidelity) ──── (independent)
 
 **Recommended order (M1–M5)**: M1.1 → M1.2 → M1.3 → M1.4 → M1.5 → M1.6 → M1.7 → M1.8/M1.9/M1.10/M1.11 (parallel) → M1.12 → M1.13 → M1.14 → M1.15 → M3.1 → M2.1 → M2.2 → M2.3 → M2.4 → M4.1 → M5.1 → M5.2 → M5.3
 
-**Recommended order (M6–M9)**: M6.12 (diff tests — start early for confidence) → M6.1 (arrays — critical path) → M6.8 ($LINENO/$SECONDS — quick wins) → M6.2/M6.3 (parallel) → M6.4/M6.5/M6.6 (parallel, unlocked by arrays) → M6.9/M6.10/M6.11 (parallel) → M6.7 → M9.8 (binary encoding — prerequisite for compression) → M7.7 (default fs layout — do before other M7 work) → M7.1 → M7.2/M7.3/M7.4/M7.5/M7.6/M7.8 (parallel) → M7.9/M7.10 (agent docs & tests) → M8.1 → M8.2 → M8.3 → M8.4/M8.5 (design exploration first) → M8.7 (runtime hardening, alongside M8.4/M8.5) → M9.1 → M9.2 → M9.3 → M9.4 → M9.5 → M9.6 (threat model can start earlier) → M9.7 → M9.9/M9.10 (parallel)
+**Recommended order (M6–M9)**: M6.12 (diff tests — start early for confidence) → M6.1 (arrays — critical path) → M6.8 ($LINENO/$SECONDS — quick wins) → M6.2/M6.3 (parallel) → M6.4/M6.5/M6.6 (parallel, unlocked by arrays) → M6.9/M6.10/M6.11 (parallel) → M6.7 → M9.8 (binary encoding — prerequisite for compression) → M7.7 (default fs layout — do before other M7 work) → M7.1 → M7.2/M7.3/M7.4/M7.5/M7.6/M7.8 (parallel) → M7.9 (agent docs) → M8.1 → M8.2 → M8.3 → M8.4/M8.5 (design exploration first) → M8.7 (runtime hardening, alongside M8.4/M8.5) → M9.1 → M9.2 → M9.3 → M9.4 → M9.5 → M9.6 (threat model can start earlier) → M9.7 → M9.9/M9.10 (parallel)
 
 ---
 

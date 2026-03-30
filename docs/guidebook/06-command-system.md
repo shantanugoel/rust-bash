@@ -141,7 +141,7 @@ Caller-provided env vars via `.env()` always take precedence — defaults are on
 
 These commands modify interpreter state and cannot be implemented as `VirtualCommand`:
 
-`cd`, `export`, `unset`, `set`, `shift`, `local`, `declare`, `readonly`, `return`, `exit`, `break`, `continue`, `eval`, `source`/`.`, `read`, `trap`, `let`, `:`
+`cd`, `export`, `unset`, `set`, `shift`, `local`, `declare`, `readonly`, `return`, `exit`, `break`, `continue`, `eval`, `source`/`.`, `read`, `trap`, `let`, `:`, `shopt`, `type`, `command`, `builtin`, `getopts`, `mapfile`/`readarray`, `pushd`, `popd`, `dirs`, `hash`, `wait`, `alias`, `unalias`, `printf`, `exec`, `sh`/`bash`, `help`, `history`
 
 > `true` and `false` are **not** builtins — they are registered `VirtualCommand` implementations and resolved at step 3 (registered commands).
 
@@ -152,6 +152,8 @@ Commands that interact with the VFS for file I/O:
 | Command | Key Flags | Notes |
 |---------|-----------|-------|
 | `cat` | `-n` (line numbers) | Concatenate files or stdin |
+| `ls` | `-l`, `-a`, `-R`, `-1` | List directory entries |
+| `mkdir` | `-p` | Create directories |
 | `cp` | `-r` (recursive) | Copy via VFS |
 | `mv` | | Rename via VFS |
 | `rm` | `-r`, `-f` | Remove via VFS |
@@ -161,6 +163,10 @@ Commands that interact with the VFS for file I/O:
 | `tee` | `-a` (append) | Write stdin to file and stdout |
 | `chmod` | | Change file permissions in VFS |
 | `tree` | | Display directory tree |
+| `readlink` | `-f`, `-e`, `-m` | Resolve symlinks |
+| `rmdir` | `-p` | Remove empty directories |
+| `du` | `-s`, `-h`, `-a`, `-d` | Estimate file space usage |
+| `split` | `-l`, `-b` | Split file into chunks |
 
 ### Text Processing
 
@@ -169,6 +175,8 @@ Commands that operate on string data (stdin or file contents):
 | Command | Key Flags | Notes |
 |---------|-----------|-------|
 | `grep` | `-E`, `-i`, `-n`, `-r`, `-o`, `-v`, `-l`, `-c`, `-A`/`-B`/`-C` | Regex support via `regex` crate |
+| `egrep` / `fgrep` | | Aliases for `grep -E` / `grep -F` |
+| `rg` | `-i`, `-t`, `-T`, `-g`, `--vimgrep` | Ripgrep-compatible recursive search |
 | `sort` | `-r`, `-n`, `-k`, `-t`, `-u` | Sort lines |
 | `uniq` | `-c`, `-d`, `-u` | Deduplicate adjacent lines |
 | `cut` | `-d`, `-f`, `-c` | Extract fields/columns |
@@ -180,9 +188,16 @@ Commands that operate on string data (stdin or file contents):
 | `fold` | `-w`, `-s` | Wrap lines at width |
 | `nl` | | Number lines |
 | `paste` | `-d` | Merge lines of files |
+| `od` | `-A`, `-t` | Octal/hex/decimal dump |
+| `tac` | | Reverse file line order |
 | `comm` | `-1`, `-2`, `-3` | Compare sorted files |
 | `join` | `-t`, `-j` | Join sorted files on field |
+| `fmt` | `-w` | Reformat paragraph text |
+| `column` | `-t`, `-s` | Columnate lists |
+| `expand` | `-t` | Convert tabs to spaces |
+| `unexpand` | `-a`, `-t` | Convert spaces to tabs |
 | `diff` | `-u` | Compare files |
+| `strings` | `-n` | Extract printable strings from binary data |
 
 ### Mini-Languages
 
@@ -226,9 +241,13 @@ Pure computation or environment lookups:
 | `xargs` | Build and execute commands from stdin |
 | `test` / `[` | Conditional expressions |
 | `base64` | Encode/decode |
-| `md5sum` / `sha256sum` | Hash computation |
+| `md5sum` / `sha1sum` / `sha256sum` | Hash computation |
 | `whoami` / `hostname` / `uname` | Return sandbox-configured values |
 | `yes` | Repeat output (with iteration limit!) |
+| `timeout` | Run command with time limit |
+| `file` | Detect file type via magic bytes |
+| `bc` | Arbitrary precision calculator |
+| `clear` | Output ANSI clear-screen escape sequence |
 
 ### Compression and Archiving
 
