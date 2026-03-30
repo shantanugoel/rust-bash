@@ -2,7 +2,7 @@
 
 ## Goal
 
-Build and run rust-bash in the browser (or any WASM-capable runtime) via WebAssembly. This covers building from source, using the low-level `wasm-bindgen` API, and using the recommended `@shantanugoel/rust-bash` npm package.
+Build and run rust-bash in the browser (or any WASM-capable runtime) via WebAssembly. This covers building from source, using the low-level `wasm-bindgen` API, and using the recommended `rust-bash` npm package.
 
 ## Building WASM from Source
 
@@ -95,12 +95,12 @@ bash.register_command('greet', (args, ctx) => {
 });
 ```
 
-## Recommended: Using @shantanugoel/rust-bash (npm)
+## Recommended: Using rust-bash (npm)
 
-The `@shantanugoel/rust-bash` package wraps the low-level API with a high-level `Bash` class:
+The `rust-bash` package wraps the low-level API with a high-level `Bash` class:
 
 ```typescript
-import { Bash, initWasm, createWasmBackend } from '@shantanugoel/rust-bash/browser';
+import { Bash, initWasm, createWasmBackend } from 'rust-bash/browser';
 
 await initWasm();
 
@@ -128,14 +128,14 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   optimizeDeps: {
-    exclude: ['@shantanugoel/rust-bash'],
+    exclude: ['rust-bash'],
   },
 });
 ```
 
 ```typescript
 // src/shell.ts
-import { Bash, initWasm, createWasmBackend } from '@shantanugoel/rust-bash/browser';
+import { Bash, initWasm, createWasmBackend } from 'rust-bash/browser';
 
 let bashInstance: Bash | null = null;
 
@@ -168,7 +168,7 @@ module.exports = {
 
 ```typescript
 // src/index.ts
-import { Bash, initWasm, createWasmBackend } from '@shantanugoel/rust-bash/browser';
+import { Bash, initWasm, createWasmBackend } from 'rust-bash/browser';
 
 async function main() {
   await initWasm();
@@ -195,7 +195,7 @@ main();
 | No host filesystem | Only `InMemoryFs` is available — no `OverlayFs` or `ReadWriteFs` |
 | Time handling | `std::time` is replaced by `web-time` crate; `chrono` uses the `wasmbind` feature |
 
-Using `@shantanugoel/rust-bash` mitigates some of these: custom commands via `defineCommand()` support async callbacks, and the `Bash` class handles lazy file loading with `async` functions.
+Using `rust-bash` mitigates some of these: custom commands via `defineCommand()` support async callbacks, and the `Bash` class handles lazy file loading with `async` functions.
 
 ## Bundle Size
 
@@ -226,7 +226,7 @@ cat /data.json | jq .name</textarea>
   <pre id="output"></pre>
 
   <script type="module">
-    import { Bash, initWasm, createWasmBackend } from '@shantanugoel/rust-bash/browser';
+    import { Bash, initWasm, createWasmBackend } from 'rust-bash/browser';
 
     await initWasm();
     const bash = await Bash.create(createWasmBackend, {

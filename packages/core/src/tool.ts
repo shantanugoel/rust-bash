@@ -1,5 +1,5 @@
 /**
- * AI tool definitions for @shantanugoel/rust-bash.
+ * AI tool definitions for rust-bash.
  *
  * Exports framework-agnostic JSON Schema tool definitions and a handler
  * factory. Works with OpenAI, Anthropic, Vercel AI SDK, LangChain, or

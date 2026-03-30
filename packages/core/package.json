@@ -1,5 +1,5 @@
 {
-  "name": "@shantanugoel/rust-bash",
+  "name": "rust-bash",
   "version": "0.1.0",
   "description": "A sandboxed bash interpreter powered by Rust — TypeScript API with native Node.js addon and WASM support",
   "type": "module",

@@ -207,12 +207,12 @@ This copies files into the InMemoryFs at build time. For large directories, pref
 
 ## Lazy File Loading (TypeScript)
 
-The `@shantanugoel/rust-bash` package supports three file entry types, letting you defer expensive I/O until the file is actually needed.
+The `rust-bash` package supports three file entry types, letting you defer expensive I/O until the file is actually needed.
 
 ### The Three Patterns
 
 ```typescript
-import { Bash } from '@shantanugoel/rust-bash';
+import { Bash } from 'rust-bash';
 
 const bash = await Bash.create(createBackend, {
   files: {
@@ -307,12 +307,12 @@ const bash = await Bash.create(createBackend, {
 
 ## TypeScript: Virtual Filesystem
 
-The `@shantanugoel/rust-bash` npm package provides file seeding at creation time and direct VFS access.
+The `rust-bash` npm package provides file seeding at creation time and direct VFS access.
 
 ### Seeding Files
 
 ```typescript
-import { Bash } from '@shantanugoel/rust-bash';
+import { Bash } from 'rust-bash';
 
 const bash = await Bash.create(createBackend, {
   files: {
@@ -385,7 +385,7 @@ bash.fs.rmSync('/dir', { recursive: true });
 In the browser, only `InMemoryFs` is available (no host filesystem access):
 
 ```typescript
-import { Bash, initWasm, createWasmBackend } from '@shantanugoel/rust-bash/browser';
+import { Bash, initWasm, createWasmBackend } from 'rust-bash/browser';
 
 await initWasm();
 const bash = await Bash.create(createWasmBackend, {

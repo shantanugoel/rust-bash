@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Publish @shantanugoel/rust-bash to npm using bun.
+# Publish rust-bash to npm using bun.
 #
 # This script handles the FULL build pipeline:
 #   1. Build WASM binary (Rust → wasm-bindgen → packages/core/wasm/)
@@ -151,11 +151,11 @@ if $DRY_RUN; then
   echo "🔍 Dry run — previewing package contents:"
   bun pm pack --dry-run
   echo ""
-  echo "Would publish @shantanugoel/rust-bash@$CURRENT_VERSION"
+  echo "Would publish rust-bash@$CURRENT_VERSION"
 else
   echo ""
-  echo "🚀 Publishing @shantanugoel/rust-bash@$CURRENT_VERSION..."
+  echo "🚀 Publishing rust-bash@$CURRENT_VERSION..."
   bun publish --access public
   echo ""
-  echo "✅ Published! https://www.npmjs.com/package/@shantanugoel/rust-bash"
+  echo "✅ Published! https://www.npmjs.com/package/rust-bash"
 fi

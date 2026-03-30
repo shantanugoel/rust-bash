@@ -17,10 +17,10 @@ Use rust-bash as a bash execution tool for LLM-powered agents. The shell provide
 
 ## TypeScript: Framework-Agnostic Tool Primitives
 
-`@shantanugoel/rust-bash` exports a JSON Schema tool definition and a handler factory that work with **any** AI agent framework — no framework dependencies.
+`rust-bash` exports a JSON Schema tool definition and a handler factory that work with **any** AI agent framework — no framework dependencies.
 
 ```typescript
-import { bashToolDefinition, createBashToolHandler, createNativeBackend } from '@shantanugoel/rust-bash';
+import { bashToolDefinition, createBashToolHandler, createNativeBackend } from 'rust-bash';
 
 // bashToolDefinition is a plain JSON Schema object:
 // {
@@ -48,7 +48,7 @@ const result = await handler({ command: 'grep hello /data.txt' });
 Format tool definitions for specific providers without any external dependencies:
 
 ```typescript
-import { bashToolDefinition, formatToolForProvider } from '@shantanugoel/rust-bash';
+import { bashToolDefinition, formatToolForProvider } from 'rust-bash';
 
 const openaiTool = formatToolForProvider(bashToolDefinition, 'openai');
 // { type: "function", function: { name: "bash", description: "...", parameters: {...} } }
@@ -65,7 +65,7 @@ const mcpTool = formatToolForProvider(bashToolDefinition, 'mcp');
 For agent loops that need to dispatch multiple tool types:
 
 ```typescript
-import { Bash, handleToolCall } from '@shantanugoel/rust-bash';
+import { Bash, handleToolCall } from 'rust-bash';
 
 // In your agent loop:
 const result = await handleToolCall(bash, toolCall.name, toolCall.arguments);
@@ -76,7 +76,7 @@ const result = await handleToolCall(bash, toolCall.name, toolCall.arguments);
 
 ```typescript
 import OpenAI from 'openai';
-import { createBashToolHandler, formatToolForProvider, bashToolDefinition, createNativeBackend } from '@shantanugoel/rust-bash';
+import { createBashToolHandler, formatToolForProvider, bashToolDefinition, createNativeBackend } from 'rust-bash';
 
 const { handler } = createBashToolHandler(createNativeBackend, { files: myFiles });
 const openai = new OpenAI();
@@ -99,7 +99,7 @@ for (const toolCall of response.choices[0].message.tool_calls ?? []) {
 
 ```typescript
 import Anthropic from '@anthropic-ai/sdk';
-import { createBashToolHandler, formatToolForProvider, bashToolDefinition, createNativeBackend } from '@shantanugoel/rust-bash';
+import { createBashToolHandler, formatToolForProvider, bashToolDefinition, createNativeBackend } from 'rust-bash';
 
 const { handler } = createBashToolHandler(createNativeBackend, { files: myFiles });
 const anthropic = new Anthropic();
@@ -125,7 +125,7 @@ for (const block of response.content) {
 ```typescript
 import { tool } from 'ai';
 import { z } from 'zod';
-import { createBashToolHandler, createNativeBackend } from '@shantanugoel/rust-bash';
+import { createBashToolHandler, createNativeBackend } from 'rust-bash';
 
 const { handler } = createBashToolHandler(createNativeBackend, { files: myFiles });
 const bashTool = tool({
@@ -140,7 +140,7 @@ const bashTool = tool({
 ```typescript
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
-import { createBashToolHandler, createNativeBackend } from '@shantanugoel/rust-bash';
+import { createBashToolHandler, createNativeBackend } from 'rust-bash';
 
 const { handler, definition } = createBashToolHandler(createNativeBackend, { files: myFiles });
 const bashTool = tool(

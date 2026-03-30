@@ -9,7 +9,7 @@ Use the high-level features of the `Bash` class to control command execution: fi
 Restrict which commands a script can execute with the `commands` allow-list:
 
 ```typescript
-import { Bash, initWasm, createWasmBackend } from '@shantanugoel/rust-bash/browser';
+import { Bash, initWasm, createWasmBackend } from 'rust-bash/browser';
 
 await initWasm();
 const bash = await Bash.create(createWasmBackend, {
@@ -131,7 +131,7 @@ Heredoc content is preserved regardless of the `rawScript` setting — normaliza
 Register plugins that modify scripts before execution. Plugins run after normalization and before the backend executes the command.
 
 ```typescript
-import { Bash, initWasm, createWasmBackend } from '@shantanugoel/rust-bash/browser';
+import { Bash, initWasm, createWasmBackend } from 'rust-bash/browser';
 
 await initWasm();
 const bash = await Bash.create(createWasmBackend);
@@ -234,7 +234,7 @@ The proxy is useful for setting up test fixtures, reading output files, and prog
 ## Putting It All Together
 
 ```typescript
-import { Bash, defineCommand, initWasm, createWasmBackend } from '@shantanugoel/rust-bash/browser';
+import { Bash, defineCommand, initWasm, createWasmBackend } from 'rust-bash/browser';
 
 await initWasm();
 

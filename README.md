@@ -18,7 +18,7 @@ Interactive showcase with 80+ commands running via WASM. Includes an AI agent yo
 - **Execution limits** — 10 configurable bounds (time, commands, loops, output size, call depth, string length, glob results, substitution depth, heredoc size, brace expansion).
 - **Network policy** — sandboxed `curl` with URL allow-lists, method restrictions, redirect and response-size limits.
 - **Multiple filesystem backends** — InMemoryFs (default), OverlayFs (copy-on-write), ReadWriteFs (passthrough), MountableFs (composite).
-- **npm package** — `@shantanugoel/rust-bash` with TypeScript types, native Node.js addon, and WASM support.
+- **npm package** — `rust-bash` with TypeScript types, native Node.js addon, and WASM support.
 - **AI tool integration** — framework-agnostic JSON Schema tool definitions for OpenAI, Anthropic, Vercel AI SDK, LangChain.js.
 - **MCP server** — built-in Model Context Protocol server for Claude Desktop, Cursor, VS Code.
 - **Embeddable** — use as a Rust crate with a builder API. Custom commands via the `VirtualCommand` trait.
@@ -29,7 +29,7 @@ Interactive showcase with 80+ commands running via WASM. Includes an AI agent yo
 ### npm (TypeScript / JavaScript)
 
 ```bash
-npm install @shantanugoel/rust-bash
+npm install rust-bash
 ```
 
 ### Build from source (Rust)
@@ -50,7 +50,7 @@ cargo install --path .
 ## Quick Start (TypeScript)
 
 ```typescript
-import { Bash, tryLoadNative, createNativeBackend, initWasm, createWasmBackend } from '@shantanugoel/rust-bash';
+import { Bash, tryLoadNative, createNativeBackend, initWasm, createWasmBackend } from 'rust-bash';
 
 // Auto-detect backend: native addon (fast) or WASM (universal)
 let createBackend;
@@ -100,7 +100,7 @@ assert_eq!(result.exit_code, 0);
 ### TypeScript
 
 ```typescript
-import { Bash, defineCommand } from '@shantanugoel/rust-bash';
+import { Bash, defineCommand } from 'rust-bash';
 
 const fetch = defineCommand('fetch', async (args, ctx) => {
   const url = args[0];
@@ -143,7 +143,7 @@ assert_eq!(result.stdout, "got 2 args\n");
 
 ## AI Tool Integration
 
-`@shantanugoel/rust-bash` exports framework-agnostic tool primitives — use with any AI agent framework:
+`rust-bash` exports framework-agnostic tool primitives — use with any AI agent framework:
 
 ```typescript
 import {
@@ -151,7 +151,7 @@ import {
   createBashToolHandler,
   formatToolForProvider,
   createNativeBackend,
-} from '@shantanugoel/rust-bash';
+} from 'rust-bash';
 
 const { handler } = createBashToolHandler(createNativeBackend, {
   files: { '/data.txt': 'hello world' },
@@ -171,7 +171,7 @@ const result = await handler({ command: 'grep hello /data.txt' });
 
 ```typescript
 import OpenAI from 'openai';
-import { createBashToolHandler, formatToolForProvider, bashToolDefinition, createNativeBackend } from '@shantanugoel/rust-bash';
+import { createBashToolHandler, formatToolForProvider, bashToolDefinition, createNativeBackend } from 'rust-bash';
 
 const { handler } = createBashToolHandler(createNativeBackend, { files: myFiles });
 const openai = new OpenAI();
@@ -191,7 +191,7 @@ for (const toolCall of response.choices[0].message.tool_calls ?? []) {
 
 ```typescript
 import Anthropic from '@anthropic-ai/sdk';
-import { createBashToolHandler, formatToolForProvider, bashToolDefinition, createNativeBackend } from '@shantanugoel/rust-bash';
+import { createBashToolHandler, formatToolForProvider, bashToolDefinition, createNativeBackend } from 'rust-bash';
 
 const { handler } = createBashToolHandler(createNativeBackend, { files: myFiles });
 const anthropic = new Anthropic();
@@ -215,7 +215,7 @@ for (const block of response.content) {
 ```typescript
 import { tool } from 'ai';
 import { z } from 'zod';
-import { createBashToolHandler, createNativeBackend } from '@shantanugoel/rust-bash';
+import { createBashToolHandler, createNativeBackend } from 'rust-bash';
 
 const { handler } = createBashToolHandler(createNativeBackend, { files: myFiles });
 const bashTool = tool({
@@ -230,7 +230,7 @@ const bashTool = tool({
 ```typescript
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
-import { createBashToolHandler, createNativeBackend } from '@shantanugoel/rust-bash';
+import { createBashToolHandler, createNativeBackend } from 'rust-bash';
 
 const { handler, definition } = createBashToolHandler(createNativeBackend, { files: myFiles });
 const bashTool = tool(
@@ -283,7 +283,7 @@ See [MCP Server Setup](docs/recipes/mcp-server.md) for Cursor, Windsurf, Cline, 
 ## Browser / WASM
 
 ```typescript
-import { Bash, initWasm, createWasmBackend } from '@shantanugoel/rust-bash/browser';
+import { Bash, initWasm, createWasmBackend } from 'rust-bash/browser';
 
 await initWasm();
 const bash = await Bash.create(createWasmBackend, {
@@ -296,7 +296,7 @@ console.log(result.stdout); // "Hello from WASM!\n"
 
 ## Performance
 
-| Feature | just-bash | @shantanugoel/rust-bash |
+| Feature | just-bash | rust-bash |
 |---------|-----------|-----------------|
 | Language | Pure TypeScript | Rust → WASM + native addon |
 | Performance | JS-speed | Near-native (native addon) / WASM |
@@ -567,7 +567,7 @@ The following milestones track the project's progress:
 - ✅ **Milestone 1–4**: Core interpreter, text processing, execution safety, filesystem backends
 - ✅ **Milestone 5.1**: Standalone CLI binary — interactive REPL, `-c` commands, script files, stdin piping, `--json` output
 - ✅ **Milestone 5.2**: C FFI — shared library, generated C header, JSON config, 6 exported functions
-- ✅ **Milestone 5.3**: WASM target — `wasm32-unknown-unknown`, npm package `@shantanugoel/rust-bash` with TypeScript types
+- ✅ **Milestone 5.3**: WASM target — `wasm32-unknown-unknown`, npm package `rust-bash` with TypeScript types
 - ✅ **Milestone 5.4**: AI SDK integration — framework-agnostic tool definitions, MCP server, documented adapters
 - ✅ **Milestone 6**: Shell language completeness — arrays, shopt, process substitution, special variables, advanced redirections, missing builtins, differential testing
 - ✅ **Milestone 7**: Command coverage & discoverability — 80 commands with `--help`, compression/archiving, search (`rg`), binary inspection, command fidelity infrastructure, AI agent documentation

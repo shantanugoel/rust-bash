@@ -134,13 +134,13 @@ println!("Available commands: {}", names.join(", "));
 If you're using TypeScript or JavaScript, see the npm package:
 
 ```bash
-npm install @shantanugoel/rust-bash
+npm install rust-bash
 ```
 
 ### Minimal Example (Node.js)
 
 ```typescript
-import { Bash, tryLoadNative, createNativeBackend, initWasm, createWasmBackend } from '@shantanugoel/rust-bash';
+import { Bash, tryLoadNative, createNativeBackend, initWasm, createWasmBackend } from 'rust-bash';
 
 // Auto-detect backend: native addon (fast) or WASM (universal)
 let createBackend;
@@ -164,7 +164,7 @@ console.log(result.exitCode); // 0
 ### Minimal Example (Browser)
 
 ```typescript
-import { Bash, initWasm, createWasmBackend } from '@shantanugoel/rust-bash/browser';
+import { Bash, initWasm, createWasmBackend } from 'rust-bash/browser';
 
 await initWasm();
 const bash = await Bash.create(createWasmBackend, {

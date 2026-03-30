@@ -167,12 +167,12 @@ Builtins like `cd`, `export`, `set`, and variable assignments also count as comm
 
 ## TypeScript: Configuring Execution Limits
 
-The `@shantanugoel/rust-bash` npm package supports the same execution limits:
+The `rust-bash` npm package supports the same execution limits:
 
 ### Setting Limits
 
 ```typescript
-import { Bash } from '@shantanugoel/rust-bash';
+import { Bash } from 'rust-bash';
 
 const bash = await Bash.create(createBackend, {
   executionLimits: {

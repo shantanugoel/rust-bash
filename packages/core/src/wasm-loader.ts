@@ -1,5 +1,5 @@
 /**
- * WASM module loader for @shantanugoel/rust-bash.
+ * WASM module loader for rust-bash.
  *
  * Loads the rust-bash WASM binary and provides a BashBackend implementation.
  */

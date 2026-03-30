@@ -152,16 +152,16 @@ Stable C ABI: 6 exported functions (`rust_bash_create`, `rust_bash_exec`, `rust_
 
 ### M5.3 — WASM Target ✅
 
-`wasm32-unknown-unknown` + `wasm-bindgen`. JavaScript wrapper. npm package (`@shantanugoel/rust-bash`) with TypeScript types, dual-entry (Node.js + browser), WASM backend with `initWasm()` / `createWasmBackend()`.
+`wasm32-unknown-unknown` + `wasm-bindgen`. JavaScript wrapper. npm package (`rust-bash`) with TypeScript types, dual-entry (Node.js + browser), WASM backend with `initWasm()` / `createWasmBackend()`.
 
-**Design decision:** Separate `wasm-bindgen` (browser) and planned napi-rs (Node.js native addon) builds, unified under a single `@shantanugoel/rust-bash` package with conditional exports. The package auto-detects the environment: `tryLoadNative()` for Node.js, `initWasm()` for browsers.
+**Design decision:** Separate `wasm-bindgen` (browser) and planned napi-rs (Node.js native addon) builds, unified under a single `rust-bash` package with conditional exports. The package auto-detects the environment: `tryLoadNative()` for Node.js, `initWasm()` for browsers.
 
 ### M5.4 — AI SDK Integration ✅
 
 Framework-agnostic tool definitions (JSON Schema + handler functions) exported from the npm package. MCP server mode for the CLI binary (`rust-bash --mcp`). Documented recipe-based adapters for Vercel AI SDK, LangChain.js, OpenAI API, and Anthropic API. The core exports `bashToolDefinition` (JSON Schema), `createBashToolHandler()`, `formatToolForProvider()`, and `handleToolCall()` — the universal building blocks that work with any AI agent framework. Framework-specific adapters are thin (~10-line) wrappers documented as recipes, not hard dependencies.
 
 **Design decisions:**
-- **Unified package:** Single `@shantanugoel/rust-bash` package with native Node.js addon as primary backend and WASM as automatic fallback for browsers/edge runtimes.
+- **Unified package:** Single `rust-bash` package with native Node.js addon as primary backend and WASM as automatic fallback for browsers/edge runtimes.
 - **Custom commands:** `defineCommand()` API in TypeScript mirrors the Rust `VirtualCommand` trait. Custom commands are registered at `Bash.create()` time and participate in pipelines and redirections.
 - **Tool primitives:** `bashToolDefinition` + `formatToolForProvider('openai' | 'anthropic' | 'mcp')` for zero-dependency provider formatting. `handleToolCall()` dispatcher supports `bash`, `readFile`, `writeFile`, `listDirectory` tool names.
 
@@ -348,7 +348,7 @@ Add infrastructure for systematic command correctness:
 Ship a purpose-built `AGENTS.md` in the npm package and alongside the CLI binary. This is the primary interface documentation for AI agents consuming rust-bash. Inspired by just-bash's `packages/core/AGENTS.md` which ships as `dist/AGENTS.md`.
 
 - ✅ **Content**: Quick-start examples, available commands grouped by category, tools-by-file-format recipes (JSON with `jq`, YAML with `yq`, CSV with `xan`), key behavioral notes (isolation model, no real filesystem, no network by default).
-- ✅ **Distribution**: Include in npm package (`@shantanugoel/rust-bash`), embed in CLI `--help`, and publish to docs site.
+- ✅ **Distribution**: Include in npm package (`rust-bash`), embed in CLI `--help`, and publish to docs site.
 - ✅ **Validation**: Add a test that verifies all documented commands actually exist in the registry and all code examples parse successfully.
 
 ---

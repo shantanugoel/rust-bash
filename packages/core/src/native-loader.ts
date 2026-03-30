@@ -1,5 +1,5 @@
 /**
- * Native addon loader for @shantanugoel/rust-bash.
+ * Native addon loader for rust-bash.
  *
  * Loads the napi-rs native addon and provides a BashBackend implementation.
  */
