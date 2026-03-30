@@ -466,6 +466,7 @@ Design and implement a systematic approach to binary data flow through the shell
 - **Pipeline byte transparency**: Audit and ensure that pipe data flows as `Vec<u8>` through the entire pipeline path (command stdout → pipe → next command stdin). Verify that no intermediate step lossy-converts to `String`. Rust's `Vec<u8>` is naturally correct, but the pipe/redirect/capture paths must be audited.
 - **Output boundary encoding**: At the `exec()` return boundary, decide how to handle non-UTF-8 output. Options: (a) return `Vec<u8>` for stdout/stderr (breaking API change), (b) return `String` with lossy replacement and a separate `stdout_bytes: Option<Vec<u8>>` field, (c) add an `encoding_hint: Option<String>` field to `ExecResult` indicating binary content (like just-bash's `stdoutEncoding?: "binary"`).
 - **Input boundary**: Ensure `stdin` can carry binary data. Currently `stdin` is `&str` — consider `Option<&[u8]>` for binary stdin support.
+- Revisit and complete M7.3 fully after this task is completed
 
 just-bash solves this with latin1 strings internally (each char = one byte) and a `decodeBinaryToUtf8()` function at the output boundary. Rust should leverage `Vec<u8>` naturally but must design the API boundary carefully.
 
