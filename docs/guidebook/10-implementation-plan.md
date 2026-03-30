@@ -4,11 +4,11 @@
 
 | # | Milestone | Goal |
 |---|-----------|------|
-| M1 | Core Shell | Production interpreter + VFS trait + ~35 commands |
-| M2 | Text Processing | awk, sed, jq, diff + remaining text commands |
-| M3 | Execution Safety | Limits enforcement, network policy |
-| M4 | Filesystem Backends | OverlayFs, ReadWriteFs, MountableFs |
-| M5 | Integration | C FFI, WASM, CLI binary, AI SDK wrapper |
+| ✅ M1 | Core Shell | Production interpreter + VFS trait + ~35 commands |
+| ✅ M2 | Text Processing | awk, sed, jq, diff + remaining text commands |
+| ✅ M3 | Execution Safety | Limits enforcement, network policy |
+| ✅ M4 | Filesystem Backends | OverlayFs, ReadWriteFs, MountableFs |
+| ✅ M5 | Integration | C FFI, WASM, CLI binary, AI SDK wrapper |
 | ✅ M6 | Shell Language Completeness | Arrays, shopt, process substitution, special vars, advanced redirections, missing builtins, differential testing |
 | ✅ M7 | Command Coverage & Discoverability | Missing commands, `--help` for all commands, compression/archiving, command fidelity, AI agent docs |
 | M8 | Embedded Runtimes & Data Formats | Python, JavaScript, SQLite, yq, xan, runtime boundary hardening |
