@@ -16,8 +16,11 @@
   "types": "./dist/index.d.ts",
   "files": [
     "dist/",
-    "wasm/",
-    "native/",
+    "wasm/rust_bash.js",
+    "wasm/rust_bash.d.ts",
+    "wasm/rust_bash_bg.wasm",
+    "wasm/rust_bash_bg.wasm.d.ts",
+    "native/rust-bash-native.node",
     "README.md",
     "AGENTS.md",
     "LICENSE"

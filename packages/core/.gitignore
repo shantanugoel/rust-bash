@@ -1,3 +1,7 @@
 node_modules/
 target/
 dist/
+wasm/*.js
+wasm/*.wasm
+wasm/*.d.ts
+native/*.node
