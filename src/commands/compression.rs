@@ -54,8 +54,8 @@ fn normalize_path(path: &Path) -> PathBuf {
 }
 
 /// Convert SystemTime to seconds since UNIX epoch for tar headers.
-fn system_time_to_secs(t: std::time::SystemTime) -> u64 {
-    t.duration_since(std::time::UNIX_EPOCH)
+fn system_time_to_secs(t: crate::platform::SystemTime) -> u64 {
+    t.duration_since(crate::platform::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }

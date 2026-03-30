@@ -750,5 +750,6 @@ fn parse_command_result(val: &JsValue) -> CommandResult {
         stdout,
         stderr,
         exit_code,
+        stdout_bytes: None,
     }
 }
