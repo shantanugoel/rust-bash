@@ -34,6 +34,20 @@ function ensureInit(): Promise<unknown> {
   return wasmReady;
 }
 
+/**
+ * Kick off WASM download early — call this as soon as possible.
+ *
+ * The key benefit is timing: calling this before any animations or other work
+ * allows the fetch to run in parallel. When `createBash()` later calls
+ * `ensureInit()` it will receive the same cached promise and resolve immediately
+ * (or very quickly) instead of waiting for the full download + compile.
+ */
+export function preloadWasm(): void {
+  // The rejected promise remains cached in `wasmReady` and will be surfaced when
+  // createBash() awaits it; this only prevents noisy transient unhandled rejections.
+  void ensureInit().catch(() => {});
+}
+
 export async function createBash(options: {
   files: Record<string, string>;
   cwd: string;

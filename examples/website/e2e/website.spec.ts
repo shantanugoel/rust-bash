@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
 
+const INITIAL_AGENT_COMMAND = 'agent "is this the matrix?"';
+
 /**
  * Helper to read visible text from xterm.js terminal rows.
  * xterm uses a canvas renderer, so we read from the DOM row layer.
@@ -14,21 +16,32 @@ async function getTerminalText(page: import('@playwright/test').Page): Promise<s
 /**
  * Wait for boot to fully complete. Boot shows:
  * 1. Welcome banner (with "rust-bash")
- * 2. Auto-typed "agent ..." command + cached response
- * 3. Final prompt
+ * 2. Auto-typed initial command
+ * 3. Focus handed to the terminal after `await terminalUI.boot()`
  *
- * We wait for at least TWO prompts (the auto-type prompt + the final prompt),
- * which means boot is done and the terminal is ready for user input.
+ * The focus handoff is the reliable signal that the shell is ready. The boot
+ * flow only draws one visible prompt by default.
  */
 async function waitForBoot(page: import('@playwright/test').Page): Promise<void> {
-  await page.waitForFunction(() => {
+  await page.waitForFunction((initialCommand) => {
     const rows = document.querySelectorAll('.xterm-rows > div');
     const text = Array.from(rows).map(r => r.textContent ?? '').join('\n');
-    // Count prompt occurrences — boot creates at least 2 (auto-type + final).
-    // The prompt contains "rust-bash:~$".
-    const promptCount = (text.match(/rust-bash:~\$/g) || []).length;
-    return promptCount >= 2;
-  }, { timeout: 45000 });
+    const helper = document.querySelector('.xterm-helper-textarea');
+    return (
+      text.includes(initialCommand) &&
+      helper instanceof HTMLElement &&
+      document.activeElement === helper
+    );
+  }, INITIAL_AGENT_COMMAND, { timeout: 45000 });
+}
+
+async function clearPrefilledCommand(page: import('@playwright/test').Page) {
+  const terminal = page.locator('.xterm-helper-textarea');
+  await terminal.focus();
+  for (let i = 0; i < INITIAL_AGENT_COMMAND.length; i++) {
+    await terminal.press('Backspace');
+  }
+  return terminal;
 }
 
 test.describe('rust-bash website', () => {
@@ -53,8 +66,7 @@ test.describe('rust-bash website', () => {
   test('can type and execute echo command', async ({ page }) => {
     await waitForBoot(page);
 
-    const terminal = page.locator('.xterm-helper-textarea');
-    await terminal.focus();
+    const terminal = await clearPrefilledCommand(page);
     await terminal.pressSequentially('echo hello world', { delay: 30 });
     await terminal.press('Enter');
 
@@ -63,11 +75,72 @@ test.describe('rust-bash website', () => {
     expect(text).toContain('hello world');
   });
 
-  test('can execute cat README.md', async ({ page }) => {
-    await waitForBoot(page);
+  test('tab completion before wasm is ready does not crash the terminal', async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', (error) => {
+      pageErrors.push(error.message);
+    });
+
+    await page.route('**/*.wasm', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 10000));
+      await route.continue();
+    });
+
+    await page.goto('/');
+    await page.waitForSelector('.xterm-rows', { timeout: 15000 });
+    await page.waitForSelector('#app.visible', { timeout: 15000 });
+    await page.waitForTimeout(1500);
 
     const terminal = page.locator('.xterm-helper-textarea');
     await terminal.focus();
+    await terminal.press('Tab');
+
+    // This test intentionally focuses the terminal before boot completes, so the
+    // generic waitForBoot() helper would become a false positive. Sleep past the
+    // mocked 10s WASM delay instead, then verify the shell is still usable.
+    await page.waitForTimeout(7000);
+
+    await clearPrefilledCommand(page);
+    await terminal.pressSequentially('pwd', { delay: 30 });
+    await terminal.press('Enter');
+
+    await expect.poll(() => getTerminalText(page), { timeout: 10000 }).toContain(
+      '/home/user',
+    );
+    expect(pageErrors).toEqual([]);
+  });
+
+  test('shows a clean prompt when wasm fails to load', async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on('pageerror', (error) => {
+      pageErrors.push(error.message);
+    });
+
+    await page.route('**/*.wasm', async (route) => {
+      await route.abort();
+    });
+
+    await page.goto('/');
+    await page.waitForSelector('.xterm-rows', { timeout: 15000 });
+    await page.waitForSelector('#app.visible', { timeout: 15000 });
+
+    await expect.poll(() => getTerminalText(page), { timeout: 15000 }).toContain(
+      'Failed to load WASM',
+    );
+
+    const text = await getTerminalText(page);
+    const promptCount = (text.match(/rust-bash:~\$/g) || []).length;
+    expect(promptCount).toBeGreaterThanOrEqual(2);
+    expect(text).toContain('Make sure you have run: ./scripts/build-wasm.sh');
+    // Playwright reports the intentionally aborted fetch as a page error even
+    // though the app catches it and recovers to a clean prompt.
+    expect(pageErrors.filter((message) => message !== 'Failed to fetch')).toEqual([]);
+  });
+
+  test('can execute cat README.md', async ({ page }) => {
+    await waitForBoot(page);
+
+    const terminal = await clearPrefilledCommand(page);
     await terminal.pressSequentially('cat README.md', { delay: 30 });
     await terminal.press('Enter');
 
@@ -79,8 +152,7 @@ test.describe('rust-bash website', () => {
   test('can execute ls and see files', async ({ page }) => {
     await waitForBoot(page);
 
-    const terminal = page.locator('.xterm-helper-textarea');
-    await terminal.focus();
+    const terminal = await clearPrefilledCommand(page);
     await terminal.pressSequentially('ls', { delay: 30 });
     await terminal.press('Enter');
 
@@ -92,8 +164,7 @@ test.describe('rust-bash website', () => {
   test('ctrl+c shows ^C and new prompt', async ({ page }) => {
     await waitForBoot(page);
 
-    const terminal = page.locator('.xterm-helper-textarea');
-    await terminal.focus();
+    const terminal = await clearPrefilledCommand(page);
     await terminal.pressSequentially('some partial', { delay: 30 });
 
     await page.keyboard.down('Control');
@@ -108,8 +179,7 @@ test.describe('rust-bash website', () => {
   test('pipes work correctly', async ({ page }) => {
     await waitForBoot(page);
 
-    const terminal = page.locator('.xterm-helper-textarea');
-    await terminal.focus();
+    const terminal = await clearPrefilledCommand(page);
     await terminal.pressSequentially('echo "hello world" | wc -w', { delay: 30 });
     await terminal.press('Enter');
 
@@ -130,18 +200,29 @@ test.describe('rust-bash website', () => {
     await page.route('**/api/chat/completions', async (route) => {
       await route.fulfill({
         status: 200,
-        contentType: 'text/event-stream',
-        body:
-          'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":0,"model":"gemini-2.5-flash","choices":[{"index":0,"delta":{"content":"stubbed agent reply"},"finish_reason":null}]}\n\n' +
-          'data: {"id":"chatcmpl-test","object":"chat.completion.chunk","created":0,"model":"gemini-2.5-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n' +
-          'data: [DONE]\n\n',
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: 'chatcmpl-test',
+          object: 'chat.completion',
+          created: 0,
+          model: 'gemini-2.5-flash',
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: 'assistant',
+                content: 'stubbed agent reply',
+              },
+              finish_reason: 'stop',
+            },
+          ],
+        }),
       });
     });
 
     await waitForBoot(page);
 
-    const terminal = page.locator('.xterm-helper-textarea');
-    await terminal.focus();
+    const terminal = await clearPrefilledCommand(page);
     await terminal.pressSequentially('agent "hello"', { delay: 30 });
     await terminal.press('Enter');
 

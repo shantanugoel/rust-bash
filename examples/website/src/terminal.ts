@@ -130,30 +130,36 @@ export class TerminalUI {
     this.setupResize();
   }
 
-  /** Boot sequence: init bash → welcome screen → prefill initial command. */
+  /** Boot sequence: start WASM load → welcome screen → prefill initial command → await WASM. */
   async boot(): Promise<void> {
-    try {
-      this.bash = await createBash({
-        files: VFS_FILES,
-        cwd: '/home/user',
-      });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.term.writeln(
-        `\x1b[31m⚠ Failed to load WASM: ${msg}\x1b[0m\r\n` +
-        'Make sure you have run: ./scripts/build-wasm.sh\r\n',
-      );
-      this.showPrompt();
-      return;
-    }
+    // Start WASM loading in the background (likely already in-flight from preloadWasm())
+    const bashPromise = createBash({
+      files: VFS_FILES,
+      cwd: '/home/user',
+    });
 
-    // Write welcome screen — use compact version on narrow terminals
+    // Write welcome screen immediately — doesn't need WASM
     const welcome = this.term.cols < MIN_COLS_FOR_WIDE_WELCOME ? buildWelcomeNarrow() : WELCOME_WIDE;
     this.term.write(welcome);
     this.showPrompt();
 
-    // Auto-type the initial command
+    // Auto-type the initial command — doesn't need WASM either
     await this.typeText(INITIAL_AGENT_COMMAND, 50);
+
+    // Now await WASM — likely already ready since it loaded during the intro animation
+    try {
+      this.bash = await bashPromise;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Show the error inline (the prompt + typed command are already visible above).
+      // If the user presses Enter, handleInput() will catch !this.bash and show
+      // a follow-up "Shell not loaded" message — no command silently succeeds.
+      this.term.writeln(
+        `\r\n\x1b[31m⚠ Failed to load WASM: ${msg}\x1b[0m\r\n` +
+        'Make sure you have run: ./scripts/build-wasm.sh\r\n',
+      );
+      this.showPrompt();
+    }
   }
 
   /** Focus the terminal. */
@@ -291,6 +297,11 @@ export class TerminalUI {
   private handleTabCompletion(): void {
     const input = this.lineBuffer;
     if (!input) return;
+    if (!this.bash) {
+      // The prompt is shown before WASM finishes loading, so completion must
+      // tolerate a brief pre-shell window instead of crashing on undefined bash.
+      return;
+    }
 
     // If no space yet, complete command names
     const spaceIdx = input.indexOf(' ');
