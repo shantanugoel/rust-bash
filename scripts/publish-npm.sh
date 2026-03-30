@@ -8,16 +8,15 @@ set -euo pipefail
 #   2. Build native Node.js addon (Rust → napi-rs → packages/core/native/)
 #   3. Compile TypeScript (tsc → packages/core/dist/)
 #   4. Run tests
-#   5. Optionally bump version
-#   6. Publish to npm
+#   5. Publish to npm
+#
+# Version bumping is handled separately by scripts/version.sh.
+# Workflow: version.sh → commit → publish-npm.sh
 #
 # Usage:
-#   ./scripts/publish.sh              # build everything + publish current version
-#   ./scripts/publish.sh patch        # build + bump patch + publish
-#   ./scripts/publish.sh minor        # build + bump minor + publish
-#   ./scripts/publish.sh major        # build + bump major + publish
-#   ./scripts/publish.sh --dry-run    # build + preview what would be published
-#   ./scripts/publish.sh --skip-rust  # skip Rust builds (use existing artifacts)
+#   ./scripts/publish-npm.sh              # build everything + publish
+#   ./scripts/publish-npm.sh --dry-run    # build + preview what would be published
+#   ./scripts/publish-npm.sh --skip-rust  # skip Rust builds (use existing artifacts)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -25,16 +24,14 @@ PKG_DIR="$REPO_ROOT/packages/core"
 
 DRY_RUN=false
 SKIP_RUST=false
-BUMP=""
 
 for arg in "$@"; do
   case "$arg" in
     --dry-run)    DRY_RUN=true ;;
     --skip-rust)  SKIP_RUST=true ;;
-    patch|minor|major) BUMP="$arg" ;;
     *)
       echo "Unknown argument: $arg"
-      echo "Usage: $0 [patch|minor|major] [--dry-run] [--skip-rust]"
+      echo "Usage: $0 [--dry-run] [--skip-rust]"
       exit 1
       ;;
   esac
@@ -67,6 +64,9 @@ if ! git -C "$REPO_ROOT" diff --quiet HEAD 2>/dev/null; then
   echo
   [[ $REPLY =~ ^[Yy]$ ]] || exit 1
 fi
+
+# Verify versions are in sync
+bash "$SCRIPT_DIR/check-version-sync.sh"
 
 # ─── Step 1: Build WASM ──────────────────────────────────────────────
 
@@ -141,16 +141,6 @@ echo ""
 echo "🧪 Step 4/4: Running tests..."
 bun run test
 echo "   ✅ Tests passed"
-
-# ─── Version bump ─────────────────────────────────────────────────────
-
-if [[ -n "$BUMP" ]]; then
-  echo ""
-  echo "📝 Bumping version ($BUMP)..."
-  npm version "$BUMP" --no-git-tag-version
-  NEW_VERSION=$(jq -r .version package.json)
-  echo "   New version: $NEW_VERSION"
-fi
 
 # ─── Publish ──────────────────────────────────────────────────────────
 
