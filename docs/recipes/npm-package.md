@@ -2,12 +2,12 @@
 
 ## Goal
 
-Install and use the `@rust-bash/core` npm package to run sandboxed bash scripts from TypeScript or JavaScript — in Node.js or the browser.
+Install and use the `@shantanugoel/rust-bash` npm package to run sandboxed bash scripts from TypeScript or JavaScript — in Node.js or the browser.
 
 ## Installation
 
 ```bash
-npm install @rust-bash/core
+npm install @shantanugoel/rust-bash
 ```
 
 Requires Node.js 18 or later.
@@ -15,7 +15,7 @@ Requires Node.js 18 or later.
 ## Basic Usage
 
 ```typescript
-import { Bash, initWasm, createWasmBackend } from '@rust-bash/core';
+import { Bash, initWasm, createWasmBackend } from '@shantanugoel/rust-bash';
 
 await initWasm();
 
@@ -39,7 +39,7 @@ import {
   Bash,
   tryLoadNative, createNativeBackend,
   initWasm, createWasmBackend,
-} from '@rust-bash/core';
+} from '@shantanugoel/rust-bash';
 
 let createBackend;
 if (await tryLoadNative()) {
@@ -60,10 +60,10 @@ console.log(result.stdout); // "hello world\n"
 
 ## Browser Usage
 
-In the browser, import from `@rust-bash/core/browser` — this entry point excludes the native addon loader:
+In the browser, import from `@shantanugoel/rust-bash/browser` — this entry point excludes the native addon loader:
 
 ```typescript
-import { Bash, initWasm, createWasmBackend } from '@rust-bash/core/browser';
+import { Bash, initWasm, createWasmBackend } from '@shantanugoel/rust-bash/browser';
 
 await initWasm();
 
@@ -151,7 +151,7 @@ const bash = await Bash.create(createBackend, {
 Create custom commands that scripts can call like built-ins:
 
 ```typescript
-import { Bash, defineCommand } from '@rust-bash/core';
+import { Bash, defineCommand } from '@shantanugoel/rust-bash';
 
 const greet = defineCommand('greet', async (args, ctx) => {
   const name = args[0] ?? 'world';
@@ -304,8 +304,8 @@ interface FileStat {
 
 | Export Path | Environment | Includes |
 |-------------|-------------|----------|
-| `@rust-bash/core` | Node.js | `Bash`, `defineCommand`, native + WASM loaders, AI tool helpers |
-| `@rust-bash/core/browser` | Browser | `Bash`, `defineCommand`, WASM loader only |
+| `@shantanugoel/rust-bash` | Node.js | `Bash`, `defineCommand`, native + WASM loaders, AI tool helpers |
+| `@shantanugoel/rust-bash/browser` | Browser | `Bash`, `defineCommand`, WASM loader only |
 
 ### Key Exports
 

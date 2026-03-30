@@ -1,7 +1,7 @@
-# AGENTS.npm.md — rust-bash for AI Agents
+# AGENTS.md — rust-bash for AI Agents
 
-> Quick-start guide for AI agents consuming the `@rust-bash/core` npm package.
-> For contributing to rust-bash itself, see [AGENTS.md](./AGENTS.md).
+> Quick-start guide for AI agents consuming the `@shantanugoel/rust-bash` npm package.
+> For contributing to rust-bash itself, see the repo root [AGENTS.md](../../AGENTS.md).
 
 ## What is rust-bash?
 
@@ -21,7 +21,7 @@ AI-generated shell scripts.
 ## Installation
 
 ```bash
-npm install @rust-bash/core
+npm install @shantanugoel/rust-bash
 ```
 
 ## Quick Start
@@ -29,7 +29,7 @@ npm install @rust-bash/core
 ### TypeScript
 
 ```typescript
-import { Bash, tryLoadNative, createNativeBackend, initWasm, createWasmBackend } from '@rust-bash/core';
+import { Bash, tryLoadNative, createNativeBackend, initWasm, createWasmBackend } from '@shantanugoel/rust-bash';
 
 // Pick the fastest available backend
 let createBackend;
@@ -428,6 +428,6 @@ tar --help
 
 ## Links
 
-- **npm**: [@rust-bash/core](https://www.npmjs.com/package/@rust-bash/core)
+- **npm**: [@shantanugoel/rust-bash](https://www.npmjs.com/package/@shantanugoel/rust-bash)
 - **Repository**: [github.com/shantanugoel/rust-bash](https://github.com/shantanugoel/rust-bash)
 - **Homepage**: [rustbash.dev](https://rustbash.dev)

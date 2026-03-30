@@ -6442,7 +6442,7 @@ fn gzip_empty_input() {
     assert_eq!(r.stdout, "");
 }
 
-// ── AGENTS.npm.md validation ───────────────────────────────────────
+// ── packages/core/AGENTS.md validation ───────────────────────────────────────
 
 #[test]
 fn agents_npm_md_command_count_matches_registry() {
@@ -6450,15 +6450,15 @@ fn agents_npm_md_command_count_matches_registry() {
     let actual_count = commands.len();
 
     let content = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("AGENTS.npm.md"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("packages/core/AGENTS.md"),
     )
-    .expect("AGENTS.npm.md should exist at repo root");
+    .expect("packages/core/AGENTS.md should exist at repo root");
 
     // The doc says "Available Commands (N)" — extract N and verify.
     let re = regex::Regex::new(r"## Available Commands \((\d+)\)").unwrap();
     let caps = re
         .captures(&content)
-        .expect("AGENTS.npm.md should contain '## Available Commands (N)'");
+        .expect("packages/core/AGENTS.md should contain '## Available Commands (N)'");
     let documented_count: usize = caps[1].parse().unwrap();
 
     // Allow ±2 tolerance for feature-gated commands (e.g. curl).
@@ -6473,9 +6473,9 @@ fn agents_npm_md_documented_commands_exist_in_registry() {
     let commands = rust_bash::commands::register_default_commands();
 
     let content = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("AGENTS.npm.md"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("packages/core/AGENTS.md"),
     )
-    .expect("AGENTS.npm.md should exist at repo root");
+    .expect("packages/core/AGENTS.md should exist at repo root");
 
     // Extract command names from the table rows: "| `cmd` |"
     let re = regex::Regex::new(r"(?m)^\| `([a-z0-9_\[\]-]+)`").unwrap();
@@ -6501,7 +6501,7 @@ fn agents_npm_md_documented_commands_exist_in_registry() {
 
     assert!(
         missing.is_empty(),
-        "Commands documented in AGENTS.npm.md but missing from registry: {missing:?}",
+        "Commands documented in packages/core/AGENTS.md but missing from registry: {missing:?}",
     );
 }
 
@@ -6511,9 +6511,9 @@ fn agents_npm_md_documented_builtins_exist() {
         rust_bash::builtin_names().iter().copied().collect();
 
     let content = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("AGENTS.npm.md"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("packages/core/AGENTS.md"),
     )
-    .expect("AGENTS.npm.md should exist at repo root");
+    .expect("packages/core/AGENTS.md should exist at repo root");
 
     let section_start = content
         .find("## Shell Builtins")
@@ -6536,6 +6536,6 @@ fn agents_npm_md_documented_builtins_exist() {
 
     assert!(
         missing.is_empty(),
-        "Builtins documented in AGENTS.npm.md but not in builtin_names(): {missing:?}",
+        "Builtins documented in packages/core/AGENTS.md but not in builtin_names(): {missing:?}",
     );
 }

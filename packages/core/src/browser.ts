@@ -1,5 +1,5 @@
 /**
- * Browser entry point for @rust-bash/core.
+ * Browser entry point for @shantanugoel/rust-bash.
  *
  * WASM-only — does not attempt to load the native addon.
  */

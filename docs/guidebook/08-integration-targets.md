@@ -322,14 +322,14 @@ native-fs = []                         # disabled on WASM
 - `web-time` crate provides `SystemTime`/`Instant` replacements for WASM
 - Networking (`curl`) is feature-gated out; returns "command not found" on WASM
 
-## npm Package (`@rust-bash/core`)
+## npm Package (`@shantanugoel/rust-bash`)
 
 The TypeScript npm package wraps both WASM and native addon backends behind a unified API.
 
 ### Installation
 
 ```bash
-npm install @rust-bash/core
+npm install @shantanugoel/rust-bash
 ```
 
 ### Architecture
@@ -340,12 +340,12 @@ The package ships three layers:
 2. **Native addon** (napi-rs, planned) — near-native performance for Node.js
 3. **WASM backend** — browser and edge runtime support
 
-Backend detection is automatic on Node.js (native first, WASM fallback). Browsers use the `@rust-bash/core/browser` entry point (WASM only).
+Backend detection is automatic on Node.js (native first, WASM fallback). Browsers use the `@shantanugoel/rust-bash/browser` entry point (WASM only).
 
 ### Quick Start (Node.js)
 
 ```typescript
-import { Bash, tryLoadNative, createNativeBackend, initWasm, createWasmBackend } from '@rust-bash/core';
+import { Bash, tryLoadNative, createNativeBackend, initWasm, createWasmBackend } from '@shantanugoel/rust-bash';
 
 // Auto-detect backend
 let createBackend;
@@ -368,7 +368,7 @@ console.log(result.stdout); // "hello world\n"
 ### Quick Start (Browser)
 
 ```typescript
-import { Bash, initWasm, createWasmBackend } from '@rust-bash/core/browser';
+import { Bash, initWasm, createWasmBackend } from '@shantanugoel/rust-bash/browser';
 
 await initWasm();
 const bash = await Bash.create(createWasmBackend, {
@@ -417,7 +417,7 @@ const data = bash.fs.readFileSync('/output.txt');
 ### Custom Commands
 
 ```typescript
-import { defineCommand } from '@rust-bash/core';
+import { defineCommand } from '@shantanugoel/rust-bash';
 
 const fetch = defineCommand('fetch', async (args, ctx) => {
   const url = args[0];
@@ -449,10 +449,10 @@ For use with OpenAI, Anthropic, and other function-calling LLM APIs. Available v
 
 ### TypeScript: Framework-Agnostic Primitives
 
-`@rust-bash/core` exports JSON Schema tool definitions and a handler factory that work with **any** AI agent framework — no framework dependencies required.
+`@shantanugoel/rust-bash` exports JSON Schema tool definitions and a handler factory that work with **any** AI agent framework — no framework dependencies required.
 
 ```typescript
-import { bashToolDefinition, createBashToolHandler, formatToolForProvider, createNativeBackend } from '@rust-bash/core';
+import { bashToolDefinition, createBashToolHandler, formatToolForProvider, createNativeBackend } from '@shantanugoel/rust-bash';
 
 // bashToolDefinition is a plain JSON Schema object:
 // {
@@ -494,7 +494,7 @@ Additional exports for agent loops:
 
 ```typescript
 import OpenAI from 'openai';
-import { createBashToolHandler, formatToolForProvider, bashToolDefinition, createNativeBackend } from '@rust-bash/core';
+import { createBashToolHandler, formatToolForProvider, bashToolDefinition, createNativeBackend } from '@shantanugoel/rust-bash';
 
 const { handler } = createBashToolHandler(createNativeBackend, { files: myFiles });
 
@@ -513,7 +513,7 @@ for (const toolCall of response.choices[0].message.tool_calls ?? []) {
 
 ```typescript
 import Anthropic from '@anthropic-ai/sdk';
-import { createBashToolHandler, formatToolForProvider, bashToolDefinition, createNativeBackend } from '@rust-bash/core';
+import { createBashToolHandler, formatToolForProvider, bashToolDefinition, createNativeBackend } from '@shantanugoel/rust-bash';
 
 const { handler } = createBashToolHandler(createNativeBackend, { files: myFiles });
 
@@ -536,7 +536,7 @@ for (const block of response.content) {
 ```typescript
 import { tool } from 'ai';
 import { z } from 'zod';
-import { createBashToolHandler, createNativeBackend } from '@rust-bash/core';
+import { createBashToolHandler, createNativeBackend } from '@shantanugoel/rust-bash';
 
 const { handler } = createBashToolHandler(createNativeBackend, { files: myFiles });
 const bashTool = tool({
@@ -551,7 +551,7 @@ const bashTool = tool({
 ```typescript
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
-import { createBashToolHandler, createNativeBackend } from '@rust-bash/core';
+import { createBashToolHandler, createNativeBackend } from '@shantanugoel/rust-bash';
 
 const { handler, definition } = createBashToolHandler(createNativeBackend, { files: myFiles });
 const bashTool = tool(
@@ -648,7 +648,7 @@ match tool_call.name.as_str() {
 
 ## Browser Integration (WASM)
 
-rust-bash runs in the browser via WebAssembly. The `@rust-bash/core` npm package provides a browser entry point that loads the WASM binary.
+rust-bash runs in the browser via WebAssembly. The `@shantanugoel/rust-bash` npm package provides a browser entry point that loads the WASM binary.
 
 ### Architecture
 
@@ -668,7 +668,7 @@ The showcase website at `examples/website/` demonstrates the full browser integr
 ### Usage
 
 ```typescript
-import { Bash, initWasm, createWasmBackend } from '@rust-bash/core/browser';
+import { Bash, initWasm, createWasmBackend } from '@shantanugoel/rust-bash/browser';
 
 // Initialize WASM module
 await initWasm();

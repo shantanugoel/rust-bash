@@ -2,7 +2,7 @@
 
 ## Overview
 
-`@rust-bash/core` is designed as a drop-in replacement for `just-bash` with an expanded feature set. This guide covers the key differences and how to migrate your code.
+`@shantanugoel/rust-bash` is designed as a drop-in replacement for `just-bash` with an expanded feature set. This guide covers the key differences and how to migrate your code.
 
 ## Installation
 
@@ -10,8 +10,8 @@
 # Remove just-bash
 npm uninstall just-bash
 
-# Install @rust-bash/core
-npm install @rust-bash/core
+# Install @shantanugoel/rust-bash
+npm install @shantanugoel/rust-bash
 ```
 
 ## API Comparison
@@ -29,10 +29,10 @@ const bash = new Bash({
 });
 ```
 
-**@rust-bash/core:**
+**@shantanugoel/rust-bash:**
 
 ```typescript
-import { Bash, tryLoadNative, createNativeBackend, initWasm, createWasmBackend } from '@rust-bash/core';
+import { Bash, tryLoadNative, createNativeBackend, initWasm, createWasmBackend } from '@shantanugoel/rust-bash';
 
 // Choose a backend (native addon for speed, WASM for portability)
 let createBackend;
@@ -61,7 +61,7 @@ console.log(result.stdout);   // "hello\n"
 console.log(result.exitCode); // 0
 ```
 
-**@rust-bash/core:**
+**@shantanugoel/rust-bash:**
 
 ```typescript
 const result = await bash.exec('echo hello');
@@ -85,10 +85,10 @@ const greet = defineCommand('greet', async (args, ctx) => {
 const bash = new Bash({ customCommands: [greet] });
 ```
 
-**@rust-bash/core:**
+**@shantanugoel/rust-bash:**
 
 ```typescript
-import { Bash, defineCommand } from '@rust-bash/core';
+import { Bash, defineCommand } from '@shantanugoel/rust-bash';
 
 const greet = defineCommand('greet', async (args, ctx) => {
   return { stdout: `Hello, ${args[0]}!\n`, stderr: '', exitCode: 0 };
@@ -109,7 +109,7 @@ const bash = new Bash({
 });
 ```
 
-**@rust-bash/core:**
+**@shantanugoel/rust-bash:**
 
 ```typescript
 const bash = await Bash.create(createBackend, {
@@ -136,8 +136,8 @@ The `executionLimits` interface is the same. All 10 limits are supported:
 
 | Step | Change |
 |------|--------|
-| 1. Package | `just-bash` → `@rust-bash/core` |
-| 2. Import | `from 'just-bash'` → `from '@rust-bash/core'` |
+| 1. Package | `just-bash` → `@shantanugoel/rust-bash` |
+| 2. Import | `from 'just-bash'` → `from '@shantanugoel/rust-bash'` |
 | 3. Backend setup | Add backend detection (see above) |
 | 4. Construction | `new Bash(opts)` → `await Bash.create(createBackend, opts)` |
 | 5. Execution | `bash.exec(cmd)` → `await bash.exec(cmd)` |
@@ -145,14 +145,14 @@ The `executionLimits` interface is the same. All 10 limits are supported:
 | 7. Limits | No change — same `executionLimits` interface |
 | 8. Files | No change — same `files` option (eager + lazy supported) |
 
-## New Features in @rust-bash/core
+## New Features in @shantanugoel/rust-bash
 
-Features available in `@rust-bash/core` that aren't in `just-bash`:
+Features available in `@shantanugoel/rust-bash` that aren't in `just-bash`:
 
 ### AI Tool Integration (Framework-Agnostic)
 
 ```typescript
-import { bashToolDefinition, createBashToolHandler, formatToolForProvider } from '@rust-bash/core';
+import { bashToolDefinition, createBashToolHandler, formatToolForProvider } from '@shantanugoel/rust-bash';
 
 const { handler } = createBashToolHandler(createNativeBackend, {
   files: myFiles,
@@ -215,10 +215,10 @@ import { Bash } from 'just-bash';
 const bash = new Bash({ files: { '/data.txt': 'hello' } });
 ```
 
-**@rust-bash/core:**
+**@shantanugoel/rust-bash:**
 
 ```typescript
-import { Bash, initWasm, createWasmBackend } from '@rust-bash/core/browser';
+import { Bash, initWasm, createWasmBackend } from '@shantanugoel/rust-bash/browser';
 
 await initWasm();
 const bash = await Bash.create(createWasmBackend, {
@@ -230,12 +230,12 @@ const bash = await Bash.create(createWasmBackend, {
 
 ## Troubleshooting
 
-### "Cannot find module '@rust-bash/core'"
+### "Cannot find module '@shantanugoel/rust-bash'"
 
 Ensure you've installed the package:
 
 ```bash
-npm install @rust-bash/core
+npm install @shantanugoel/rust-bash
 ```
 
 ### "tryLoadNative is not available" / native addon not loading

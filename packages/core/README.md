@@ -1,17 +1,17 @@
-# @rust-bash/core
+# @shantanugoel/rust-bash
 
 A sandboxed bash interpreter powered by Rust — TypeScript API with native Node.js addon and WASM support.
 
 ## Installation
 
 ```bash
-npm install @rust-bash/core
+npm install @shantanugoel/rust-bash
 ```
 
 ## Quick Start
 
 ```typescript
-import { Bash, tryLoadNative, createNativeBackend, initWasm, createWasmBackend } from '@rust-bash/core';
+import { Bash, tryLoadNative, createNativeBackend, initWasm, createWasmBackend } from '@shantanugoel/rust-bash';
 
 // Auto-detect backend: native addon (fast) or WASM (universal)
 let createBackend;
@@ -162,7 +162,7 @@ bash.fs.rmSync('/dir', { recursive: true });
 Create a custom command:
 
 ```typescript
-import { defineCommand } from '@rust-bash/core';
+import { defineCommand } from '@shantanugoel/rust-bash';
 
 const fetch = defineCommand('fetch', async (args, ctx) => {
   const url = args[0];
@@ -198,7 +198,7 @@ import {
   createBashToolHandler,
   formatToolForProvider,
   handleToolCall,
-} from '@rust-bash/core';
+} from '@shantanugoel/rust-bash';
 ```
 
 #### `bashToolDefinition`
@@ -265,7 +265,7 @@ Additional tool definitions: `writeFileToolDefinition`, `readFileToolDefinition`
 On Node.js, try the native addon first for best performance:
 
 ```typescript
-import { tryLoadNative, createNativeBackend, initWasm, createWasmBackend } from '@rust-bash/core';
+import { tryLoadNative, createNativeBackend, initWasm, createWasmBackend } from '@shantanugoel/rust-bash';
 
 let createBackend;
 if (await tryLoadNative()) {
@@ -281,7 +281,7 @@ if (await tryLoadNative()) {
 In the browser, only WASM is available. Use the `/browser` entry point:
 
 ```typescript
-import { Bash, initWasm, createWasmBackend } from '@rust-bash/core/browser';
+import { Bash, initWasm, createWasmBackend } from '@shantanugoel/rust-bash/browser';
 
 await initWasm();
 const bash = await Bash.create(createWasmBackend, { /* options */ });
@@ -297,11 +297,11 @@ Plus 40 shell builtins: `exit`, `cd`, `export`, `unset`, `set`, `shift`, `readon
 
 All commands support `--help` for usage information. Each command includes flag fidelity metadata (supported, stubbed, ignored).
 
-For a comprehensive guide tailored to AI agents, see [AGENTS.npm.md](https://github.com/shantanugoel/rust-bash/blob/main/AGENTS.npm.md).
+For a comprehensive guide tailored to AI agents, see [AGENTS.md](https://github.com/shantanugoel/rust-bash/blob/main/packages/core/AGENTS.md).
 
 ## Comparison with just-bash
 
-| Feature | just-bash | @rust-bash/core |
+| Feature | just-bash | @shantanugoel/rust-bash |
 |---------|-----------|-----------------|
 | Language | Pure TypeScript | Rust → WASM + native addon |
 | Performance | JS-speed | Near-native (native addon) / WASM |

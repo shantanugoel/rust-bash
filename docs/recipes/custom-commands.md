@@ -220,12 +220,12 @@ assert_eq!(result.stdout, "[AUDIT] hello\n");
 
 ## TypeScript: Custom Commands with defineCommand
 
-The `@rust-bash/core` npm package provides `defineCommand()` for creating custom commands in TypeScript:
+The `@shantanugoel/rust-bash` npm package provides `defineCommand()` for creating custom commands in TypeScript:
 
 ### Basic Command
 
 ```typescript
-import { Bash, defineCommand } from '@rust-bash/core';
+import { Bash, defineCommand } from '@shantanugoel/rust-bash';
 
 const greet = defineCommand('greet', async (args, ctx) => {
   const name = args[0] ?? 'world';
@@ -243,7 +243,7 @@ const result = await bash.exec('greet Alice');
 ### Async Commands (e.g., HTTP fetch)
 
 ```typescript
-import { defineCommand } from '@rust-bash/core';
+import { defineCommand } from '@shantanugoel/rust-bash';
 
 const fetchCmd = defineCommand('fetch', async (args, ctx) => {
   const url = args[0];

@@ -1,5 +1,5 @@
 /**
- * Main entry point for @rust-bash/core (Node.js).
+ * Main entry point for @shantanugoel/rust-bash (Node.js).
  *
  * Auto-detects backend: tries native addon first, falls back to WASM.
  */

@@ -1,5 +1,5 @@
 /**
- * TypeScript types for @rust-bash/core.
+ * TypeScript types for @shantanugoel/rust-bash.
  */
 
 // ── File System Types ────────────────────────────────────────────────

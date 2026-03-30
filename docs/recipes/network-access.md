@@ -143,10 +143,10 @@ let broad = NetworkPolicy {
 
 ## TypeScript: Network Configuration
 
-The `@rust-bash/core` npm package supports the same network policy:
+The `@shantanugoel/rust-bash` npm package supports the same network policy:
 
 ```typescript
-import { Bash } from '@rust-bash/core';
+import { Bash } from '@shantanugoel/rust-bash';
 
 const bash = await Bash.create(createBackend, {
   network: {
