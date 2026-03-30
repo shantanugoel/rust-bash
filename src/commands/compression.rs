@@ -15,6 +15,44 @@ fn resolve_path(path_str: &str, cwd: &str) -> PathBuf {
     }
 }
 
+/// Normalize a path by resolving `.` and `..` components without filesystem access.
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut components = Vec::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::RootDir => {
+                components.clear();
+                components.push("/".to_string());
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if components.len() > 1 {
+                    components.pop();
+                }
+            }
+            std::path::Component::Normal(s) => {
+                components.push(s.to_string_lossy().to_string());
+            }
+            _ => {}
+        }
+    }
+    if components.len() == 1 && components[0] == "/" {
+        return PathBuf::from("/");
+    }
+    let mut result = String::new();
+    for (i, c) in components.iter().enumerate() {
+        if i == 0 && c == "/" {
+            result.push('/');
+        } else if i == 1 && components[0] == "/" {
+            result.push_str(c);
+        } else {
+            result.push('/');
+            result.push_str(c);
+        }
+    }
+    PathBuf::from(result)
+}
+
 /// Convert SystemTime to seconds since UNIX epoch for tar headers.
 fn system_time_to_secs(t: std::time::SystemTime) -> u64 {
     t.duration_since(std::time::UNIX_EPOCH)
@@ -962,6 +1000,22 @@ fn tar_extract(
         };
 
         let full_path = resolve_path(&entry_path.to_string_lossy(), effective_cwd);
+
+        // Guard against path-traversal attacks (e.g., entries like "../../bin/ls")
+        let normalized = normalize_path(&full_path);
+        let normalized_str = normalized.to_string_lossy();
+        let norm_cwd = if effective_cwd.ends_with('/') {
+            effective_cwd.to_string()
+        } else {
+            format!("{}/", effective_cwd)
+        };
+        if !normalized_str.starts_with(&norm_cwd) && *normalized_str != *effective_cwd {
+            stderr.push_str(&format!(
+                "tar: {}: path escapes extraction directory, skipping\n",
+                entry_path.display()
+            ));
+            continue;
+        }
 
         if verbose {
             verbose_output.push_str(&format!("{}\n", entry_path.display()));

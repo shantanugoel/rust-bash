@@ -23,6 +23,7 @@ pub struct CommandContext<'a> {
     pub cwd: &'a str,
     pub env: &'a HashMap<String, String>,
     pub stdin: &'a str,
+    pub stdin_bytes: Option<&'a [u8]>,
     pub limits: &'a ExecutionLimits,
     pub network_policy: &'a NetworkPolicy,
     pub exec: Option<ExecCallback<'a>>,
@@ -39,6 +40,7 @@ pub struct CommandContext<'a> {
 | `cwd` | Current working directory for resolving relative paths |
 | `env` | Environment variables (read-only from command's perspective) |
 | `stdin` | Input piped from the previous command in a pipeline |
+| `stdin_bytes` | Binary input from pipeline (used by compression commands) |
 | `limits` | Execution limits (commands should respect max_output_size) |
 | `network_policy` | Network access policy (checked by `curl` before any HTTP request) |
 | `exec` | Callback to execute sub-commands (used by `xargs`, `find -exec`, etc.) |
@@ -50,10 +52,11 @@ pub struct CommandResult {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: i32,
+    pub stdout_bytes: Option<Vec<u8>>,
 }
 ```
 
-Commands return structured results. The interpreter handles piping stdout between pipeline stages and collecting stderr.
+Commands return structured results. The interpreter handles piping stdout between pipeline stages and collecting stderr. Binary commands (compression/archiving) use `stdout_bytes` for byte-transparent output.
 
 ## CommandMeta and `--help` Support
 
@@ -66,6 +69,7 @@ pub struct CommandMeta {
     pub description: &'static str,     // One-line summary
     pub options: &'static [(&'static str, &'static str)],  // ("-n", "print line numbers")
     pub supports_help_flag: bool,      // false for echo, true, false, test, [
+    pub flags: &'static [FlagInfo],    // Detailed flag metadata with status
 }
 ```
 
@@ -290,6 +294,7 @@ static MY_COMMAND_META: CommandMeta = CommandMeta {
         ("-v", "verbose output"),
     ],
     supports_help_flag: true,
+    flags: &[],
 };
 
 impl VirtualCommand for MyCommand {

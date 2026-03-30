@@ -189,7 +189,7 @@ const youngest = bash.fs.readFileSync('/youngest.txt'); // "Bob,25\n"
 |---------|-------------|
 | `curl` | HTTP client (requires `network.enabled: true`) |
 
-## Shell Builtins (39)
+## Shell Builtins (40)
 
 These are handled by the interpreter, not as external commands:
 
@@ -206,7 +206,7 @@ These are handled by the interpreter, not as external commands:
 | `eval` | Evaluate string as shell command |
 | `source` / `.` | Execute file in current shell |
 | `break` / `continue` | Loop control |
-| `:` | No-op (always returns 0) |
+| `:` / `colon` | No-op (always returns 0) |
 | `let` | Arithmetic evaluation |
 | `local` | Declare local variable in function |
 | `return` | Return from function |
