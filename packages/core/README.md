@@ -1,6 +1,6 @@
 # rust-bash
 
-A sandboxed bash interpreter powered by Rust — TypeScript API with native Node.js addon and WASM support.
+A sandboxed bash interpreter for AI Agents, powered by Rust — TypeScript API with native Node.js addon and WASM support.
 
 ## Installation
 
