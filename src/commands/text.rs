@@ -2412,7 +2412,6 @@ pub(crate) fn run_printf_format(format_str: &str, arguments: &[String]) -> Print
     let arg_count = arguments.len();
 
     let need_cycle = arg_count > 0;
-    let mut first_pass = true;
 
     loop {
         let start_arg_idx = arg_idx;
@@ -2426,10 +2425,10 @@ pub(crate) fn run_printf_format(format_str: &str, arguments: &[String]) -> Print
         if terminate || !need_cycle || arg_idx >= arg_count {
             break;
         }
-        if !first_pass && arg_idx == start_arg_idx {
+        // If no args were consumed, the format has no conversions — don't cycle
+        if arg_idx == start_arg_idx {
             break;
         }
-        first_pass = false;
     }
     PrintfResult {
         stdout,
@@ -2458,10 +2457,10 @@ fn parse_printf_int(s: &str) -> (i64, Option<String>) {
         }
         return (0, None);
     }
-    // Check for trailing non-whitespace after trim
+
+    // Strip trailing whitespace but remember if there was any
     let clean = trimmed.trim_end();
     let has_trailing_space = clean.len() != trimmed.len();
-    let s_for_err = s.trim();
 
     // Handle optional leading sign
     let (negative, rest) = if let Some(r) = clean.strip_prefix('-') {
@@ -2471,6 +2470,15 @@ fn parse_printf_int(s: &str) -> (i64, Option<String>) {
     } else {
         (false, clean)
     };
+
+    // Reject base-N# notation (e.g., 64#a) — parse the number before #
+    if let Some(hash_pos) = rest.find('#') {
+        let before_hash = &rest[..hash_pos];
+        let val = before_hash.parse::<i64>().unwrap_or(0);
+        let val = if negative { -val } else { val };
+        return (val, Some(format!("printf: {clean}: invalid number\n")));
+    }
+
     let parsed = if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
         i64::from_str_radix(hex, 16)
     } else if rest.starts_with('0')
@@ -2485,12 +2493,31 @@ fn parse_printf_int(s: &str) -> (i64, Option<String>) {
         Ok(val) => {
             let val = if negative { -val } else { val };
             if has_trailing_space {
-                (val, Some(format!("printf: {s_for_err}: invalid number\n")))
+                (val, Some(format!("printf: {clean}: invalid number\n")))
             } else {
                 (val, None)
             }
         }
-        Err(_) => (0, Some(format!("printf: {s_for_err}: invalid number\n"))),
+        Err(_) => {
+            // Try parsing as u64 for overflow cases (e.g., 18446744073709551615)
+            if !negative && let Ok(uval) = rest.parse::<u64>() {
+                let err = if has_trailing_space {
+                    Some(format!("printf: {clean}: invalid number\n"))
+                } else {
+                    None
+                };
+                return (uval as i64, err);
+            }
+            // Try partial parse: extract leading digits
+            let leading_digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if !leading_digits.is_empty()
+                && let Ok(val) = leading_digits.parse::<i64>()
+            {
+                let val = if negative { -val } else { val };
+                return (val, Some(format!("printf: {clean}: invalid number\n")));
+            }
+            (0, Some(format!("printf: {clean}: invalid number\n")))
+        }
     }
 }
 
@@ -2891,18 +2918,8 @@ pub(crate) fn format_printf(
                     }
                 }
                 _ => {
-                    // Unknown format specifier: produce error
+                    // Unknown format specifier: produce error, but no output for the spec
                     error_msg = Some(format!("printf: %{conv}: invalid format character\n"));
-                    result.push('%');
-                    result.push_str(&flags);
-                    if let Some(w) = width {
-                        result.push_str(&w.to_string());
-                    }
-                    if let Some(p) = precision {
-                        result.push('.');
-                        result.push_str(&p.to_string());
-                    }
-                    result.push(conv);
                 }
             }
         } else {

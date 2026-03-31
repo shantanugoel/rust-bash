@@ -67,6 +67,7 @@ arith.test:Constants in bases 2 to 64
 arith.test:Dynamic base constants
 arith.test:Dynamic hex constants
 arith.test:Dynamic octal constant
+arith.test:Dynamic parsing of arithmetic
 arith.test:Dynamic parsing on empty string
 arith.test:Dynamic var names - result of runtime parse/eval
 arith.test:Exponentiation operator has buggy precedence
@@ -172,6 +173,7 @@ array-sparse.test:test length
 array-sparse.test:unset -v a[i]
 array-sparse.test:unset -v a[i] for max index
 array-sparse.test:[[ -v a[i] ]]
+array-sparse.test:xtrace a+=()
 array.test:"$*"
 array.test:$*
 array.test:${!a[1]} is named ref in bash
@@ -237,6 +239,7 @@ assign-extended.test:declare -a
 assign-extended.test:declare -f exit code indicates function existence
 assign-extended.test:declare -F prints function names
 assign-extended.test:declare -paA
+assign-extended.test:declare -p arr
 assign-extended.test:declare -p foo=bar doesn't make sense
 assign-extended.test:declare -pg
 assign-extended.test:declare -pg var
@@ -270,6 +273,7 @@ assign.test:export a=1 no_value c=2
 assign.test:FOO=foo echo [foo]
 assign.test:FOO=foo fun
 assign.test:local a=loc $var c=loc
+assign.test:'local -a x' does not set variable
 assign.test:'local x' and then array assignment
 assign.test:Modify a temporary binding
 assign.test:Multiple temporary envs on the stack
@@ -445,15 +449,19 @@ builtin-echo.test:echo -ez (invalid flag)
 builtin-echo.test:echo to redirected directory is an error
 builtin-echo.test:\u6
 builtin-eval-source.test:Eval
+builtin-eval-source.test:eval accepts/ignores --
 builtin-eval-source.test:Eval in bash does tilde expansion in array
 builtin-eval-source.test:Eval in does tilde expansion
 builtin-eval-source.test:eval string with 'break continue return error'
+builtin-eval-source.test:Eval with syntax error
 builtin-eval-source.test:exit within eval (regression)
 builtin-eval-source.test:exit within source (regression)
 builtin-eval-source.test:Source
+builtin-eval-source.test:source accepts/ignores --
 builtin-eval-source.test:source doesn't crash when targeting a directory
 builtin-eval-source.test:Source nonexistent
 builtin-eval-source.test:Source with no arguments
+builtin-eval-source.test:Source with syntax error
 builtin-eval-source.test:source works for files in current directory (bash only)
 builtin-eval-source.test:source works for files in subdirectory
 builtin-getopts.test:Basic getopts invocation
@@ -476,6 +484,7 @@ builtin-getopts.test:getopts with with -
 builtin-getopts.test:Local OPTIND
 builtin-getopts.test:More Smooshing 1
 builtin-getopts.test:More Smooshing 2
+builtin-getopts.test:OPTARG is empty (not unset) after parsing a flag doesn't take an arg
 builtin-getopts.test:OPTIND
 builtin-getopts.test:OPTIND narrowed down
 builtin-getopts.test:OPTIND should be >= 1 (regression)
@@ -500,6 +509,7 @@ builtin-misc.test:time pipeline
 builtin-printf.test:%06d zero padding vs. %6.6d
 builtin-printf.test:%06s is no-op
 builtin-printf.test:%06x %06X %06o
+builtin-printf.test:Arbitrary base 64#a is rejected (unlike in shell arithmetic)
 builtin-printf.test:dynamic declare instead of %q
 builtin-printf.test:dynamic declare instead of %s
 builtin-printf.test:empty string (osh is more strict)
@@ -527,18 +537,26 @@ builtin-printf.test:printf floating point (not required, but they all implement 
 builtin-printf.test:printf floating point with - and 0
 builtin-printf.test:printf integer
 builtin-printf.test:printf invalid backslash escape (is ignored)
+builtin-printf.test:printf invalid format
+builtin-printf.test:printf negative numbers
 builtin-printf.test:printf %q
 builtin-printf.test:printf %*.*s (width/precision from args)
 builtin-printf.test:printf -v a[1]
 builtin-printf.test:printf -v dynamic scope
 builtin-printf.test:printf -v %q
 builtin-printf.test:printf -v %s
+builtin-printf.test:printf -v syntax error
 builtin-printf.test:printf width strings
 builtin-printf.test:printf with no args
+builtin-printf.test:printf with too few arguments
+builtin-printf.test:printf with too many arguments
+builtin-printf.test:Regression for 'printf x y'
+builtin-printf.test:Runtime error for invalid integer
 builtin-printf.test:Unicode char with '
 builtin-printf.test:unsigned / octal / hex
 builtin-printf.test:unsigned / octal / hex big
 builtin-read.test:dynamic scope used to set vars
+builtin-read.test:empty input and splitting
 builtin-read.test:IFS= read -n (OSH regression: value saved in tempenv)
 builtin-read.test:IFS='x ' read a b: trailing spaces (with max_split)
 builtin-read.test:read builtin splits value across multiple vars
@@ -576,6 +594,7 @@ builtin-set.test:reset option with short flag
 builtin-set.test:set -a exports declare variables
 builtin-set.test:set -a exports local variables
 builtin-set.test:set -a exports variables
+builtin-set.test:set -eu (flag parsing)
 builtin-set.test:set -o lists options
 builtin-set.test:set -u -- x y z
 builtin-set.test:set with both options and argv
@@ -583,16 +602,21 @@ builtin-special.test:Non-special builtins CAN be redefined as functions
 builtin-special.test:true is not special; prefix assignments don't persist, it can be redefined
 builtin-type-bash.test:type -a -> alias; prints alias definition
 builtin-type-bash.test:type -a -> executable not in PATH
+builtin-type-bash.test:type -a -> keyword
 builtin-type-bash.test:type -ap -> alias
 builtin-type-bash.test:type -ap -> function
+builtin-type-bash.test:type -f builtin -> not found
 builtin-type-bash.test:type -p builtin -> not a file
 builtin-type-bash.test:type -p builtin -> not found
+builtin-type-bash.test:type -P builtin -> not found
 builtin-type-bash.test:type -t -> alias
 builtin-type-bash.test:type -t -> builtin
 builtin-type-bash.test:type -t control flow
 builtin-type-bash.test:type -t doesn't find non-executable (like command -v)
 builtin-type-bash.test:type -t -> function
+builtin-type-bash.test:type -t -> not found
 builtin-type.test:special builtins are called out
+builtin-type.test:type -> keyword builtin
 builtin-type.test:type -> not found
 builtin-vars.test:assign to readonly variable
 builtin-vars.test:assign to readonly variable - errexit
@@ -656,6 +680,7 @@ dbracket.test:[[ compound expressions
 dbracket.test:empty ! is treated as literal
 dbracket.test:[[ empty string is false
 dbracket.test:-eq coercion produces weird results
+dbracket.test:-eq does dynamic arithmetic parsing (not supported in OSH)
 dbracket.test:[[ glob matching, [[ has no glob expansion
 dbracket.test:[[ glob matching with escapes
 dbracket.test:[[ glob matching with unquoted var
@@ -664,6 +689,7 @@ dbracket.test:[[ has quote joining
 dbracket.test:Hex literals with -eq
 dbracket.test:[[ '(' ]] is treated as literal
 dbracket.test:more tilde expansion
+dbracket.test:negative numbers - zero, decimal, octal, hex, base N
 dbracket.test:Octal literals with -eq
 dbracket.test:!= on strings
 dbracket.test:> on strings
@@ -882,6 +908,7 @@ nameref.test:mutate through nameref: ref[0]=
 nameref.test:mutating through nameref: ref=
 nameref.test:Mutually recursive namerefs detected on READ
 nameref.test:Mutually recursive namerefs detected on WRITE
+nameref.test:name ref on Undef cell
 nameref.test:pass array by reference
 nameref.test:pass assoc array by reference
 nameref.test:pass local array by reference, relying on DYNAMIC SCOPING
@@ -1035,6 +1062,7 @@ serialize.test:${var@Q}
 serialize.test:printf %q newline
 serialize.test:printf %q quotes
 serialize.test:printf %q spaces
+serialize.test:xtrace
 sh-func.test:Assign a local and global on same line
 sh-func.test:Assign local separately
 sh-func.test:Dynamic Scope
@@ -1044,24 +1072,38 @@ sh-func.test:return $empty
 sh-func.test:return "" (a lot of disagreement)
 sh-func.test:Return statement
 sh-func.test:Return without args gives previous
+sh-func.test:Scope of global variable when sourced in function (Shell Functions aren't Closures)
+sh-options-bash.test:SHELLOPTS and BASHOPTS are non-empty
+sh-options-bash.test:SHELLOPTS is readonly
 sh-options-bash.test:SHELLOPTS is updated when options are changed
 sh-options-bash.test:shopt -s progcomp hostcomplete are stubs (bash-completion)
 sh-options.test:$- and more options
+sh-options.test:$- with pipefail
+sh-options.test:-n for no execution (useful with --ast-output)
 sh-options.test:noclobber off
 sh-options.test:noclobber on
 sh-options.test:noclobber on &> >
 sh-options.test:noclobber on &>> >>
 sh-options.test:noclobber on >>
 sh-options.test:no-ops not shown by shopt -p
+sh-options.test:nounset
 sh-options.test:set -o vi/emacs
 sh-options.test:set without args and array variables
+sh-options.test:set without args and assoc array variables (not in OSH)
 sh-options.test:set without args lists variables
 sh-options.test:shopt allows for backward compatibility like bash
 sh-options.test:shopt -p exit code (regression)
+sh-options.test:shopt -p -o validates option names
 sh-options.test:shopt -p prints 'shopt' options
 sh-options.test:shopt -q
+sh-options.test:shopt -q invalid
 sh-options.test:shopt -s strict:all
 sh-options.test:shopt with no flags prints options
+sh-options.test:stubbed out bash options
+sh-options.test:-u is nounset
+sh-options.test:Unimplemented options - OSH shopt -s ignore_shopt_not_impl
+sh-options.test:Unimplemented options - print, query, set, unset
+sh-options.test:vi and emacs are mutually exclusive
 sh-usage.test:empty stdin
 sh-usage.test:exit with explicit arg
 sh-usage.test:exit with no args
@@ -1287,7 +1329,14 @@ word-split.test:Word elision with non-whitespace IFS
 word-split.test:Word elision with space
 word-split.test:Word splitting
 word-split.test:Word splitting 2
+xtrace.test:Assignments and assign builtins
+xtrace.test:PS4 is scoped
 xtrace.test:PS4 with runtime error
 xtrace.test:PS4 with unterminated $(
 xtrace.test:PS4 with unterminated ${
+xtrace.test:Reading $? in PS4
+xtrace.test:Regression: xtrace for "a+=(v)"
 xtrace.test:xtrace with paths
+xtrace.test:xtrace with tabs
+xtrace.test:xtrace with variables in PS4
+xtrace.test:xtrace with whitespace, quotes, and backslash

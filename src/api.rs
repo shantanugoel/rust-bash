@@ -384,7 +384,7 @@ impl RustBashBuilder {
             });
         }
 
-        let state = InterpreterState {
+        let mut state = InterpreterState {
             fs,
             env,
             cwd,
@@ -423,6 +423,32 @@ impl RustBashBuilder {
             proc_sub_prealloc: HashMap::new(),
             pipe_stdin_bytes: None,
         };
+
+        // Set SHELLOPTS and BASHOPTS as readonly variables
+        // They are computed dynamically on read, but must exist so `test -v` works.
+        state.env.insert(
+            "SHELLOPTS".to_string(),
+            Variable {
+                value: VariableValue::Scalar(String::new()),
+                attrs: VariableAttrs::READONLY,
+            },
+        );
+        state.env.insert(
+            "BASHOPTS".to_string(),
+            Variable {
+                value: VariableValue::Scalar(String::new()),
+                attrs: VariableAttrs::READONLY,
+            },
+        );
+
+        // PS4 defaults to "+ " (xtrace prefix); explicit `unset PS4` removes it.
+        state.env.insert(
+            "PS4".to_string(),
+            Variable {
+                value: VariableValue::Scalar("+ ".to_string()),
+                attrs: VariableAttrs::empty(),
+            },
+        );
 
         Ok(RustBash { state })
     }

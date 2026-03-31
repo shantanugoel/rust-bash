@@ -245,6 +245,13 @@ pub struct ShoptOpts {
     pub progcomp_alias: bool,
     pub shift_verbose: bool,
     pub execfail: bool,
+    pub cdable_vars: bool,
+    pub localvar_inherit: bool,
+    pub localvar_unset: bool,
+    pub extdebug: bool,
+    pub patsub_replacement: bool,
+    pub assoc_expand_once: bool,
+    pub varredir_close: bool,
 }
 
 impl Default for ShoptOpts {
@@ -291,6 +298,13 @@ impl Default for ShoptOpts {
             progcomp_alias: false,
             shift_verbose: false,
             execfail: false,
+            cdable_vars: false,
+            localvar_inherit: false,
+            localvar_unset: false,
+            extdebug: false,
+            patsub_replacement: true,
+            assoc_expand_once: false,
+            varredir_close: false,
         }
     }
 }

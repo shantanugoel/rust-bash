@@ -5491,10 +5491,12 @@ fn noexec_suppresses_output() {
 }
 
 #[test]
-fn noexec_allows_set_to_reenable() {
+fn noexec_blocks_all_after_activation() {
+    // bash: once set -n is active, all subsequent commands are skipped
+    // including set +n — there is no way to re-enable execution
     let mut sh = shell();
     let r = sh.exec("set -n; set +n; echo visible").unwrap();
-    assert_eq!(r.stdout, "visible\n");
+    assert_eq!(r.stdout, "");
 }
 
 #[test]

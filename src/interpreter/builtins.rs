@@ -1100,7 +1100,9 @@ fn builtin_set(args: &[String], state: &mut InterpreterState) -> Result<ExecResu
                     format!("{k}=({})\n", elements.join(" "))
                 }
                 VariableValue::AssociativeArray(map) => {
-                    let elements: Vec<String> = map
+                    let mut entries: Vec<(&String, &String)> = map.iter().collect();
+                    entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+                    let elements: Vec<String> = entries
                         .iter()
                         .map(|(key, val)| {
                             if key.contains(' ') || key.contains('"') {
@@ -1110,7 +1112,12 @@ fn builtin_set(args: &[String], state: &mut InterpreterState) -> Result<ExecResu
                             }
                         })
                         .collect();
-                    format!("{k}=({})\n", elements.join(" "))
+                    if elements.is_empty() {
+                        format!("{k}=()\n")
+                    } else {
+                        // Bash outputs a trailing space before the closing paren
+                        format!("{k}=({} )\n", elements.join(" "))
+                    }
                 }
                 VariableValue::Scalar(s) => format!("{k}={s}\n"),
             })
@@ -1209,8 +1216,18 @@ fn apply_option_name(name: &str, enable: bool, state: &mut InterpreterState) {
         "allexport" => state.shell_opts.allexport = enable,
         "noglob" => state.shell_opts.noglob = enable,
         "posix" => state.shell_opts.posix = enable,
-        "vi" => state.shell_opts.vi_mode = enable,
-        "emacs" => state.shell_opts.emacs_mode = enable,
+        "vi" => {
+            state.shell_opts.vi_mode = enable;
+            if enable {
+                state.shell_opts.emacs_mode = false;
+            }
+        }
+        "emacs" => {
+            state.shell_opts.emacs_mode = enable;
+            if enable {
+                state.shell_opts.vi_mode = false;
+            }
+        }
         _ => {}
     }
 }
@@ -1629,10 +1646,18 @@ fn format_declare_line(name: &str, var: &Variable) -> String {
             format!("declare {flag_str}{name}=({})\n", elems.join(" "))
         }
         VariableValue::AssociativeArray(map) => {
-            let mut elems: Vec<String> =
-                map.iter().map(|(k, v)| format!("[{k}]=\"{v}\"")).collect();
-            elems.sort();
-            format!("declare {flag_str}{name}=({})\n", elems.join(" "))
+            let mut entries: Vec<(&String, &String)> = map.iter().collect();
+            entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+            let elems: Vec<String> = entries
+                .iter()
+                .map(|(k, v)| format!("[{k}]=\"{v}\""))
+                .collect();
+            if elems.is_empty() {
+                format!("declare {flag_str}{name}=()\n")
+            } else {
+                // Bash outputs a trailing space before closing paren
+                format!("declare {flag_str}{name}=({} )\n", elems.join(" "))
+            }
         }
     }
 }
@@ -2279,7 +2304,10 @@ fn builtin_read(
 
     if let Some(ref arr_name) = array_name {
         // -a mode: split into indexed array
-        let fields: Vec<&str> = if ifs.is_empty() {
+        let fields: Vec<&str> = if line.is_empty() {
+            // Empty input always produces an empty array
+            vec![]
+        } else if ifs.is_empty() {
             vec![line.as_str()]
         } else {
             split_by_ifs(&line, &ifs)
@@ -2441,6 +2469,17 @@ fn builtin_eval(
         return Ok(ExecResult::default());
     }
 
+    // eval accepts and ignores `--`
+    let args = if args.first().map(|a| a.as_str()) == Some("--") {
+        &args[1..]
+    } else {
+        args
+    };
+
+    if args.is_empty() {
+        return Ok(ExecResult::default());
+    }
+
     let input = args.join(" ");
     if input.is_empty() {
         return Ok(ExecResult::default());
@@ -2461,7 +2500,16 @@ fn builtin_eval(
         Ok(p) => p,
         Err(e) => {
             state.counters.call_depth -= 1;
-            return Err(e);
+            let msg = format!("{e}");
+            return Ok(ExecResult {
+                stderr: if msg.is_empty() {
+                    String::new()
+                } else {
+                    format!("eval: {msg}\n")
+                },
+                exit_code: 1,
+                ..ExecResult::default()
+            });
         }
     };
     let result = execute_program(&program, state);
@@ -2560,7 +2608,9 @@ fn builtin_trap(
 
 /// Ordered list of all shopt option names (for consistent listing).
 const SHOPT_OPTIONS: &[&str] = &[
+    "assoc_expand_once",
     "autocd",
+    "cdable_vars",
     "cdspell",
     "checkhash",
     "checkjobs",
@@ -2572,6 +2622,7 @@ const SHOPT_OPTIONS: &[&str] = &[
     "dotglob",
     "execfail",
     "expand_aliases",
+    "extdebug",
     "extglob",
     "extquote",
     "failglob",
@@ -2589,24 +2640,30 @@ const SHOPT_OPTIONS: &[&str] = &[
     "interactive_comments",
     "lastpipe",
     "lithist",
+    "localvar_inherit",
+    "localvar_unset",
     "login_shell",
     "mailwarn",
     "no_empty_cmd_completion",
     "nocaseglob",
     "nocasematch",
     "nullglob",
+    "patsub_replacement",
     "progcomp",
     "progcomp_alias",
     "promptvars",
     "shift_verbose",
     "sourcepath",
+    "varredir_close",
     "xpg_echo",
 ];
 
 fn get_shopt(state: &InterpreterState, name: &str) -> Option<bool> {
     let o = &state.shopt_opts;
     match name {
+        "assoc_expand_once" => Some(o.assoc_expand_once),
         "autocd" => Some(o.autocd),
+        "cdable_vars" => Some(o.cdable_vars),
         "cdspell" => Some(o.cdspell),
         "checkhash" => Some(o.checkhash),
         "checkjobs" => Some(o.checkjobs),
@@ -2618,6 +2675,7 @@ fn get_shopt(state: &InterpreterState, name: &str) -> Option<bool> {
         "dotglob" => Some(o.dotglob),
         "execfail" => Some(o.execfail),
         "expand_aliases" => Some(o.expand_aliases),
+        "extdebug" => Some(o.extdebug),
         "extglob" => Some(o.extglob),
         "extquote" => Some(o.extquote),
         "failglob" => Some(o.failglob),
@@ -2635,17 +2693,21 @@ fn get_shopt(state: &InterpreterState, name: &str) -> Option<bool> {
         "interactive_comments" => Some(o.interactive_comments),
         "lastpipe" => Some(o.lastpipe),
         "lithist" => Some(o.lithist),
+        "localvar_inherit" => Some(o.localvar_inherit),
+        "localvar_unset" => Some(o.localvar_unset),
         "login_shell" => Some(o.login_shell),
         "mailwarn" => Some(o.mailwarn),
         "no_empty_cmd_completion" => Some(o.no_empty_cmd_completion),
         "nocaseglob" => Some(o.nocaseglob),
         "nocasematch" => Some(o.nocasematch),
         "nullglob" => Some(o.nullglob),
+        "patsub_replacement" => Some(o.patsub_replacement),
         "progcomp" => Some(o.progcomp),
         "progcomp_alias" => Some(o.progcomp_alias),
         "promptvars" => Some(o.promptvars),
         "shift_verbose" => Some(o.shift_verbose),
         "sourcepath" => Some(o.sourcepath),
+        "varredir_close" => Some(o.varredir_close),
         "xpg_echo" => Some(o.xpg_echo),
         _ => None,
     }
@@ -2654,7 +2716,9 @@ fn get_shopt(state: &InterpreterState, name: &str) -> Option<bool> {
 fn set_shopt(state: &mut InterpreterState, name: &str, value: bool) -> bool {
     let o = &mut state.shopt_opts;
     match name {
+        "assoc_expand_once" => o.assoc_expand_once = value,
         "autocd" => o.autocd = value,
+        "cdable_vars" => o.cdable_vars = value,
         "cdspell" => o.cdspell = value,
         "checkhash" => o.checkhash = value,
         "checkjobs" => o.checkjobs = value,
@@ -2666,6 +2730,7 @@ fn set_shopt(state: &mut InterpreterState, name: &str, value: bool) -> bool {
         "dotglob" => o.dotglob = value,
         "execfail" => o.execfail = value,
         "expand_aliases" => o.expand_aliases = value,
+        "extdebug" => o.extdebug = value,
         "extglob" => o.extglob = value,
         "extquote" => o.extquote = value,
         "failglob" => o.failglob = value,
@@ -2683,17 +2748,21 @@ fn set_shopt(state: &mut InterpreterState, name: &str, value: bool) -> bool {
         "interactive_comments" => o.interactive_comments = value,
         "lastpipe" => o.lastpipe = value,
         "lithist" => o.lithist = value,
+        "localvar_inherit" => o.localvar_inherit = value,
+        "localvar_unset" => o.localvar_unset = value,
         "login_shell" => o.login_shell = value,
         "mailwarn" => o.mailwarn = value,
         "no_empty_cmd_completion" => o.no_empty_cmd_completion = value,
         "nocaseglob" => o.nocaseglob = value,
         "nocasematch" => o.nocasematch = value,
         "nullglob" => o.nullglob = value,
+        "patsub_replacement" => o.patsub_replacement = value,
         "progcomp" => o.progcomp = value,
         "progcomp_alias" => o.progcomp_alias = value,
         "promptvars" => o.promptvars = value,
         "shift_verbose" => o.shift_verbose = value,
         "sourcepath" => o.sourcepath = value,
+        "varredir_close" => o.varredir_close = value,
         "xpg_echo" => o.xpg_echo = value,
         _ => return false,
     }
@@ -2813,9 +2882,10 @@ fn builtin_shopt(
                     });
                 }
                 None => {
+                    // bash returns 1 (not 2) for invalid option with -q
                     return Ok(ExecResult {
                         stderr: format!("shopt: {name}: invalid shell option name\n"),
-                        exit_code: 2,
+                        exit_code: 1,
                         ..ExecResult::default()
                     });
                 }
@@ -2849,28 +2919,39 @@ fn builtin_shopt(
 
         // -p format or named queries without flags
         let mut out = String::new();
+        let mut stderr = String::new();
         let mut any_invalid = false;
+        let mut any_unset = false;
         for name in &names {
             match get_shopt(state, name) {
                 Some(val) => {
-                    let flag = if val { "-s" } else { "-u" };
-                    out.push_str(&format!("shopt {flag} {name}\n"));
+                    if !val {
+                        any_unset = true;
+                    }
+                    if print_flag {
+                        let flag = if val { "-s" } else { "-u" };
+                        out.push_str(&format!("shopt {flag} {name}\n"));
+                    } else {
+                        let status = if val { "on" } else { "off" };
+                        out.push_str(&format!("{name:<24}{status}\n"));
+                    }
                 }
                 None => {
-                    if print_flag {
-                        return Ok(ExecResult {
-                            stderr: format!("shopt: {name}: invalid shell option name\n"),
-                            exit_code: 1,
-                            ..ExecResult::default()
-                        });
-                    }
+                    stderr.push_str(&format!("shopt: {name}: invalid shell option name\n"));
                     any_invalid = true;
                 }
             }
         }
+        // Exit code reflects option state for named options (both -p and no-flag modes)
+        let exit_code = if any_invalid || (!no_args && any_unset) {
+            1
+        } else {
+            0
+        };
         return Ok(ExecResult {
             stdout: out,
-            exit_code: if any_invalid { 1 } else { 0 },
+            stderr,
+            exit_code,
             ..ExecResult::default()
         });
     }
@@ -3032,28 +3113,33 @@ fn shopt_o_mode(
     }
 
     let mut out = String::new();
+    let mut stderr = String::new();
     let mut any_invalid = false;
+    let mut any_unset = false;
     for name in &names {
         match get_set_option(name, state) {
             Some(val) => {
+                if !val {
+                    any_unset = true;
+                }
                 let flag = if val { "-o" } else { "+o" };
                 out.push_str(&format!("set {flag} {name}\n"));
             }
             None => {
-                if print_flag {
-                    return Ok(ExecResult {
-                        stderr: format!("shopt: {name}: invalid shell option name\n"),
-                        exit_code: 1,
-                        ..ExecResult::default()
-                    });
-                }
+                stderr.push_str(&format!("shopt: {name}: invalid shell option name\n"));
                 any_invalid = true;
             }
         }
     }
+    let exit_code = if any_invalid || (!no_args && any_unset) {
+        1
+    } else {
+        0
+    };
     Ok(ExecResult {
         stdout: out,
-        exit_code: if any_invalid { 1 } else { 0 },
+        stderr,
+        exit_code,
         ..ExecResult::default()
     })
 }
@@ -3064,6 +3150,13 @@ fn builtin_source(
     args: &[String],
     state: &mut InterpreterState,
 ) -> Result<ExecResult, RustBashError> {
+    // source accepts and ignores `--`
+    let args = if args.first().map(|a| a.as_str()) == Some("--") {
+        &args[1..]
+    } else {
+        args
+    };
+
     let path_arg = match args.first() {
         Some(p) => p,
         None => {
@@ -3102,7 +3195,16 @@ fn builtin_source(
         Ok(p) => p,
         Err(e) => {
             state.counters.call_depth -= 1;
-            return Err(e);
+            let msg = format!("{e}");
+            return Ok(ExecResult {
+                stderr: if msg.is_empty() {
+                    String::new()
+                } else {
+                    format!("{path_arg}: {msg}\n")
+                },
+                exit_code: 1,
+                ..ExecResult::default()
+            });
         }
     };
     let result = execute_program(&program, state);
@@ -3384,6 +3486,8 @@ fn builtin_type(
     let mut t_flag = false;
     let mut a_flag = false;
     let mut p_flag = false;
+    let mut big_p_flag = false;
+    let mut f_flag = false;
     let mut names: Vec<&str> = Vec::new();
 
     for arg in args {
@@ -3393,6 +3497,8 @@ fn builtin_type(
                     't' => t_flag = true,
                     'a' => a_flag = true,
                     'p' => p_flag = true,
+                    'P' => big_p_flag = true,
+                    'f' => f_flag = true,
                     _ => {
                         return Ok(ExecResult {
                             stderr: format!("type: -{c}: invalid option\n"),
@@ -3418,7 +3524,27 @@ fn builtin_type(
     for name in &names {
         let mut found = false;
 
-        // Check alias
+        // -P: only search PATH (skip builtins, functions, aliases, keywords)
+        if big_p_flag {
+            let paths = search_path_all(name, state);
+            if paths.is_empty() {
+                exit_code = 1;
+            } else {
+                for path in &paths {
+                    stdout.push_str(&format!("{path}\n"));
+                    found = true;
+                    if !a_flag {
+                        break;
+                    }
+                }
+            }
+            if !found {
+                exit_code = 1;
+            }
+            continue;
+        }
+
+        // Check alias (-f only suppresses function lookup, not aliases)
         if let Some(expansion) = state.aliases.get(*name) {
             if t_flag {
                 stdout.push_str("alias\n");
@@ -3431,12 +3557,29 @@ fn builtin_type(
             }
         }
 
-        // Check function
-        if state.functions.contains_key(*name) {
+        // Check keyword
+        if is_shell_keyword(name) {
+            if t_flag {
+                stdout.push_str("keyword\n");
+            } else if !p_flag {
+                stdout.push_str(&format!("{name} is a shell keyword\n"));
+            }
+            found = true;
+            if !a_flag {
+                continue;
+            }
+        }
+
+        // Check function (skip if -f flag)
+        if !f_flag && let Some(func) = state.functions.get(*name) {
             if t_flag {
                 stdout.push_str("function\n");
             } else if !p_flag {
                 stdout.push_str(&format!("{name} is a function\n"));
+                // Print function body
+                let body_str = format_function_body(name, &func.body);
+                stdout.push_str(&body_str);
+                stdout.push('\n');
             }
             found = true;
             if !a_flag {
@@ -3448,7 +3591,7 @@ fn builtin_type(
         if is_builtin(name) {
             if t_flag {
                 stdout.push_str("builtin\n");
-            } else if !p_flag && !t_flag {
+            } else if !p_flag {
                 stdout.push_str(&format!("{name} is a shell builtin\n"));
             }
             found = true;
@@ -3457,11 +3600,11 @@ fn builtin_type(
             }
         }
 
-        // Check registered commands (treated as builtins)
+        // Check registered commands (treated as builtins) - skip if already a builtin
         if !is_builtin(name) && state.commands.contains_key(*name) {
             if t_flag {
                 stdout.push_str("builtin\n");
-            } else if !p_flag && !t_flag {
+            } else if !p_flag {
                 stdout.push_str(&format!("{name} is a shell builtin\n"));
             }
             found = true;
@@ -3470,8 +3613,9 @@ fn builtin_type(
             }
         }
 
-        // Check PATH
-        if let Some(path) = search_path(name, state) {
+        // Check PATH — with -a, list all matches
+        let paths = search_path_all(name, state);
+        for path in &paths {
             if t_flag {
                 stdout.push_str("file\n");
             } else if p_flag {
@@ -3480,10 +3624,16 @@ fn builtin_type(
                 stdout.push_str(&format!("{name} is {path}\n"));
             }
             found = true;
+            if !a_flag {
+                break;
+            }
         }
 
         if !found {
-            stderr.push_str(&format!("type: {name}: not found\n"));
+            // -t: no stderr for not-found (just set exit code)
+            if !t_flag {
+                stderr.push_str(&format!("type: {name}: not found\n"));
+            }
             exit_code = 1;
         }
     }
@@ -3494,6 +3644,37 @@ fn builtin_type(
         exit_code,
         stdout_bytes: None,
     })
+}
+
+/// Format a function body for `type` output, mimicking bash's format.
+fn format_function_body(name: &str, _body: &brush_parser::ast::FunctionBody) -> String {
+    // Minimal formatting: just show the structure
+    format!("{name} () \n{{ \n    ...\n}}")
+}
+
+/// Search all PATH entries for a command and return all matches.
+fn search_path_all(cmd: &str, state: &InterpreterState) -> Vec<String> {
+    let path_var = state
+        .env
+        .get("PATH")
+        .map(|v| v.value.as_scalar().to_string())
+        .unwrap_or_else(|| "/usr/bin:/bin".to_string());
+    let mut results = Vec::new();
+    for dir in path_var.split(':') {
+        let candidate = if dir.is_empty() {
+            format!("./{cmd}")
+        } else {
+            format!("{dir}/{cmd}")
+        };
+        let p = Path::new(&candidate);
+        if state.fs.exists(p)
+            && let Ok(meta) = state.fs.stat(p)
+            && matches!(meta.node_type, NodeType::File | NodeType::Symlink)
+        {
+            results.push(candidate);
+        }
+    }
+    results
 }
 
 // ── command ─────────────────────────────────────────────────────────
@@ -3610,7 +3791,25 @@ fn builtin_command(
     })
 }
 
+/// Shell keywords recognized by type/command -v
+const SHELL_KEYWORDS: &[&str] = &[
+    "if", "then", "else", "elif", "fi", "case", "esac", "for", "select", "while", "until", "do",
+    "done", "in", "function", "time", "{", "}", "!", "[[", "]]", "coproc",
+];
+
+fn is_shell_keyword(name: &str) -> bool {
+    SHELL_KEYWORDS.contains(&name)
+}
+
 fn command_v(name: &str, state: &InterpreterState) -> Result<ExecResult, RustBashError> {
+    // Keyword
+    if is_shell_keyword(name) {
+        return Ok(ExecResult {
+            stdout: format!("{name}\n"),
+            ..ExecResult::default()
+        });
+    }
+
     // Alias
     if let Some(expansion) = state.aliases.get(name) {
         return Ok(ExecResult {
@@ -3650,6 +3849,13 @@ fn command_v(name: &str, state: &InterpreterState) -> Result<ExecResult, RustBas
 }
 
 fn command_big_v(name: &str, state: &InterpreterState) -> Result<ExecResult, RustBashError> {
+    if is_shell_keyword(name) {
+        return Ok(ExecResult {
+            stdout: format!("{name} is a shell keyword\n"),
+            ..ExecResult::default()
+        });
+    }
+
     if let Some(expansion) = state.aliases.get(name) {
         return Ok(ExecResult {
             stdout: format!("{name} is aliased to `{expansion}'\n"),
@@ -4545,8 +4751,33 @@ fn builtin_printf(
 
     // Parse -v varname
     if remaining_args.len() >= 2 && remaining_args[0] == "-v" {
-        var_name = Some(remaining_args[1].clone());
+        let vname = &remaining_args[1];
+        // Validate variable name: must be identifier or identifier[subscript]
+        let base_name = vname.split('[').next().unwrap_or(vname);
+        let valid_base = !base_name.is_empty()
+            && base_name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !base_name.starts_with(|c: char| c.is_ascii_digit());
+        let valid_subscript = if let Some(bracket_pos) = vname.find('[') {
+            vname.ends_with(']') && bracket_pos + 1 < vname.len() - 1
+        } else {
+            true
+        };
+        if !valid_base || !valid_subscript {
+            return Ok(ExecResult {
+                stderr: format!("printf: `{vname}': not a valid identifier\n"),
+                exit_code: 2,
+                ..ExecResult::default()
+            });
+        }
+        var_name = Some(vname.clone());
         remaining_args = &remaining_args[2..];
+    }
+
+    // Skip -- end-of-options marker
+    if !remaining_args.is_empty() && remaining_args[0] == "--" {
+        remaining_args = &remaining_args[1..];
     }
 
     if remaining_args.is_empty() {

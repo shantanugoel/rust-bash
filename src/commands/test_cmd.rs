@@ -219,6 +219,12 @@ fn numeric_cmp(left: &str, right: &str, cmp: impl Fn(i64, i64) -> bool) -> Optio
 
 /// Parse an integer in bash style: decimal, 0x hex, or 0-prefixed octal.
 /// Returns None for invalid literals (e.g. "08" — looks octal but has invalid digits).
+/// Parse a bash integer literal (handles decimal, octal, hex, base-N, signs).
+/// Public wrapper for use from walker.rs [[ ]] arithmetic predicates.
+pub(crate) fn parse_bash_int_pub(s: &str) -> Option<i64> {
+    parse_bash_int(s)
+}
+
 fn parse_bash_int(s: &str) -> Option<i64> {
     let s = s.trim();
     if s.is_empty() {
@@ -238,10 +244,42 @@ fn parse_bash_int(s: &str) -> Option<i64> {
         // Starts with 0 and has more digits — must be valid octal.
         // If any digit is 8 or 9, from_str_radix will fail → None (bash errors on "08").
         i64::from_str_radix(s, 8).ok()?
+    } else if let Some(hash_pos) = s.find('#') {
+        // Base-N notation: base#value (e.g., 64#a, 2#1010, 16#ff)
+        let base_str = &s[..hash_pos];
+        let digits = &s[hash_pos + 1..];
+        let base: u32 = base_str.parse().ok()?;
+        if !(2..=64).contains(&base) {
+            return None;
+        }
+        parse_base_n_value(digits, base)?
     } else {
         s.parse::<i64>().ok()?
     };
     Some(if negative { -val } else { val })
+}
+
+/// Parse a value in base-N notation where N can be 2-64.
+/// For bases > 36, bash uses: 0-9, a-z, A-Z, @, _
+fn parse_base_n_value(digits: &str, base: u32) -> Option<i64> {
+    let mut result: i64 = 0;
+    for c in digits.chars() {
+        let digit_val = match c {
+            '0'..='9' => (c as u32) - ('0' as u32),
+            'a'..='z' => (c as u32) - ('a' as u32) + 10,
+            'A'..='Z' => (c as u32) - ('A' as u32) + 36,
+            '@' => 62,
+            '_' => 63,
+            _ => return None,
+        };
+        if digit_val >= base {
+            return None;
+        }
+        result = result
+            .checked_mul(base as i64)?
+            .checked_add(digit_val as i64)?;
+    }
+    Some(result)
 }
 
 // ── File test helpers ─────────────────────────────────────────────

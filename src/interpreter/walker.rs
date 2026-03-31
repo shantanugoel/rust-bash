@@ -15,6 +15,90 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+// ── xtrace helpers ──────────────────────────────────────────────────
+
+/// Expand PS4 through the normal parameter expansion engine so that
+/// variables like `$x` or `$?` inside PS4 are evaluated.
+fn expand_ps4(state: &mut InterpreterState) -> String {
+    let raw = state
+        .env
+        .get("PS4")
+        .map(|v| v.value.as_scalar().to_string());
+    match raw {
+        Some(s) if !s.is_empty() => {
+            let word = brush_parser::ast::Word {
+                value: s,
+                loc: Default::default(),
+            };
+            expand_word_to_string_mut(&word, state).unwrap_or_else(|_| "+ ".to_string())
+        }
+        Some(_) => "+ ".to_string(), // PS4 is set but empty → default
+        None => String::new(),       // PS4 is unset → no prefix
+    }
+}
+
+/// Quote a single word for xtrace output.  Bash quotes words that contain
+/// whitespace, single quotes, double quotes, backslashes, or non-printable
+/// characters.  The quoting style uses single quotes with the `'\''` escape
+/// for embedded single quotes, except when $'...' is needed for control chars.
+fn xtrace_quote(word: &str) -> String {
+    if word.is_empty() {
+        return "''".to_string();
+    }
+
+    // Check what quoting is needed
+    let has_single_quote = word.contains('\'');
+    let needs_quoting = word
+        .chars()
+        .any(|c| c.is_whitespace() || c == '\'' || c == '"' || c == '\\' || (c as u32) < 0x20);
+
+    if !needs_quoting {
+        return word.to_string();
+    }
+
+    // Bash xtrace uses single quotes for most quoting, but represents
+    // single quotes as \' (breaking out of quoting).
+    // E.g., "it's" → 'it'\''s'
+    // But a bare single quote → \'
+    if has_single_quote {
+        let mut out = String::new();
+        let mut in_squote = false;
+        for c in word.chars() {
+            if c == '\'' {
+                if in_squote {
+                    out.push('\''); // close single quote
+                    in_squote = false;
+                }
+                out.push_str("\\'");
+            } else {
+                if !in_squote {
+                    out.push('\''); // open single quote
+                    in_squote = true;
+                }
+                out.push(c);
+            }
+        }
+        if in_squote {
+            out.push('\'');
+        }
+        out
+    } else {
+        // Simple single-quote wrapping (no single quotes in content)
+        // Bash puts literal tabs and newlines inside single quotes
+        format!("'{word}'")
+    }
+}
+
+/// Format an xtrace line for a simple command invocation.
+fn format_xtrace_command(ps4: &str, cmd: &str, args: &[String]) -> String {
+    let mut parts = Vec::with_capacity(1 + args.len());
+    parts.push(xtrace_quote(cmd));
+    for a in args {
+        parts.push(xtrace_quote(a));
+    }
+    format!("{ps4}{}\n", parts.join(" "))
+}
+
 /// Check the errexit (`set -e`) condition after a command completes.
 /// If errexit is enabled, the last exit code was non-zero, and we're not
 /// in a suppressed context (if/while/until condition, `&&`/`||` left side,
@@ -86,7 +170,20 @@ fn execute_compound_list(
             break;
         }
         let ast::CompoundListItem(and_or_list, _separator) = item;
-        let r = execute_and_or_list(and_or_list, state, stdin)?;
+        let r = match execute_and_or_list(and_or_list, state, stdin) {
+            Ok(r) => r,
+            Err(RustBashError::Execution(msg)) if msg.contains("unbound variable") => {
+                // nounset errors: print to stderr, exit with code 1
+                state.should_exit = true;
+                state.last_exit_code = 1;
+                ExecResult {
+                    stderr: format!("rust-bash: {msg}\n"),
+                    exit_code: 1,
+                    ..Default::default()
+                }
+            }
+            Err(e) => return Err(e),
+        };
         result.stdout.push_str(&r.stdout);
         result.stderr.push_str(&r.stderr);
         result.exit_code = r.exit_code;
@@ -806,12 +903,9 @@ fn execute_simple_command(
     state: &mut InterpreterState,
     stdin: &str,
 ) -> Result<ExecResult, RustBashError> {
-    // noexec: skip all simple commands except "set"
+    // noexec: skip all simple commands (bash behavior: once set -n is active, nothing runs)
     if state.shell_opts.noexec {
-        let is_set = cmd.word_or_name.as_ref().is_some_and(|w| w.value == "set");
-        if !is_set {
-            return Ok(ExecResult::default());
-        }
+        return Ok(ExecResult::default());
     }
 
     // 1. Collect redirections and assignments from prefix
@@ -922,32 +1016,36 @@ fn execute_simple_command(
     let Some(cmd_name) = cmd_name else {
         // xtrace for bare assignments (e.g. `X=1`)
         if state.shell_opts.xtrace && !assignments.is_empty() {
-            let ps4 = state
-                .env
-                .get("PS4")
-                .map(|v| v.value.as_scalar().to_string())
-                .unwrap_or_else(|| "+ ".to_string());
-            let trace_parts: Vec<String> = assignments
-                .iter()
-                .map(|a| match a {
+            let ps4 = expand_ps4(state);
+            let mut trace = String::new();
+            for a in &assignments {
+                let part = match a {
                     Assignment::Scalar { name, value } => format!("{name}={value}"),
-                    Assignment::IndexedArray { name, .. } => format!("{name}=(...)"),
+                    Assignment::IndexedArray { name, elements, .. } => {
+                        let vals: Vec<String> =
+                            elements.iter().map(|(_, v)| xtrace_quote(v)).collect();
+                        format!("{name}=({})", vals.join(" "))
+                    }
                     Assignment::ArrayElement {
                         name, index, value, ..
                     } => format!("{name}[{index}]={value}"),
                     Assignment::AppendArrayElement {
                         name, index, value, ..
                     } => format!("{name}[{index}]+={value}"),
-                    Assignment::AppendArray { name, .. } => format!("{name}+=(...)"),
+                    Assignment::AppendArray { name, elements, .. } => {
+                        let vals: Vec<String> =
+                            elements.iter().map(|(_, v)| xtrace_quote(v)).collect();
+                        format!("{name}+=({})", vals.join(" "))
+                    }
                     Assignment::AssocArray { name, .. } => format!("{name}=(...)"),
                     Assignment::AppendAssocArray { name, .. } => format!("{name}+=(...)"),
                     Assignment::AppendScalar { name, value } => format!("{name}+={value}"),
-                })
-                .collect();
-            let trace_line = format!("{}{}\n", ps4, trace_parts.join(" "));
+                };
+                trace.push_str(&format!("{ps4}{part}\n"));
+            }
             // Bare assignments produce no output, but emit xtrace to stderr
             let mut result = ExecResult {
-                stderr: trace_line,
+                stderr: trace,
                 ..ExecResult::default()
             };
             for a in assignments {
@@ -1045,6 +1143,12 @@ fn execute_simple_command(
     }
     let last_arg = args.last().cloned().unwrap_or_else(|| cmd_name.clone());
     let should_trace = state.shell_opts.xtrace;
+    // Expand PS4 BEFORE dispatch so that `local PS4=...` is traced with the old value
+    let pre_ps4 = if should_trace {
+        Some(expand_ps4(state))
+    } else {
+        None
+    };
 
     let mut inner_result = (|| -> Result<ExecResult, RustBashError> {
         // 5b. Pre-allocate ALL redirect process substitution temp files in one pass.
@@ -1104,17 +1208,32 @@ fn execute_simple_command(
         let mut result = dispatch_command(&cmd_name, &args, state, &effective_stdin)?;
 
         // 7b. Emit xtrace to stderr
-        if should_trace {
-            let ps4 = state
-                .env
-                .get("PS4")
-                .map(|v| v.value.as_scalar().to_string())
-                .unwrap_or_else(|| "+ ".to_string());
-            let mut trace_words = vec![cmd_name.clone()];
-            trace_words.extend(args.iter().cloned());
-            let trace_line = format!("{}{}\n", ps4, trace_words.join(" "));
+        if let Some(ref ps4) = pre_ps4 {
+            let mut trace = format_xtrace_command(ps4, &cmd_name, &args);
+            // Assignment builtins (readonly, declare, export, typeset)
+            // also trace each assignment separately.
+            // Note: local does NOT trace assignments separately.
+            if matches!(
+                cmd_name.as_str(),
+                "readonly" | "declare" | "typeset" | "export"
+            ) {
+                for arg in &args {
+                    if let Some(eq_pos) = arg.find('=') {
+                        let name_part = &arg[..eq_pos];
+                        // Only trace if it looks like a variable assignment (not a flag)
+                        if !name_part.is_empty()
+                            && !name_part.starts_with('-')
+                            && name_part
+                                .chars()
+                                .all(|c| c.is_alphanumeric() || c == '_' || c == '+')
+                        {
+                            trace.push_str(&format!("{ps4}{arg}\n"));
+                        }
+                    }
+                }
+            }
             // Prepend trace so it appears before the command's own stderr
-            result.stderr = format!("{trace_line}{}", result.stderr);
+            result.stderr = format!("{trace}{}", result.stderr);
         }
 
         // 8. Apply output redirections
@@ -1345,10 +1464,19 @@ fn execute_arithmetic(
     state: &mut InterpreterState,
 ) -> Result<ExecResult, RustBashError> {
     let val = crate::interpreter::arithmetic::eval_arithmetic(&arith.expr.value, state)?;
-    Ok(ExecResult {
+    let mut result = ExecResult {
         exit_code: if val != 0 { 0 } else { 1 },
         ..Default::default()
-    })
+    };
+    if state.shell_opts.xtrace {
+        let ps4 = expand_ps4(state);
+        result.stderr = format!(
+            "{ps4}(({}))\n{}",
+            arith.expr.value.trim_end(),
+            result.stderr
+        );
+    }
+    Ok(result)
 }
 
 fn execute_arithmetic_for(
@@ -3002,23 +3130,118 @@ fn execute_extended_test(
     expr: &ast::ExtendedTestExpr,
     state: &mut InterpreterState,
 ) -> Result<ExecResult, RustBashError> {
-    match eval_extended_test_expr(expr, state) {
-        Ok(result) => Ok(ExecResult {
+    let should_trace = state.shell_opts.xtrace;
+    let mut exec_result = match eval_extended_test_expr(expr, state) {
+        Ok(result) => ExecResult {
             exit_code: if result { 0 } else { 1 },
             ..ExecResult::default()
-        }),
+        },
         Err(RustBashError::Execution(ref msg)) => {
-            // Regex compilation errors → exit code 2
-            // Arithmetic errors (division by zero, etc.) → exit code 1
             let exit_code = if msg.contains("invalid regex") { 2 } else { 1 };
             state.last_exit_code = exit_code;
-            Ok(ExecResult {
+            ExecResult {
                 stderr: format!("rust-bash: {msg}\n"),
                 exit_code,
                 ..ExecResult::default()
-            })
+            }
         }
-        Err(e) => Err(e),
+        Err(e) => return Err(e),
+    };
+    if should_trace {
+        let repr = format_extended_test_expr_expanded(expr, state);
+        let ps4 = expand_ps4(state);
+        exec_result.stderr = format!("{ps4}[[ {repr} ]]\n{}", exec_result.stderr);
+    }
+    Ok(exec_result)
+}
+
+/// Format an extended test expression for xtrace output, expanding variables.
+fn format_extended_test_expr_expanded(
+    expr: &ast::ExtendedTestExpr,
+    state: &mut InterpreterState,
+) -> String {
+    match expr {
+        ast::ExtendedTestExpr::And(l, r) => {
+            format!(
+                "{} && {}",
+                format_extended_test_expr_expanded(l, state),
+                format_extended_test_expr_expanded(r, state)
+            )
+        }
+        ast::ExtendedTestExpr::Or(l, r) => {
+            format!(
+                "{} || {}",
+                format_extended_test_expr_expanded(l, state),
+                format_extended_test_expr_expanded(r, state)
+            )
+        }
+        ast::ExtendedTestExpr::Not(inner) => {
+            format!("! {}", format_extended_test_expr_expanded(inner, state))
+        }
+        ast::ExtendedTestExpr::Parenthesized(inner) => {
+            format_extended_test_expr_expanded(inner, state)
+        }
+        ast::ExtendedTestExpr::UnaryTest(pred, word) => {
+            let expanded = expand_word_to_string_mut(word, state).unwrap_or_default();
+            format!("{} {}", format_unary_pred(pred), expanded)
+        }
+        ast::ExtendedTestExpr::BinaryTest(pred, l, r) => {
+            let l_exp = expand_word_to_string_mut(l, state).unwrap_or_default();
+            let r_exp = expand_word_to_string_mut(r, state).unwrap_or_default();
+            format!("{} {} {}", l_exp, format_binary_pred(pred), r_exp)
+        }
+    }
+}
+
+fn format_unary_pred(pred: &ast::UnaryPredicate) -> &'static str {
+    use brush_parser::ast::UnaryPredicate;
+    match pred {
+        UnaryPredicate::FileExists => "-a",
+        UnaryPredicate::FileExistsAndIsBlockSpecialFile => "-b",
+        UnaryPredicate::FileExistsAndIsCharSpecialFile => "-c",
+        UnaryPredicate::FileExistsAndIsDir => "-d",
+        UnaryPredicate::FileExistsAndIsRegularFile => "-f",
+        UnaryPredicate::FileExistsAndIsSetgid => "-g",
+        UnaryPredicate::FileExistsAndIsSymlink => "-h",
+        UnaryPredicate::FileExistsAndHasStickyBit => "-k",
+        UnaryPredicate::FileExistsAndIsFifo => "-p",
+        UnaryPredicate::FileExistsAndIsReadable => "-r",
+        UnaryPredicate::FileExistsAndIsNotZeroLength => "-s",
+        UnaryPredicate::FdIsOpenTerminal => "-t",
+        UnaryPredicate::FileExistsAndIsSetuid => "-u",
+        UnaryPredicate::FileExistsAndIsWritable => "-w",
+        UnaryPredicate::FileExistsAndIsExecutable => "-x",
+        UnaryPredicate::FileExistsAndOwnedByEffectiveGroupId => "-G",
+        UnaryPredicate::FileExistsAndModifiedSinceLastRead => "-N",
+        UnaryPredicate::FileExistsAndOwnedByEffectiveUserId => "-O",
+        UnaryPredicate::FileExistsAndIsSocket => "-S",
+        UnaryPredicate::StringHasZeroLength => "-z",
+        UnaryPredicate::StringHasNonZeroLength => "-n",
+        UnaryPredicate::ShellOptionEnabled => "-o",
+        UnaryPredicate::ShellVariableIsSetAndAssigned => "-v",
+        UnaryPredicate::ShellVariableIsSetAndNameRef => "-R",
+    }
+}
+
+fn format_binary_pred(pred: &ast::BinaryPredicate) -> &'static str {
+    use brush_parser::ast::BinaryPredicate;
+    match pred {
+        BinaryPredicate::StringExactlyMatchesPattern => "==",
+        BinaryPredicate::StringDoesNotExactlyMatchPattern => "!=",
+        BinaryPredicate::StringExactlyMatchesString => "==",
+        BinaryPredicate::StringDoesNotExactlyMatchString => "!=",
+        BinaryPredicate::StringMatchesRegex => "=~",
+        BinaryPredicate::StringContainsSubstring => "=~",
+        BinaryPredicate::ArithmeticEqualTo => "-eq",
+        BinaryPredicate::ArithmeticNotEqualTo => "-ne",
+        BinaryPredicate::ArithmeticLessThan => "-lt",
+        BinaryPredicate::ArithmeticGreaterThan => "-gt",
+        BinaryPredicate::ArithmeticLessThanOrEqualTo => "-le",
+        BinaryPredicate::ArithmeticGreaterThanOrEqualTo => "-ge",
+        BinaryPredicate::FilesReferToSameDeviceAndInodeNumbers => "-ef",
+        BinaryPredicate::LeftFileIsNewerOrExistsWhenRightDoesNot => "-nt",
+        BinaryPredicate::LeftFileIsOlderOrDoesNotExistWhenRightDoes => "-ot",
+        _ => "?",
     }
 }
 
@@ -3091,6 +3314,40 @@ fn eval_extended_test_expr(
             }
 
             let right = expand_word_to_string_mut(right_word, state)?;
+
+            // Arithmetic predicates (-eq, -ne, -lt, -gt, -le, -ge) evaluate
+            // operands as arithmetic expressions in [[ ]] context.
+            // Try parse_bash_int first (handles octal, hex, base-N), then
+            // fall back to simple_arith_eval for expressions like "1+2".
+            use brush_parser::ast::BinaryPredicate;
+            if matches!(
+                pred,
+                BinaryPredicate::ArithmeticEqualTo
+                    | BinaryPredicate::ArithmeticNotEqualTo
+                    | BinaryPredicate::ArithmeticLessThan
+                    | BinaryPredicate::ArithmeticGreaterThan
+                    | BinaryPredicate::ArithmeticLessThanOrEqualTo
+                    | BinaryPredicate::ArithmeticGreaterThanOrEqualTo
+            ) {
+                let lval =
+                    crate::commands::test_cmd::parse_bash_int_pub(&left).unwrap_or_else(|| {
+                        crate::interpreter::arithmetic::eval_arithmetic(&left, state).unwrap_or(0)
+                    });
+                let rval =
+                    crate::commands::test_cmd::parse_bash_int_pub(&right).unwrap_or_else(|| {
+                        crate::interpreter::arithmetic::eval_arithmetic(&right, state).unwrap_or(0)
+                    });
+                let result = match pred {
+                    BinaryPredicate::ArithmeticEqualTo => lval == rval,
+                    BinaryPredicate::ArithmeticNotEqualTo => lval != rval,
+                    BinaryPredicate::ArithmeticLessThan => lval < rval,
+                    BinaryPredicate::ArithmeticGreaterThan => lval > rval,
+                    BinaryPredicate::ArithmeticLessThanOrEqualTo => lval <= rval,
+                    BinaryPredicate::ArithmeticGreaterThanOrEqualTo => lval >= rval,
+                    _ => unreachable!(),
+                };
+                return Ok(result);
+            }
 
             // Pattern matching (glob) for == and != inside [[
             // Extglob is always active in [[ ]] pattern context

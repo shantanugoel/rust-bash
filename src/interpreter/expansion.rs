@@ -2452,8 +2452,14 @@ fn compute_bashopts(state: &InterpreterState) -> String {
     let o = &state.shopt_opts;
     let mut opts = Vec::new();
     // Must be alphabetical order (bash convention)
+    if o.assoc_expand_once {
+        opts.push("assoc_expand_once");
+    }
     if o.autocd {
         opts.push("autocd");
+    }
+    if o.cdable_vars {
+        opts.push("cdable_vars");
     }
     if o.cdspell {
         opts.push("cdspell");
@@ -2487,6 +2493,9 @@ fn compute_bashopts(state: &InterpreterState) -> String {
     }
     if o.expand_aliases {
         opts.push("expand_aliases");
+    }
+    if o.extdebug {
+        opts.push("extdebug");
     }
     if o.extglob {
         opts.push("extglob");
@@ -2539,6 +2548,12 @@ fn compute_bashopts(state: &InterpreterState) -> String {
     if o.lithist {
         opts.push("lithist");
     }
+    if o.localvar_inherit {
+        opts.push("localvar_inherit");
+    }
+    if o.localvar_unset {
+        opts.push("localvar_unset");
+    }
     if o.login_shell {
         opts.push("login_shell");
     }
@@ -2557,6 +2572,9 @@ fn compute_bashopts(state: &InterpreterState) -> String {
     if o.nullglob {
         opts.push("nullglob");
     }
+    if o.patsub_replacement {
+        opts.push("patsub_replacement");
+    }
     if o.progcomp {
         opts.push("progcomp");
     }
@@ -2571,6 +2589,9 @@ fn compute_bashopts(state: &InterpreterState) -> String {
     }
     if o.sourcepath {
         opts.push("sourcepath");
+    }
+    if o.varredir_close {
+        opts.push("varredir_close");
     }
     if o.xpg_echo {
         opts.push("xpg_echo");
@@ -2643,6 +2664,8 @@ fn resolve_special(sp: &SpecialParameter, state: &InterpreterState) -> String {
             if state.shell_opts.noclobber {
                 flags.push('C');
             }
+            // 's' means read from stdin — always set for non-interactive shells
+            flags.push('s');
             flags
         }
     }

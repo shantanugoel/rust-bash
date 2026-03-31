@@ -4,6 +4,7 @@ assertion_line: 765
 expression: r.stdout
 ---
 BASH=/bin/bash
+BASHOPTS=
 BASH_VERSION=0.1.0
 HOME=/home/user
 HOSTNAME=rust-bash
@@ -15,7 +16,9 @@ OPTIND=1
 OSTYPE=linux-gnu
 PATH=/usr/bin:/bin
 PIPESTATUS=([0]="0")
+PS4=+ 
 PWD=/
 SHELL=/bin/bash
+SHELLOPTS=
 TERM=xterm-256color
 USER=user
