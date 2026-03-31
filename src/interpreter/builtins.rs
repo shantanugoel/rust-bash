@@ -65,6 +65,35 @@ pub(crate) fn is_builtin(name: &str) -> bool {
     builtin_names().contains(&name)
 }
 
+/// Check if `name` is a valid shell variable name (alphanumerics and underscores, no leading digit).
+fn is_valid_var_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !name.starts_with(|c: char| c.is_ascii_digit())
+}
+
+/// Extract the base variable name from an argument like `name=val`, `name+=val`,
+/// or `name[idx]=val` and validate it.  Returns `Ok(())` if valid, or an error
+/// message string suitable for stderr if invalid.
+fn validate_var_arg(arg: &str, builtin: &str) -> Result<(), String> {
+    let var_name = if let Some((n, _)) = arg.split_once("+=") {
+        n
+    } else if let Some((n, _)) = arg.split_once('=') {
+        n
+    } else {
+        arg
+    };
+    // Strip array subscript for validation: name[idx] → name
+    let base_name = var_name.split('[').next().unwrap_or(var_name);
+    if is_valid_var_name(base_name) {
+        Ok(())
+    } else {
+        Err(format!(
+            "rust-bash: {builtin}: `{arg}': not a valid identifier\n"
+        ))
+    }
+}
+
 /// Shared --help check for `command` and `builtin` wrappers.
 fn check_help(name: &str, state: &InterpreterState) -> Option<ExecResult> {
     if let Some(meta) = builtin_meta(name)
@@ -881,6 +910,8 @@ fn builtin_export(
     }
 
     let mut unexport = false;
+    let mut exit_code = 0;
+    let mut stderr = String::new();
     for arg in args {
         if arg == "-n" {
             unexport = true;
@@ -889,6 +920,13 @@ fn builtin_export(
         if arg.starts_with('-') && !arg.contains('=') {
             continue; // skip other flags
         }
+
+        if let Err(msg) = validate_var_arg(arg, "export") {
+            stderr.push_str(&msg);
+            exit_code = 1;
+            continue;
+        }
+
         if let Some((name, value)) = arg.split_once("+=") {
             // export name+=value — append
             let current = state
@@ -932,7 +970,11 @@ fn builtin_export(
         }
     }
 
-    Ok(ExecResult::default())
+    Ok(ExecResult {
+        exit_code,
+        stderr,
+        ..ExecResult::default()
+    })
 }
 
 // ── unset ───────────────────────────────────────────────────────────
@@ -1295,9 +1337,16 @@ fn builtin_readonly(
         });
     }
 
+    let mut exit_code = 0;
+    let mut stderr = String::new();
     for arg in args {
         if arg.starts_with('-') {
             continue; // skip flags
+        }
+        if let Err(msg) = validate_var_arg(arg, "readonly") {
+            stderr.push_str(&msg);
+            exit_code = 1;
+            continue;
         }
         if let Some((name, value)) = arg.split_once("+=") {
             let current = state
@@ -1331,7 +1380,11 @@ fn builtin_readonly(
         }
     }
 
-    Ok(ExecResult::default())
+    Ok(ExecResult {
+        exit_code,
+        stderr,
+        ..ExecResult::default()
+    })
 }
 
 // ── declare ─────────────────────────────────────────────────────────
@@ -1353,6 +1406,7 @@ fn builtin_declare(
     let mut func_names_mode = false; // -F: function names only
     let mut global_mode = false; // -g
     let mut remove_exported = false; // +x
+    let mut remove_readonly = false; // +r
     let mut var_args: Vec<&String> = Vec::new();
 
     for arg in args {
@@ -1380,8 +1434,10 @@ fn builtin_declare(
             }
         } else if let Some(flags) = arg.strip_prefix('+') {
             for c in flags.chars() {
-                if c == 'x' {
-                    remove_exported = true;
+                match c {
+                    'x' => remove_exported = true,
+                    'r' => remove_readonly = true,
+                    _ => {}
                 }
             }
         } else {
@@ -1407,11 +1463,25 @@ fn builtin_declare(
         );
     }
 
-    // typeset +x name — remove export attribute
-    if remove_exported {
+    // typeset +x / +r — remove attributes
+    // Note: +r is accepted but ignored per bash behavior (readonly cannot
+    // be removed once set).
+    if remove_exported || remove_readonly {
         for arg in &var_args {
-            if let Some(var) = state.env.get_mut(arg.as_str()) {
+            let (name, opt_value) = if let Some((n, v)) = arg.split_once('=') {
+                (n, Some(v))
+            } else {
+                (arg.as_str(), None)
+            };
+            if remove_exported && let Some(var) = state.env.get_mut(name) {
                 var.attrs.remove(VariableAttrs::EXPORTED);
+            }
+            // +r: only assign value if the variable is not readonly
+            if let Some(value) = opt_value {
+                let is_ro = state.env.get(name).is_some_and(|v| v.readonly());
+                if !is_ro {
+                    set_variable(state, name, value.to_string())?;
+                }
             }
         }
         return Ok(ExecResult::default());
@@ -1454,7 +1524,15 @@ fn builtin_declare(
         flag_attrs.insert(VariableAttrs::NAMEREF);
     }
 
+    let mut exit_code = 0;
+    let mut result_stderr = String::new();
     for arg in var_args {
+        if let Err(msg) = validate_var_arg(arg, "declare") {
+            result_stderr.push_str(&msg);
+            exit_code = 1;
+            continue;
+        }
+
         // Check for += (append) before = (assign)
         if let Some((name, value)) = arg.split_once("+=") {
             declare_append_value(
@@ -1480,7 +1558,11 @@ fn builtin_declare(
         }
     }
 
-    Ok(ExecResult::default())
+    Ok(ExecResult {
+        exit_code,
+        stderr: result_stderr,
+        ..ExecResult::default()
+    })
 }
 
 /// Handle `declare -f` (list function bodies) and `declare -F` (list function names).
@@ -3249,7 +3331,15 @@ fn builtin_local(
         }
     }
 
+    let mut exit_code = 0;
+    let mut result_stderr = String::new();
     for arg in &var_args {
+        if let Err(msg) = validate_var_arg(arg, "local") {
+            result_stderr.push_str(&msg);
+            exit_code = 1;
+            continue;
+        }
+
         if let Some((raw_name, value)) = arg.split_once("+=") {
             // local name+=value — append
             let name = raw_name;
@@ -3392,7 +3482,11 @@ fn builtin_local(
             }
         }
     }
-    Ok(ExecResult::default())
+    Ok(ExecResult {
+        exit_code,
+        stderr: result_stderr,
+        ..ExecResult::default()
+    })
 }
 
 // ── return ───────────────────────────────────────────────────────────

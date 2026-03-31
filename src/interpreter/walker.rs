@@ -968,11 +968,16 @@ fn execute_simple_command(
                     redirects.push(redir);
                 }
                 ast::CommandPrefixOrSuffixItem::AssignmentWord(assignment, _word) => {
-                    // For declaration builtins (export, readonly, declare, local),
-                    // assignments in suffix are forwarded as "NAME=VALUE" args.
                     let name = match &assignment.name {
                         ast::AssignmentName::VariableName(n) => n.clone(),
-                        ast::AssignmentName::ArrayElementName(n, _) => n.clone(),
+                        ast::AssignmentName::ArrayElementName(n, idx) => {
+                            let idx_word = ast::Word {
+                                value: idx.clone(),
+                                loc: None,
+                            };
+                            let expanded_idx = expand_word_to_string_mut(&idx_word, state)?;
+                            format!("{n}[{expanded_idx}]")
+                        }
                     };
                     match &assignment.value {
                         ast::AssignmentValue::Scalar(w) => {
@@ -1131,6 +1136,11 @@ fn execute_simple_command(
         apply_assignment_shell_error(a.clone(), state, &mut dummy)?;
         if dummy.exit_code != 0 {
             prefix_stderr.push_str(&dummy.stderr);
+        }
+        // Temporary per-command bindings are exported for the duration of
+        // the command (bash behavior: `FOO=bar cmd` exports FOO to cmd).
+        if let Some(var) = state.env.get_mut(a.name()) {
+            var.attrs.insert(VariableAttrs::EXPORTED);
         }
     }
 

@@ -1078,8 +1078,18 @@ impl VirtualCommand for PrintenvPyCommand {
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
         let mut out = String::new();
         for name in args {
-            match ctx.env.get(name.as_str()) {
-                Some(val) => out.push_str(&format!("{val}\n")),
+            // printenv checks the process environment which only contains
+            // exported variables.  Use ctx.variables for attribute checking
+            // when available; otherwise fall back to ctx.env.
+            let val = if let Some(vars) = ctx.variables {
+                vars.get(name.as_str())
+                    .filter(|v| v.exported())
+                    .map(|v| v.value.as_scalar().to_string())
+            } else {
+                ctx.env.get(name.as_str()).cloned()
+            };
+            match val {
+                Some(v) => out.push_str(&format!("{v}\n")),
                 None => out.push_str("None\n"),
             }
         }

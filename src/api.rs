@@ -28,7 +28,11 @@ impl RustBash {
             Ok(p) => p,
             Err(e) => {
                 self.state.last_exit_code = 2;
-                return Err(e);
+                return Ok(ExecResult {
+                    exit_code: 2,
+                    stderr: format!("{e}\n"),
+                    ..ExecResult::default()
+                });
             }
         };
         let mut result = interpreter::execute_program(&program, &mut self.state)?;

@@ -251,11 +251,15 @@ fn execute_and_compare(case: &TestCase) -> Option<String> {
 
     match result {
         Ok(r) => {
-            if case.expect_error {
+            if case.expect_error && r.exit_code != 2 {
                 return Some(format!(
-                    "[{}] expected exec() to return Err, but got Ok (exit_code={})",
+                    "[{}] expected parse error (exit_code=2), but got exit_code={}",
                     case.name, r.exit_code
                 ));
+            }
+            if case.expect_error {
+                // Parse error returned as Ok with exit_code=2; treat as success.
+                return None;
             }
             let mut mismatches: Vec<String> = Vec::new();
             if r.stdout != case.stdout {

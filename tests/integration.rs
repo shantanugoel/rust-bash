@@ -159,8 +159,9 @@ fn subshell_isolates_fs_writes() {
 #[test]
 fn parse_error() {
     let mut sh = shell();
-    let r = sh.exec("if; then; fi; ;;");
-    assert!(r.is_err());
+    let r = sh.exec("if; then; fi; ;;").unwrap();
+    assert_eq!(r.exit_code, 2);
+    assert!(!r.stderr.is_empty());
 }
 
 #[test]
