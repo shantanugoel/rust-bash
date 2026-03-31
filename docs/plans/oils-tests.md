@@ -51,13 +51,13 @@ Key format elements:
 | Metric | just-bash | rust-bash | Gap |
 |---|---|---|---|
 | Comparison fixture files | 32 | 34 | rust-bash slightly broader |
-| Comparison fixture cases | 532 | 269 | −263 (depth gap) |
-| Spec test cases (grep/sed/awk/jq) | — | 188 | rust-bash only |
+| Comparison fixture cases | 532 | 280 | −252 (depth gap) |
+| Spec test cases (grep/sed/awk/jq) | — | 200 | rust-bash only |
 | Oils spec files | 136 | 142 | rust-bash imported 142 from upstream |
-| Oils spec cases | 2,728 | 2,274 | −454 (42 files skipped) |
-| **Total test surface** | **~3,260** | **2,731** | **−529** |
+| Oils spec cases | 2,728 | 2,278 | −450 (42 files skipped) |
+| **Total test surface** | **~3,260** | **2,758** | **−502** |
 
-The Oils corpus is imported and running. Of the 2,274 Oils cases, **802 pass**, **1,393 are xfail**, and **79 are skip**. Upstream provenance: Oils commit `7789e21d81537a5b47bacbd4267edf7c659a9366`.
+The Oils corpus is imported and running. Of the 2,278 Oils cases (in 100 tested files), **1,293 pass**, **906 are xfail**, and **79 are skip**. Upstream provenance: Oils commit `7789e21d81537a5b47bacbd4267edf7c659a9366`.
 
 ---
 
@@ -285,8 +285,8 @@ test runner that powers `comparison.rs` and `spec_tests.rs`.
 
 ## Projected pass rates after import
 
-These were rough planning estimates. The actual measured baseline (from the import run) is:
-**802 pass / 1,393 xfail / 79 skip** across 100 tested files (2,274 cases). The per-category
+These were rough planning estimates. The actual measured baseline is:
+**1,293 pass / 906 xfail / 79 skip** across 100 tested files (2,278 cases). The per-category
 estimates below are superseded by the measured totals in the "Combined test surface" table.
 
 | Category | Files | Cases | Est. pass | Est. xfail | Est. skip |
@@ -304,18 +304,18 @@ estimates below are superseded by the measured totals in the "Combined test surf
 | Non-applicable | 22 | 165 | — | — | 165 |
 | **Total** | **136** | **2,728** | **~1,239** | **~1,026** | **463** |
 
-**Measured overall pass rate: ~35% of runnable cases (802 / 2,274)**
+**Measured overall pass rate: ~57% of runnable cases (1,293 / 2,278)**
 
 ### Combined test surface (measured)
 
 | Suite | Files | Cases | Pass | Xfail | Skip |
 |---|---|---|---|---|---|
-| Comparison fixtures | 34 | 269 | 263 | 5 | 1 |
-| Spec tests (grep/sed/awk/jq) | 14 | 188 | 188 | 0 | 0 |
-| Oils spec tests | 142 (100 tested) | 2,274 | 802 | 1,393 | 79 |
-| **Total** | **190** | **2,731** | **1,250** | **1,401** | **80** |
+| Comparison fixtures | 35 | 280 | 278 | 1 | 1 |
+| Spec tests (grep/sed/awk/jq) | 14 | 200 | 200 | 0 | 0 |
+| Oils spec tests | 142 (100 tested) | 2,278 | 1,293 | 906 | 79 |
+| **Total** | **191** | **2,758** | **1,771** | **907** | **80** |
 
-The depth gap in comparison fixtures (−263 vs just-bash) is minor. The real gap is **implementation coverage** — as features land, Oils cases flip from xfail to pass automatically.
+The depth gap in comparison fixtures (−252 vs just-bash) is minor. The real gap is **implementation coverage** — as features land, Oils cases flip from xfail to pass automatically.
 
 > [!NOTE]
 > This comparison is intentionally "like-for-like" shell-conformance surface area. It excludes
@@ -498,9 +498,9 @@ M6**, and only indirectly helps the rest of the roadmap.
 - [x] Apache 2.0 LICENSE attribution present
 - [x] `Cargo.toml` registers the new `oils_spec` test target with `harness = false`
 - [x] File-level skip list excludes CLI-only, non-applicable, and explicit non-goal files (42 files)
-- [x] Pass-list generated from initial run (802 entries in `pass-list.txt`)
+- [x] Pass-list generated and maintained (1,293 entries in `pass-list.txt`)
 - [x] `cargo test --test oils_spec` runs cleanly (0 unexpected failures)
 - [x] Per-file summary printed (pass/xfail/skip/unexpected-pass/fail per file)
-- [x] Initial baseline established: 802 pass / 1,393 xfail / 79 skip across 100 tested files
+- [x] Initial baseline established: 802 pass / 1,393 xfail / 79 skip across 100 tested files (now 1,293 / 906 / 79)
 - [x] Unexpected passes force promotion (same unexpected-pass discipline as comparison fixtures)
 - [x] Documentation updated (guidebook chapters 9 and 10)

@@ -74,7 +74,7 @@ Comparison tests verify that rust-bash produces the same stdout, stderr, and exi
 
 **Runner**: `tests/comparison.rs` uses `datatest-stable` to discover all `.toml` fixture files and generate one `#[test]` per file. Within each file, all cases run sequentially; failures are collected and reported together.
 
-**What's covered** (269 test cases across 34 fixture files):
+**What's covered** (280 test cases across 35 fixture files):
 - Quoting (single, double, backslash escaping)
 - Parameter expansion (defaults, alternatives, substitution, length, case modification)
 - Command substitution, arithmetic expansion, brace expansion, tilde expansion
@@ -93,7 +93,7 @@ Comparison tests verify that rust-bash produces the same stdout, stderr, and exi
 - `set` options (`-v`, `-a`, `-o posix`)
 - Advanced redirections (`|&`)
 
-The suite uses a three-state model: **pass** (must match), **xfail** (known product gap, expected to mismatch), and **skip** (harness/platform blocker). Of the 269 cases, 205 are pass, 63 are xfail, and 1 is skip. The runner prints per-milestone summaries (pass/xfail/skip/unexpected-pass counts) and treats unexpected passes as failures to force promotion.
+The suite uses a three-state model: **pass** (must match), **xfail** (known product gap, expected to mismatch), and **skip** (harness/platform blocker). Of the 280 cases, 278 are pass, 1 is xfail, and 1 is skip. The runner prints per-milestone summaries (pass/xfail/skip/unexpected-pass counts) and treats unexpected passes as failures to force promotion.
 
 ### Differential Testing — Spec Tests
 
@@ -103,7 +103,7 @@ Spec tests verify command implementations (`grep`, `sed`, `awk`, `jq`) against m
 
 **Runner**: `tests/spec_tests.rs` — structurally identical to the comparison runner but reads from `tests/fixtures/spec/` and does not support recording.
 
-**What's covered** (200 test cases across 14 fixture files):
+**What's covered** (200 test cases across 14 fixture files, all passing):
 - **grep**: literal matching, regex, flags (`-i`, `-v`, `-c`, `-n`, `-l`, `-r`, `-E`, `-F`, `-w`, `-o`, `-q`, `-A`/`-B`/`-C`, `-e`, `-x`, `-m`, `-h`)
 - **sed**: substitution, address ranges, delete/print/append/insert/change, transliterate (`y///`), hold space, in-place edit (`-i`), branching
 - **awk**: field splitting, patterns, built-in functions, arithmetic, associative arrays
@@ -111,7 +111,7 @@ Spec tests verify command implementations (`grep`, `sed`, `awk`, `jq`) against m
 
 ### Differential Testing — Oils Spec Tests
 
-The [Oils project](https://github.com/oils-for-unix/oils) (formerly Oil Shell) maintains the most comprehensive open-source bash conformance test suite: **2,274 test cases across 142 `.test.sh` files**. These tests are licensed under Apache 2.0 and imported from upstream Oils commit `7789e21d81537a5b47bacbd4267edf7c659a9366`.
+The [Oils project](https://github.com/oils-for-unix/oils) (formerly Oil Shell) maintains the most comprehensive open-source bash conformance test suite: **2,846 test cases across 142 `.test.sh` files**. These tests are licensed under Apache 2.0 and imported from upstream Oils commit `7789e21d81537a5b47bacbd4267edf7c659a9366`.
 
 **File location**: `tests/fixtures/oils/` — the `.test.sh` files plus a `LICENSE` attribution and `pass-list.txt`.
 
@@ -146,9 +146,9 @@ Key format elements:
 
 **Pass-list approach**: The Oils suite inverts the xfail model used by comparison and spec tests. Instead of marking known failures, it maintains a **pass-list** (`tests/fixtures/oils/pass-list.txt`) of known-passing case names. Everything else defaults to xfail. This is a better fit because the imported corpus has far more expected failures than passes.
 
-**Current coverage** (142 files, 2,274 cases):
+**Current coverage** (142 files, 2,846 cases):
 - 100 files tested, 42 files skipped
-- **802 pass** / **1,393 xfail** / **79 skip** / **0 unexpected-pass** / **0 fail**
+- **1,293 pass** / **906 xfail** / **79 skip** / **0 unexpected-pass** / **0 fail**
 
 **File-level skip categories** (42 files):
 - Non-applicable (zsh-specific, ble.sh, nix, toysh, etc.)
