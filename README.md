@@ -32,6 +32,12 @@ Interactive showcase with 80+ commands running via WASM. Includes an AI agent yo
 npm install rust-bash
 ```
 
+### Rust crate
+
+```bash
+cargo add rust-bash
+```
+
 ### Build from source (Rust)
 
 ```bash
@@ -44,7 +50,7 @@ cargo build --release
 ### Install via Cargo
 
 ```bash
-cargo install --path .
+cargo install rust-bash
 ```
 
 ## Quick Start (TypeScript)

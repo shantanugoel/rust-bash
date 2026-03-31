@@ -5,7 +5,7 @@ expression: r.stdout
 ---
 BASH=/bin/bash
 BASHOPTS=
-BASH_VERSION=0.1.0
+BASH_VERSION=0.2.0
 HOME=/home/user
 HOSTNAME=rust-bash
 LANG=en_US.UTF-8

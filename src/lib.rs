@@ -1,3 +1,38 @@
+//! A sandboxed bash interpreter with a virtual filesystem.
+//!
+//! `rust-bash` executes bash scripts safely in-process — no containers, no VMs,
+//! no host access. All file operations happen on a pluggable virtual filesystem
+//! (in-memory by default), and configurable execution limits prevent runaway scripts.
+//!
+//! # Quick start
+//!
+//! ```rust
+//! use rust_bash::RustBashBuilder;
+//! use std::collections::HashMap;
+//!
+//! let mut shell = RustBashBuilder::new()
+//!     .files(HashMap::from([
+//!         ("/hello.txt".into(), b"hello world".to_vec()),
+//!     ]))
+//!     .build()
+//!     .unwrap();
+//!
+//! let result = shell.exec("cat /hello.txt").unwrap();
+//! assert_eq!(result.stdout, "hello world");
+//! assert_eq!(result.exit_code, 0);
+//! ```
+//!
+//! # Features
+//!
+//! - **80+ built-in commands** — echo, cat, grep, awk, sed, jq, find, sort, diff, curl, and more
+//! - **Full bash syntax** — pipelines, redirections, variables, control flow, functions,
+//!   command substitution, globs, brace expansion, arithmetic, here-documents, case statements
+//! - **Execution limits** — 10 configurable bounds (time, commands, loops, output size, etc.)
+//! - **Network policy** — sandboxed `curl` with URL allow-lists and method restrictions
+//! - **Multiple filesystem backends** — [`InMemoryFs`], [`OverlayFs`], [`ReadWriteFs`], [`MountableFs`]
+//! - **Custom commands** — implement the [`VirtualCommand`] trait to add your own
+//! - **C FFI and WASM** — embed in any language via shared library or WebAssembly
+
 pub mod api;
 pub mod commands;
 pub mod error;
