@@ -2,7 +2,7 @@
 
 A sandboxed bash interpreter for AI Agents, built in Rust. Execute bash scripts safely with a virtual filesystem — no containers, no VMs, no host access.
 
-> **Status: Pre-alpha / Milestones 1–7 Complete** — Core interpreter, text processing,
+> **Status: alpha / Milestones 1–7 Complete** — Core interpreter, text processing,
 > execution safety, filesystem backends, CLI binary, C FFI, WASM target, npm package,
 > AI SDK integration, shell language completeness, and command coverage are implemented.
 
