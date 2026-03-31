@@ -138,25 +138,34 @@ fn tokenize(input: &str) -> Result<Vec<Token>, RustBashError> {
             continue;
         }
 
-        // Single-quoted numeric constants: treat 'x' as ASCII value of x
+        // Single-quoted strings: 'x' (single char) is ASCII value; multi-char
+        // strings like 'spam' are treated as identifiers (used as assoc keys).
         if bytes[i] == b'\'' {
             i += 1;
-            let ch_val = if i < bytes.len() {
-                let v = bytes[i] as i64;
-                i += 1;
-                v
-            } else {
-                0
-            };
-            // skip closing quote if present
-            if i < bytes.len() && bytes[i] == b'\'' {
+            let content_start = i;
+            while i < bytes.len() && bytes[i] != b'\'' {
                 i += 1;
             }
-            tokens.push(Token {
-                kind: TokenKind::Number(ch_val),
-                start,
-                len: i - start,
-            });
+            let content_len = i - content_start;
+            if i < bytes.len() {
+                i += 1; // skip closing quote
+            }
+            if content_len == 1 {
+                // Single char: ASCII value
+                let ch_val = bytes[content_start] as i64;
+                tokens.push(Token {
+                    kind: TokenKind::Number(ch_val),
+                    start,
+                    len: i - start,
+                });
+            } else {
+                // Multi-char: treat as identifier (for assoc array keys)
+                tokens.push(Token {
+                    kind: TokenKind::Ident,
+                    start: content_start,
+                    len: content_len,
+                });
+            }
             continue;
         }
 
@@ -749,12 +758,9 @@ impl<'a> Parser<'a> {
             let ident_tok = self.advance();
             let name = self.ident_name(ident_tok).to_string();
 
-            // Check for array subscript
-            let array_idx = if self.peek() == Some(TokenKind::LBracket) {
-                self.advance(); // consume [
-                let idx = self.parse_comma(state)?;
-                self.expect(TokenKind::RBracket)?;
-                Some(idx)
+            // Check for array subscript — capture raw text between [ and ]
+            let raw_subscript = if self.peek() == Some(TokenKind::LBracket) {
+                Some(self.extract_raw_subscript()?)
             } else {
                 None
             };
@@ -764,8 +770,8 @@ impl<'a> Parser<'a> {
                     TokenKind::Eq => {
                         self.advance();
                         let val = self.parse_assignment(state)?;
-                        if let Some(idx) = array_idx {
-                            write_array_element(state, &name, idx, val)?;
+                        if let Some(ref sub) = raw_subscript {
+                            write_array_element(state, &name, sub, val)?;
                         } else {
                             set_variable(state, &name, val.to_string())?;
                         }
@@ -783,14 +789,14 @@ impl<'a> Parser<'a> {
                     | TokenKind::CaretEq => {
                         self.advance();
                         let rhs = self.parse_assignment(state)?;
-                        let lhs = if let Some(idx) = array_idx {
-                            read_array_element(state, &name, idx)
+                        let lhs = if let Some(ref sub) = raw_subscript {
+                            read_array_element(state, &name, sub)
                         } else {
                             read_var(state, &name)
                         };
                         let val = apply_compound_op(op, lhs, rhs)?;
-                        if let Some(idx) = array_idx {
-                            write_array_element(state, &name, idx, val)?;
+                        if let Some(ref sub) = raw_subscript {
+                            write_array_element(state, &name, sub, val)?;
                         } else {
                             set_variable(state, &name, val.to_string())?;
                         }
@@ -1144,10 +1150,8 @@ impl<'a> Parser<'a> {
                 let name = self.ident_name(tok).to_string();
                 // Check for array subscript: ident[expr]
                 if self.peek() == Some(TokenKind::LBracket) {
-                    self.advance(); // consume [
-                    let idx = self.parse_comma(state)?;
-                    self.expect(TokenKind::RBracket)?;
-                    Ok(read_array_element(state, &name, idx))
+                    let raw_sub = self.extract_raw_subscript()?;
+                    Ok(read_array_element(state, &name, &raw_sub))
                 } else {
                     Ok(read_var(state, &name))
                 }
@@ -1165,6 +1169,46 @@ impl<'a> Parser<'a> {
                 "arithmetic: unexpected end of expression".into(),
             )),
         }
+    }
+
+    /// Extract the raw source text of an array subscript between `[` and `]`.
+    /// The parser position must be at the `[` token. After this call, the
+    /// position is advanced past the matching `]`.
+    fn extract_raw_subscript(&mut self) -> Result<String, RustBashError> {
+        self.expect(TokenKind::LBracket)?;
+        // Find the matching ] — track nesting
+        let start_pos = self.pos;
+        let mut depth = 1;
+        while self.pos < self.tokens.len() {
+            match self.tokens[self.pos].kind {
+                TokenKind::LBracket => depth += 1,
+                TokenKind::RBracket => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            self.pos += 1;
+        }
+        if depth != 0 {
+            return Err(RustBashError::Execution(
+                "arithmetic: expected RBracket".into(),
+            ));
+        }
+        // Reconstruct the raw source text between [ and ]
+        let raw = if start_pos < self.pos {
+            let first = &self.tokens[start_pos];
+            let last = &self.tokens[self.pos - 1];
+            let src_start = first.start;
+            let src_end = last.start + last.len;
+            self.source[src_start..src_end].to_string()
+        } else {
+            String::new()
+        };
+        self.advance(); // consume ]
+        Ok(raw)
     }
 
     fn expect_ident(&mut self) -> Result<Token, RustBashError> {
@@ -1236,65 +1280,128 @@ fn resolve_var_recursive(state: &mut InterpreterState, name: &str, depth: usize)
     0
 }
 
-/// Read a specific array element by numeric index.
-fn read_array_element(state: &mut InterpreterState, name: &str, index: i64) -> i64 {
+/// Strip surrounding single or double quotes from an associative array key.
+fn strip_assoc_quotes(s: &str) -> &str {
+    let s = s.trim();
+    if (s.starts_with('\'') && s.ends_with('\'')) || (s.starts_with('"') && s.ends_with('"')) {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
+}
+
+/// Determine if a variable is an associative array.
+fn is_assoc_array(state: &InterpreterState, name: &str) -> bool {
     use crate::interpreter::VariableValue;
     let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
-    let Some(var) = state.env.get(&resolved) else {
-        return 0;
+    state
+        .env
+        .get(&resolved)
+        .is_some_and(|v| matches!(v.value, VariableValue::AssociativeArray(_)))
+}
+
+/// Read a specific array element.
+/// For associative arrays, the raw subscript is used as a string key.
+/// For indexed arrays, it is evaluated as an arithmetic expression.
+fn read_array_element(state: &mut InterpreterState, name: &str, raw_subscript: &str) -> i64 {
+    use crate::interpreter::VariableValue;
+    let resolved_name = crate::interpreter::resolve_nameref_or_self(name, state);
+
+    // Determine type and extract value without holding a borrow across eval_arithmetic.
+    enum VarKind {
+        Assoc,
+        Indexed,
+        Scalar,
+        Missing,
+    }
+    let kind = match state.env.get(&resolved_name) {
+        Some(v) => match &v.value {
+            VariableValue::AssociativeArray(_) => VarKind::Assoc,
+            VariableValue::IndexedArray(_) => VarKind::Indexed,
+            VariableValue::Scalar(_) => VarKind::Scalar,
+        },
+        None => VarKind::Missing,
     };
-    let val_str = match &var.value {
-        VariableValue::IndexedArray(map) => {
-            let actual_idx = if index < 0 {
-                let max_key = map.keys().next_back().copied().unwrap_or(0);
-                let resolved = max_key as i64 + 1 + index;
-                if resolved < 0 {
-                    return 0;
-                }
-                resolved as usize
-            } else {
-                index as usize
-            };
-            map.get(&actual_idx).map(|s| s.as_str()).unwrap_or("")
+
+    let val_str = match kind {
+        VarKind::Missing => return 0,
+        VarKind::Assoc => {
+            let key = strip_assoc_quotes(raw_subscript);
+            match state.env.get(&resolved_name) {
+                Some(v) => match &v.value {
+                    VariableValue::AssociativeArray(map) => {
+                        map.get(key).cloned().unwrap_or_default()
+                    }
+                    _ => String::new(),
+                },
+                None => String::new(),
+            }
         }
-        VariableValue::AssociativeArray(map) => map
-            .get(&index.to_string())
-            .map(|s| s.as_str())
-            .unwrap_or(""),
-        VariableValue::Scalar(s) => {
-            if index == 0 || index == -1 {
-                s.as_str()
-            } else {
-                ""
+        VarKind::Indexed => {
+            let index = eval_arithmetic(raw_subscript, state).unwrap_or(0);
+            match state.env.get(&resolved_name) {
+                Some(v) => match &v.value {
+                    VariableValue::IndexedArray(map) => {
+                        let actual_idx = if index < 0 {
+                            let max_key = map.keys().next_back().copied().unwrap_or(0);
+                            let resolved = max_key as i64 + 1 + index;
+                            if resolved < 0 {
+                                return 0;
+                            }
+                            resolved as usize
+                        } else {
+                            index as usize
+                        };
+                        map.get(&actual_idx).cloned().unwrap_or_default()
+                    }
+                    _ => String::new(),
+                },
+                None => String::new(),
+            }
+        }
+        VarKind::Scalar => {
+            let index = eval_arithmetic(raw_subscript, state).unwrap_or(0);
+            match state.env.get(&resolved_name) {
+                Some(v) => match &v.value {
+                    VariableValue::Scalar(s) => {
+                        if index == 0 || index == -1 {
+                            s.clone()
+                        } else {
+                            String::new()
+                        }
+                    }
+                    _ => String::new(),
+                },
+                None => String::new(),
             }
         }
     };
     val_str.parse::<i64>().unwrap_or(0)
 }
 
-/// Write a value to a specific array element by numeric index.
+/// Write a value to a specific array element.
+/// For associative arrays, the raw subscript is used as a string key.
+/// For indexed arrays, it is evaluated as an arithmetic expression.
 fn write_array_element(
     state: &mut InterpreterState,
     name: &str,
-    index: i64,
+    raw_subscript: &str,
     value: i64,
 ) -> Result<(), RustBashError> {
     use crate::interpreter::VariableValue;
-    // Check if the target is an associative array — use string key
-    let is_assoc = state
-        .env
-        .get(name)
-        .is_some_and(|v| matches!(v.value, VariableValue::AssociativeArray(_)));
-    if is_assoc {
+    let resolved_name = crate::interpreter::resolve_nameref_or_self(name, state);
+    if is_assoc_array(state, &resolved_name) {
+        let key = strip_assoc_quotes(raw_subscript).to_string();
         return crate::interpreter::set_assoc_element(
             state,
-            name,
-            index.to_string(),
+            &resolved_name,
+            key,
             value.to_string(),
         );
     }
+    let index = eval_arithmetic(raw_subscript, state)?;
     if index < 0 {
-        let max_key = state.env.get(name).and_then(|v| match &v.value {
+        let max_key = state.env.get(&resolved_name).and_then(|v| match &v.value {
             VariableValue::IndexedArray(map) => map.keys().next_back().copied(),
             VariableValue::Scalar(_) => Some(0),
             _ => None,
@@ -1309,7 +1416,7 @@ fn write_array_element(
                 }
                 return crate::interpreter::set_array_element(
                     state,
-                    name,
+                    &resolved_name,
                     resolved as usize,
                     value.to_string(),
                 );
@@ -1321,7 +1428,7 @@ fn write_array_element(
             }
         }
     }
-    crate::interpreter::set_array_element(state, name, index as usize, value.to_string())
+    crate::interpreter::set_array_element(state, &resolved_name, index as usize, value.to_string())
 }
 
 fn wrapping_pow(mut base: i64, mut exp: i64) -> i64 {

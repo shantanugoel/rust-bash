@@ -139,6 +139,7 @@ fn execute_oils_case(case: &OilsTestCase) -> Option<String> {
 
     let mut builder = RustBashBuilder::new()
         .env(env_map)
+        .cwd("/_tmp/spec-tmp")
         .execution_limits(ExecutionLimits {
             max_loop_iterations: 10_000,
             max_execution_time: Duration::from_secs(5),

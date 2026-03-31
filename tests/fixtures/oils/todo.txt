@@ -1,6 +1,6 @@
 # Ordered Oils fix queue as of 2026-03-31.
 # Source of truth: current live Oils run (`cargo test --test oils_spec -- --nocapture --test-threads=1`).
-# Current totals: 1293 pass / 906 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
+# Current totals: 1338 pass / 843 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
 #
 # This is a file-level backlog, ordered by recommended implementation sequence.
 # Each line is one Oils `.test.sh` file with remaining xfails.
@@ -8,13 +8,10 @@
 # `nul-bytes.test` and `unicode.test` stay deferred to Milestone 9 work.
 # `builtin-cd.test` and `redirect.test` stay on the queue, but expect a small VFS/symlink/fd tail to remain until M9.
 
-## Regressions To Recover First
-- dparen.test (xfail=8) arithmetic / assoc-array regression cleanup before more arithmetic work
-- globstar.test (xfail=5) globstar regression cleanup before more glob fidelity work
-
 ## Parser, Expansion, Quoting, Assignment
+- dparen.test (xfail=4) remaining: echo bracket-quoting display, missing stdout_stderr.py helper
 - parse-errors.test (xfail=23) parser error fidelity; unlocks later syntax work
-- assign-extended.test (xfail=22) `declare` / `typeset` / `declare -p` semantics
+- assign-extended.test (xfail=21) `declare` / `typeset` / `declare -p` semantics
 - var-sub-quote.test (xfail=20) quoted parameter expansion fidelity
 - word-split.test (xfail=19) IFS, `$@`, `$*`, empty-string splitting semantics
 - command-sub.test (xfail=19) command-sub quoting and newline semantics
@@ -39,7 +36,7 @@
 - var-sub.test (xfail=5) remaining unquoted parameter expansion cases
 - command-sub-ksh.test (xfail=4) legacy command-sub syntax tail
 - bool-parse.test (xfail=4) boolean / conditional parse rules
-- for-expr.test (xfail=4) C-style `for ((...))` parse/runtime fidelity
+- for-expr.test (xfail=3) C-style `for ((...))` parse/runtime fidelity
 - fatal-errors.test (xfail=3) fatal parse/runtime error behavior
 - sh-func.test (xfail=3) shell-function parsing / invocation tail
 - empty-bodies.test (xfail=2) empty compound-body handling
@@ -89,7 +86,7 @@
 - nameref.test (xfail=16) `declare -n` and reference semantics
 - regex.test (xfail=11) `[[ ... =~ ... ]]` parse/runtime regex behavior
 - array-assign.test (xfail=10) assignment forms for arrays
-- array-assoc.test (xfail=9) associative-array tail
+- array-assoc.test (xfail=8) associative-array tail
 - introspect.test (xfail=7) introspection / serialization tail
 - array-compat.test (xfail=2) compatibility behavior for array corner cases
 
@@ -99,15 +96,16 @@
 - redirect.test (xfail=9) redirection semantics; leave the final fd/VFS tail for M9
 - builtin-cd.test (xfail=9) `cd` / `pwd` semantics; leave the final symlink/PWD fidelity tail for M9
 - redirect-multi.test (xfail=8) multi-redirect word expansion and ambiguity
-- glob.test (xfail=8) remaining glob semantics and locale/order edge cases
+- glob.test (xfail=7) remaining glob semantics and locale/order edge cases
 - tilde.test (xfail=7) tilde expansion tail
-- globignore.test (xfail=7) `GLOBIGNORE` interaction semantics
+- globignore.test (xfail=5) `GLOBIGNORE` interaction semantics
 - process-sub.test (xfail=6) process substitution semantics
 - serialize.test (xfail=6) shell state serialization / `%q` / `set` output fidelity
 - redirect-command.test (xfail=6) command + redirect interaction semantics
 - redir-order.test (xfail=4) redirect ordering semantics
 - extglob-files.test (xfail=3) extglob filesystem matching tail
 - extglob-match.test (xfail=2) extglob matcher semantics
+- globstar.test (xfail=1) zsh-specific symlink-following test (N/A for bash)
 - glob-bash.test (xfail=1) bash-specific glob behavior tail
 
 ## Deferred Until Milestone 9

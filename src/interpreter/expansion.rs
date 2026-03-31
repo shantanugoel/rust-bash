@@ -2917,12 +2917,12 @@ fn expand_raw_string_mut_ctx(
 
 /// Expand shell variables inside an arithmetic expression before evaluation.
 /// This handles cases like `$((${zero}11))` where `zero=0` should yield `011`.
-fn expand_arith_expression(
+pub(crate) fn expand_arith_expression(
     expr: &str,
     state: &mut InterpreterState,
 ) -> Result<String, RustBashError> {
-    // If the expression contains no shell expansion markers, return as-is.
-    if !expr.contains('$') && !expr.contains('`') {
+    // If the expression contains no shell expansion markers or quotes, return as-is.
+    if !expr.contains('$') && !expr.contains('`') && !expr.contains('\'') && !expr.contains('"') {
         return Ok(expr.to_string());
     }
     // Parse the expression as a shell word and expand it.

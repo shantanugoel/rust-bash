@@ -133,6 +133,7 @@ array-assoc.test:test -v with dynamic parsing
 array-assoc.test:unset -v and assoc array
 array-assoc.test:[[ -v assoc[key] ]]
 array-assoc.test:[[ -v assoc[key] ]] syntax errors
+array-assoc.test:Associative array expressions inside (( )) with keys that look like numbers
 array-basic.test:"${a[@]}" and "${a[*]}"
 array-basic.test:${a[@]} and ${a[*]}
 array-basic.test:4 ways to interpolate empty array
@@ -253,6 +254,7 @@ assign-extended.test:Multiple assignments / array assignments on a line
 assign-extended.test:typeset -f
 assign-extended.test:typeset -r makes a string readonly
 assign-extended.test:typeset -x makes it exported
+assign-extended.test:ble.sh: eval -- "$(declare -p var arr)"
 assign.test:aliased assignment doesn't split
 assign.test:assign and glob
 assign.test:Assignment doesn't do glob expansion
@@ -711,6 +713,10 @@ dparen.test:negative number is true
 dparen.test:(( )) result
 dparen.test:(( )) with arrays
 dparen.test:(( )) with error
+dparen.test:BUG: (( V = A[K] )) doesn't retrieve the right value
+dparen.test:literal strings inside (( ))
+dparen.test:set associative array
+dparen.test:Example of incrementing associative array entry with var key (ble.sh)
 empty-bodies.test:Empty case/esac
 errexit.test:background processes respect errexit
 errexit.test:errexit aborts early
@@ -795,6 +801,7 @@ for-expr.test:Condition that's greater than 32 bits
 for-expr.test:C-style for loop
 for-expr.test:Empty init
 for-expr.test:Integers near 31, 32, 62 bits
+for-expr.test:Arith lexer mode
 func-parsing.test:Break after ) is OK.
 func-parsing.test:Function with spaces, to see if ( and ) are separate tokens.
 func-parsing.test:Hard case, function with } token in it
@@ -820,6 +827,13 @@ globignore.test:Ignore ?.txt
 globignore.test:Quoting GLOBIGNORE
 globignore.test:resetting globignore reverts to default behaviour
 globignore.test:treat escaped patterns literally
+globignore.test:Ignore globs with char patterns like [!ab]
+globignore.test:When GLOBIGNORE is set, glob may become empty (nullglob too)
+globstar.test:globstar is off -> ** is treated like *
+globstar.test:each occurrence of ** recurses through all depths
+globstar.test:within braces, globstar works when there is a comma
+globstar.test:** behaves like * if adjacent to anything other than /
+glob.test:no glob after ~ expansion
 glob.test:0 char glob -- does NOT work
 glob.test:1 char glob
 glob.test:: escaped

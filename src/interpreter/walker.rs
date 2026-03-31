@@ -1463,7 +1463,9 @@ fn execute_arithmetic(
     arith: &ast::ArithmeticCommand,
     state: &mut InterpreterState,
 ) -> Result<ExecResult, RustBashError> {
-    let val = crate::interpreter::arithmetic::eval_arithmetic(&arith.expr.value, state)?;
+    let expanded =
+        crate::interpreter::expansion::expand_arith_expression(&arith.expr.value, state)?;
+    let val = crate::interpreter::arithmetic::eval_arithmetic(&expanded, state)?;
     let mut result = ExecResult {
         exit_code: if val != 0 { 0 } else { 1 },
         ..Default::default()
@@ -1488,7 +1490,8 @@ fn execute_arithmetic_for(
 
     // Evaluate initializer
     if let Some(init) = &afc.initializer {
-        crate::interpreter::arithmetic::eval_arithmetic(&init.value, state)?;
+        let expanded = crate::interpreter::expansion::expand_arith_expression(&init.value, state)?;
+        crate::interpreter::arithmetic::eval_arithmetic(&expanded, state)?;
     }
 
     let mut result = ExecResult::default();
@@ -1511,7 +1514,9 @@ fn execute_arithmetic_for(
 
         // Evaluate condition (empty condition = always true)
         if let Some(cond) = &afc.condition {
-            let val = crate::interpreter::arithmetic::eval_arithmetic(&cond.value, state)?;
+            let expanded =
+                crate::interpreter::expansion::expand_arith_expression(&cond.value, state)?;
+            let val = crate::interpreter::arithmetic::eval_arithmetic(&expanded, state)?;
             if val == 0 {
                 break;
             }
@@ -1545,7 +1550,9 @@ fn execute_arithmetic_for(
 
         // Evaluate updater
         if let Some(upd) = &afc.updater {
-            crate::interpreter::arithmetic::eval_arithmetic(&upd.value, state)?;
+            let expanded =
+                crate::interpreter::expansion::expand_arith_expression(&upd.value, state)?;
+            crate::interpreter::arithmetic::eval_arithmetic(&expanded, state)?;
         }
     }
     state.loop_depth -= 1;
