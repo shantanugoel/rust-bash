@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 pub mod oils_format;
+pub mod oils_helpers;
 
 use std::collections::HashMap;
 use std::path::Path;

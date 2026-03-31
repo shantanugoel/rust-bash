@@ -6,6 +6,7 @@
 
 use rust_bash::{RustBash, RustBashBuilder};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -1207,7 +1208,7 @@ fn exec_callback_available_to_commands() {
     }
 
     let mut sh = RustBashBuilder::new()
-        .command(Box::new(ExecTestCmd))
+        .command(Arc::new(ExecTestCmd))
         .build()
         .unwrap();
     let r = sh.exec("exectest").unwrap();
@@ -4081,7 +4082,7 @@ fn builder_custom_command_overrides_builtin() {
     }
 
     let mut sh = RustBashBuilder::new()
-        .command(Box::new(MyEcho))
+        .command(Arc::new(MyEcho))
         .build()
         .unwrap();
     let r = sh.exec("myecho hello").unwrap();

@@ -146,6 +146,9 @@ fn execute_oils_case(case: &OilsTestCase) -> Option<String> {
             ..ExecutionLimits::default()
         });
 
+    // Register Oils test helper commands (argv.py, printenv.py, etc.)
+    builder = common::oils_helpers::register_oils_helpers(builder);
+
     // Provide an empty file map so VFS is initialized.
     builder = builder.files(HashMap::new());
 

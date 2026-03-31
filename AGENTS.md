@@ -24,6 +24,7 @@ Agents MUST follow these steps for every task:
 - Reuse existing types/traits before adding new abstractions.
 - Keep changes incremental and test-gated.
 - Run `cargo fmt`, `cargo clippy -- -D warnings` and `cargo test` on touched areas before finishing.
+- Whenever any code changes are made, make sure all builds (main package, node and wasm packages, all examples, all tests, etc) build and test fine
 - File, function, and test names should describe behavior, not planning phases.
 - Avoid clippy allow directives — fix the underlying issue instead.
 - If requirements are unclear or conflicting, ask the user instead of guessing.

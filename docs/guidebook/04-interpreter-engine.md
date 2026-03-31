@@ -25,7 +25,7 @@ pub struct InterpreterState {
     pub cwd: String,
     pub functions: HashMap<String, FunctionDef>,
     pub last_exit_code: i32,
-    pub commands: HashMap<String, Box<dyn VirtualCommand>>,
+    pub commands: HashMap<String, Arc<dyn VirtualCommand>>,
     pub shell_opts: ShellOpts,
     pub limits: ExecutionLimits,
     pub counters: ExecutionCounters,

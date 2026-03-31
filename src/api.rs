@@ -144,7 +144,7 @@ impl RustBash {
     }
 
     /// Register a custom command.
-    pub fn register_command(&mut self, cmd: Box<dyn VirtualCommand>) {
+    pub fn register_command(&mut self, cmd: Arc<dyn VirtualCommand>) {
         self.state.commands.insert(cmd.name().to_string(), cmd);
     }
 
@@ -241,7 +241,7 @@ pub struct RustBashBuilder {
     files: HashMap<String, Vec<u8>>,
     env: HashMap<String, String>,
     cwd: Option<String>,
-    custom_commands: Vec<Box<dyn VirtualCommand>>,
+    custom_commands: Vec<Arc<dyn VirtualCommand>>,
     limits: Option<ExecutionLimits>,
     network_policy: Option<NetworkPolicy>,
     fs: Option<Arc<dyn VirtualFs>>,
@@ -286,7 +286,7 @@ impl RustBashBuilder {
     }
 
     /// Register a custom command.
-    pub fn command(mut self, cmd: Box<dyn VirtualCommand>) -> Self {
+    pub fn command(mut self, cmd: Arc<dyn VirtualCommand>) -> Self {
         self.custom_commands.push(cmd);
         self
     }
@@ -466,7 +466,7 @@ impl RustBashBuilder {
 fn setup_default_filesystem(
     fs: &dyn VirtualFs,
     env: &HashMap<String, String>,
-    commands: &HashMap<String, Box<dyn commands::VirtualCommand>>,
+    commands: &HashMap<String, Arc<dyn commands::VirtualCommand>>,
 ) -> Result<(), RustBashError> {
     // Standard directories
     for dir in &["/bin", "/usr/bin", "/tmp", "/dev"] {
@@ -796,7 +796,7 @@ mod tests {
         }
 
         let mut shell = RustBashBuilder::new()
-            .command(Box::new(CustomCmd))
+            .command(Arc::new(CustomCmd))
             .build()
             .unwrap();
         let result = shell.exec("custom").unwrap();

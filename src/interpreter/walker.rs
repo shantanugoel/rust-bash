@@ -1820,15 +1820,12 @@ fn execute_case(
 
 /// Clone the command registry for subshell isolation.
 ///
-/// **Limitation:** Custom commands registered via the public API are not
-/// preserved in subshells because `Box<dyn VirtualCommand>` is not `Clone`.
-/// Only the default built-in command set is available inside subshells.
-/// A future improvement could use `Arc<dyn VirtualCommand>` to share
-/// command instances across subshell boundaries.
+/// Uses `Arc<dyn VirtualCommand>` so that custom commands registered via the
+/// public API are preserved in subshells and command substitutions.
 pub(crate) fn clone_commands(
-    _commands: &HashMap<String, Box<dyn crate::commands::VirtualCommand>>,
-) -> HashMap<String, Box<dyn crate::commands::VirtualCommand>> {
-    crate::commands::register_default_commands()
+    commands: &HashMap<String, Arc<dyn crate::commands::VirtualCommand>>,
+) -> HashMap<String, Arc<dyn crate::commands::VirtualCommand>> {
+    commands.clone()
 }
 
 /// Create an exec callback that commands can use to invoke sub-commands.

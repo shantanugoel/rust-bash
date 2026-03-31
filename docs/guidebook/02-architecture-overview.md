@@ -131,7 +131,7 @@ The `RustBash` owns a persistent `InterpreterState`. Each `exec()` call mutates 
 │  ├── cwd: String                   (updated by cd)        │
 │  ├── functions: HashMap<String, FunctionDef>              │
 │  ├── last_exit_code: i32           (updated per command)  │
-│  ├── commands: HashMap<String, Box<dyn VirtualCommand>>   │
+│  ├── commands: HashMap<String, Arc<dyn VirtualCommand>>   │
 │  ├── shell_opts: ShellOpts         (errexit, nounset, …)  │
 │  ├── limits: ExecutionLimits       (immutable config)     │
 │  ├── counters: ExecutionCounters   (reset per exec())     │

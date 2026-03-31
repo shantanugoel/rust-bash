@@ -84,7 +84,7 @@ pub mod network {
 }
 
 pub use api::{RustBash, RustBashBuilder};
-pub use commands::{CommandContext, CommandResult, ExecCallback, VirtualCommand};
+pub use commands::{CommandContext, CommandMeta, CommandResult, ExecCallback, VirtualCommand};
 pub use error::{RustBashError, VfsError};
 pub use interpreter::{
     ExecResult, ExecutionCounters, ExecutionLimits, InterpreterState, ShellOpts, Variable,

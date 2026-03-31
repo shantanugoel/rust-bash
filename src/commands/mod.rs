@@ -20,6 +20,7 @@ use crate::interpreter::ExecutionLimits;
 use crate::network::NetworkPolicy;
 use crate::vfs::VirtualFs;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Result of executing a command.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1007,357 +1008,104 @@ impl VirtualCommand for EgrepCommand {
     }
 }
 
-/// Oils test helper: `argv.py` prints arguments as a Python list.
-///
-/// Equivalent to `python2 -c 'import sys; print(sys.argv[1:])'`.
-struct ArgvPyCommand;
-
-static ARGV_PY_META: CommandMeta = CommandMeta {
-    name: "argv.py",
-    synopsis: "argv.py [arg ...]",
-    description: "Print arguments as a Python list (Oils test helper).",
-    options: &[],
-    supports_help_flag: false,
-    flags: &[],
-};
-
-impl VirtualCommand for ArgvPyCommand {
-    fn name(&self) -> &str {
-        "argv.py"
-    }
-
-    fn meta(&self) -> Option<&'static CommandMeta> {
-        Some(&ARGV_PY_META)
-    }
-
-    fn execute(&self, args: &[String], _ctx: &CommandContext) -> CommandResult {
-        // Python repr format: ['a', 'b'] — matches Python 2 list repr.
-        // If a string contains single quotes but no double quotes, use double quotes.
-        let parts: Vec<String> = args.iter().map(|a| python_repr_string(a)).collect();
-        CommandResult {
-            stdout: format!("[{}]\n", parts.join(", ")),
-            ..Default::default()
-        }
-    }
-}
-
-/// Produce a Python-style repr of a string, matching Python 2 behavior.
-fn python_repr_string(s: &str) -> String {
-    // First escape control characters (like Python 2 repr does)
-    let mut base = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\\' => base.push_str("\\\\"),
-            '\t' => base.push_str("\\t"),
-            '\n' => base.push_str("\\n"),
-            '\r' => base.push_str("\\r"),
-            _ if c.is_ascii_control() => {
-                base.push_str(&format!("\\x{:02x}", c as u32));
-            }
-            _ => base.push(c),
-        }
-    }
-    if s.contains('\'') && !s.contains('"') {
-        // Use double quotes: "it's"
-        let escaped = base.replace('"', "\\\"");
-        format!("\"{escaped}\"")
-    } else {
-        // Use single quotes: 'hello'
-        let escaped = base.replace('\'', "\\'");
-        format!("'{escaped}'")
-    }
-}
-
-/// Oils test helper: `printenv.py` prints specified environment variables.
-struct PrintenvPyCommand;
-
-static PRINTENV_PY_META: CommandMeta = CommandMeta {
-    name: "printenv.py",
-    synopsis: "printenv.py [NAME ...]",
-    description: "Print environment variables or 'None' (Oils test helper).",
-    options: &[],
-    supports_help_flag: false,
-    flags: &[],
-};
-
-impl VirtualCommand for PrintenvPyCommand {
-    fn name(&self) -> &str {
-        "printenv.py"
-    }
-
-    fn meta(&self) -> Option<&'static CommandMeta> {
-        Some(&PRINTENV_PY_META)
-    }
-
-    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
-        let mut out = String::new();
-        for name in args {
-            // printenv checks the process environment which only contains
-            // exported variables.  Use ctx.variables for attribute checking
-            // when available; otherwise fall back to ctx.env.
-            let val = if let Some(vars) = ctx.variables {
-                vars.get(name.as_str())
-                    .filter(|v| v.exported())
-                    .map(|v| v.value.as_scalar().to_string())
-            } else {
-                ctx.env.get(name.as_str()).cloned()
-            };
-            match val {
-                Some(v) => out.push_str(&format!("{v}\n")),
-                None => out.push_str("None\n"),
-            }
-        }
-        CommandResult {
-            stdout: out,
-            ..Default::default()
-        }
-    }
-}
-
-/// Oils test helper: `stdout_stderr.py` prints to stdout and stderr.
-///
-/// Usage: `stdout_stderr.py [STDOUT [STDERR [STATUS]]]`
-/// - Prints STDOUT (default "STDOUT") to stdout
-/// - Prints STDERR (default "STDERR") to stderr
-/// - Exits with STATUS (default 0)
-struct StdoutStderrPyCommand;
-
-static STDOUT_STDERR_PY_META: CommandMeta = CommandMeta {
-    name: "stdout_stderr.py",
-    synopsis: "stdout_stderr.py [STDOUT [STDERR [STATUS]]]",
-    description: "Print to stdout and stderr (Oils test helper).",
-    options: &[],
-    supports_help_flag: false,
-    flags: &[],
-};
-
-impl VirtualCommand for StdoutStderrPyCommand {
-    fn name(&self) -> &str {
-        "stdout_stderr.py"
-    }
-
-    fn meta(&self) -> Option<&'static CommandMeta> {
-        Some(&STDOUT_STDERR_PY_META)
-    }
-
-    fn execute(&self, args: &[String], _ctx: &CommandContext) -> CommandResult {
-        let stdout_val = args.first().map_or("STDOUT", |s| s.as_str());
-        let stderr_val = args.get(1).map_or("STDERR", |s| s.as_str());
-        let status: i32 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
-        CommandResult {
-            stdout: format!("{stdout_val}\n"),
-            stderr: format!("{stderr_val}\n"),
-            exit_code: status,
-            ..Default::default()
-        }
-    }
-}
-
-/// Minimal `python2 -c 'expr'` helper for Oils tests.
-/// Supports only `print("...")` / `print '...'` statements.
-struct Python2Command;
-
-static PYTHON2_META: CommandMeta = CommandMeta {
-    name: "python2",
-    synopsis: "python2 -c CODE",
-    description: "Minimal Python 2 interpreter for Oils test helpers.",
-    options: &[],
-    supports_help_flag: false,
-    flags: &[],
-};
-
-impl VirtualCommand for Python2Command {
-    fn name(&self) -> &str {
-        "python2"
-    }
-
-    fn meta(&self) -> Option<&'static CommandMeta> {
-        Some(&PYTHON2_META)
-    }
-
-    fn execute(&self, args: &[String], _ctx: &CommandContext) -> CommandResult {
-        // Only support: python2 -c 'code'
-        if args.len() < 2 || args[0] != "-c" {
-            return CommandResult {
-                stderr: "python2: only -c flag is supported\n".to_string(),
-                exit_code: 2,
-                ..Default::default()
-            };
-        }
-        let code = &args[1];
-        let mut stdout = String::new();
-        // Parse simple print statements (one per line)
-        for line in code.lines() {
-            let trimmed = line.trim();
-            // Match print("...") or print '...' or print("..." % (...))
-            // NOTE: Only supports simple single-argument print(); nested parens
-            // like print("a" + str(1)) would mismatch the outer `)`.
-            if let Some(inner) = trimmed
-                .strip_prefix("print(")
-                .and_then(|s| s.strip_suffix(')'))
-            {
-                // Remove surrounding quotes
-                let s = if (inner.starts_with('"') && inner.ends_with('"'))
-                    || (inner.starts_with('\'') && inner.ends_with('\''))
-                {
-                    &inner[1..inner.len() - 1]
-                } else {
-                    inner
-                };
-                // Process escape sequences
-                let processed = process_python_escapes(s);
-                stdout.push_str(&processed);
-                stdout.push('\n');
-            } else if let Some(rest) = trimmed.strip_prefix("print ") {
-                // Python 2 style: print 'string'
-                let s = rest.trim();
-                let s = if (s.starts_with('"') && s.ends_with('"'))
-                    || (s.starts_with('\'') && s.ends_with('\''))
-                {
-                    &s[1..s.len() - 1]
-                } else {
-                    s
-                };
-                let processed = process_python_escapes(s);
-                stdout.push_str(&processed);
-                stdout.push('\n');
-            }
-        }
-        CommandResult {
-            stdout,
-            exit_code: 0,
-            ..Default::default()
-        }
-    }
-}
-
-fn process_python_escapes(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            match chars.next() {
-                Some('n') => result.push('\n'),
-                Some('t') => result.push('\t'),
-                Some('\\') => result.push('\\'),
-                Some('\'') => result.push('\''),
-                Some('"') => result.push('"'),
-                Some(other) => {
-                    result.push('\\');
-                    result.push(other);
-                }
-                None => result.push('\\'),
-            }
-        } else {
-            result.push(c);
-        }
-    }
-    result
-}
-
 /// Register the default set of commands.
-pub fn register_default_commands() -> HashMap<String, Box<dyn VirtualCommand>> {
-    let mut commands: HashMap<String, Box<dyn VirtualCommand>> = HashMap::new();
-    let defaults: Vec<Box<dyn VirtualCommand>> = vec![
-        Box::new(EchoCommand),
-        Box::new(TrueCommand),
-        Box::new(FalseCommand),
-        Box::new(CatCommand),
-        Box::new(PwdCommand),
-        Box::new(TouchCommand),
-        Box::new(MkdirCommand),
-        Box::new(LsCommand),
-        Box::new(TestCommand),
-        Box::new(BracketCommand),
+pub fn register_default_commands() -> HashMap<String, Arc<dyn VirtualCommand>> {
+    let mut commands: HashMap<String, Arc<dyn VirtualCommand>> = HashMap::new();
+    let defaults: Vec<Arc<dyn VirtualCommand>> = vec![
+        Arc::new(EchoCommand),
+        Arc::new(TrueCommand),
+        Arc::new(FalseCommand),
+        Arc::new(CatCommand),
+        Arc::new(PwdCommand),
+        Arc::new(TouchCommand),
+        Arc::new(MkdirCommand),
+        Arc::new(LsCommand),
+        Arc::new(TestCommand),
+        Arc::new(BracketCommand),
         // Phase 10a: file operations
-        Box::new(file_ops::CpCommand),
-        Box::new(file_ops::MvCommand),
-        Box::new(file_ops::RmCommand),
-        Box::new(file_ops::TeeCommand),
-        Box::new(file_ops::StatCommand),
-        Box::new(file_ops::ChmodCommand),
-        Box::new(file_ops::LnCommand),
+        Arc::new(file_ops::CpCommand),
+        Arc::new(file_ops::MvCommand),
+        Arc::new(file_ops::RmCommand),
+        Arc::new(file_ops::TeeCommand),
+        Arc::new(file_ops::StatCommand),
+        Arc::new(file_ops::ChmodCommand),
+        Arc::new(file_ops::LnCommand),
         // Phase 10b: text processing
-        Box::new(text::GrepCommand),
-        Box::new(text::SortCommand),
-        Box::new(text::UniqCommand),
-        Box::new(text::CutCommand),
-        Box::new(text::HeadCommand),
-        Box::new(text::TailCommand),
-        Box::new(text::WcCommand),
-        Box::new(text::TrCommand),
-        Box::new(text::RevCommand),
-        Box::new(text::FoldCommand),
-        Box::new(text::NlCommand),
-        Box::new(text::PrintfCommand),
-        Box::new(text::PasteCommand),
-        Box::new(text::OdCommand),
+        Arc::new(text::GrepCommand),
+        Arc::new(text::SortCommand),
+        Arc::new(text::UniqCommand),
+        Arc::new(text::CutCommand),
+        Arc::new(text::HeadCommand),
+        Arc::new(text::TailCommand),
+        Arc::new(text::WcCommand),
+        Arc::new(text::TrCommand),
+        Arc::new(text::RevCommand),
+        Arc::new(text::FoldCommand),
+        Arc::new(text::NlCommand),
+        Arc::new(text::PrintfCommand),
+        Arc::new(text::PasteCommand),
+        Arc::new(text::OdCommand),
         // M2.6: remaining text commands
-        Box::new(text::TacCommand),
-        Box::new(text::CommCommand),
-        Box::new(text::JoinCommand),
-        Box::new(text::FmtCommand),
-        Box::new(text::ColumnCommand),
-        Box::new(text::ExpandCommand),
-        Box::new(text::UnexpandCommand),
+        Arc::new(text::TacCommand),
+        Arc::new(text::CommCommand),
+        Arc::new(text::JoinCommand),
+        Arc::new(text::FmtCommand),
+        Arc::new(text::ColumnCommand),
+        Arc::new(text::ExpandCommand),
+        Arc::new(text::UnexpandCommand),
         // Phase 10c: navigation
-        Box::new(navigation::RealpathCommand),
-        Box::new(navigation::BasenameCommand),
-        Box::new(navigation::DirnameCommand),
-        Box::new(navigation::TreeCommand),
+        Arc::new(navigation::RealpathCommand),
+        Arc::new(navigation::BasenameCommand),
+        Arc::new(navigation::DirnameCommand),
+        Arc::new(navigation::TreeCommand),
         // Phase 10d: utilities
-        Box::new(utils::ExprCommand),
-        Box::new(utils::DateCommand),
-        Box::new(utils::SleepCommand),
-        Box::new(utils::SeqCommand),
-        Box::new(utils::EnvCommand),
-        Box::new(utils::PrintenvCommand),
-        Box::new(utils::WhichCommand),
-        Box::new(utils::Base64Command),
-        Box::new(utils::Md5sumCommand),
-        Box::new(utils::Sha256sumCommand),
-        Box::new(utils::WhoamiCommand),
-        Box::new(utils::HostnameCommand),
-        Box::new(utils::UnameCommand),
-        Box::new(utils::YesCommand),
+        Arc::new(utils::ExprCommand),
+        Arc::new(utils::DateCommand),
+        Arc::new(utils::SleepCommand),
+        Arc::new(utils::SeqCommand),
+        Arc::new(utils::EnvCommand),
+        Arc::new(utils::PrintenvCommand),
+        Arc::new(utils::WhichCommand),
+        Arc::new(utils::Base64Command),
+        Arc::new(utils::Md5sumCommand),
+        Arc::new(utils::Sha256sumCommand),
+        Arc::new(utils::WhoamiCommand),
+        Arc::new(utils::HostnameCommand),
+        Arc::new(utils::UnameCommand),
+        Arc::new(utils::YesCommand),
         // Phase 10e: commands needing exec callback
-        Box::new(exec_cmds::XargsCommand),
-        Box::new(exec_cmds::FindCommand),
+        Arc::new(exec_cmds::XargsCommand),
+        Arc::new(exec_cmds::FindCommand),
         // M2.5: diff
-        Box::new(diff_cmd::DiffCommand),
+        Arc::new(diff_cmd::DiffCommand),
         // M2.2: sed
-        Box::new(sed::SedCommand),
+        Arc::new(sed::SedCommand),
         // M2.4: jq
-        Box::new(jq_cmd::JqCommand),
+        Arc::new(jq_cmd::JqCommand),
         // M2.3: awk
-        Box::new(awk::AwkCommand),
+        Arc::new(awk::AwkCommand),
         // M7.2: core utility commands
-        Box::new(utils::Sha1sumCommand),
-        Box::new(utils::TimeoutCommand),
-        Box::new(utils::FileCommand),
-        Box::new(utils::BcCommand),
-        Box::new(utils::ClearCommand),
-        Box::new(FgrepCommand),
-        Box::new(EgrepCommand),
+        Arc::new(utils::Sha1sumCommand),
+        Arc::new(utils::TimeoutCommand),
+        Arc::new(utils::FileCommand),
+        Arc::new(utils::BcCommand),
+        Arc::new(utils::ClearCommand),
+        Arc::new(FgrepCommand),
+        Arc::new(EgrepCommand),
         // M7.4: binary and file inspection
-        Box::new(text::StringsCommand),
+        Arc::new(text::StringsCommand),
         // M7.5: search commands
-        Box::new(text::RgCommand),
+        Arc::new(text::RgCommand),
         // M7.2: file operations
-        Box::new(file_ops::ReadlinkCommand),
-        Box::new(file_ops::RmdirCommand),
-        Box::new(file_ops::DuCommand),
-        Box::new(file_ops::SplitCommand),
+        Arc::new(file_ops::ReadlinkCommand),
+        Arc::new(file_ops::RmdirCommand),
+        Arc::new(file_ops::DuCommand),
+        Arc::new(file_ops::SplitCommand),
         // M7.3: compression and archiving
-        Box::new(compression::GzipCommand),
-        Box::new(compression::GunzipCommand),
-        Box::new(compression::ZcatCommand),
-        Box::new(compression::TarCommand),
-        // Oils test helpers
-        Box::new(ArgvPyCommand),
-        Box::new(PrintenvPyCommand),
-        Box::new(StdoutStderrPyCommand),
-        Box::new(Python2Command),
+        Arc::new(compression::GzipCommand),
+        Arc::new(compression::GunzipCommand),
+        Arc::new(compression::ZcatCommand),
+        Arc::new(compression::TarCommand),
     ];
     for cmd in defaults {
         commands.insert(cmd.name().to_string(), cmd);
@@ -1365,7 +1113,7 @@ pub fn register_default_commands() -> HashMap<String, Box<dyn VirtualCommand>> {
     // M3.2: network (feature-gated)
     #[cfg(feature = "network")]
     {
-        commands.insert("curl".to_string(), Box::new(net::CurlCommand));
+        commands.insert("curl".to_string(), Arc::new(net::CurlCommand));
     }
     commands
 }

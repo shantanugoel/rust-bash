@@ -274,7 +274,7 @@ impl WasmBash {
         self.inner
             .state
             .commands
-            .insert(name.to_string(), Box::new(cmd));
+            .insert(name.to_string(), Arc::new(cmd));
         Ok(())
     }
 
