@@ -2,7 +2,7 @@
 name = "rust-bash"
 version = "0.2.0"
 edition = "2024"
-description = "A sandboxed bash interpreter with a virtual filesystem"
+description = "A sandboxed bash interpreter for AI Agents with a virtual filesystem"
 license = "MIT"
 keywords = ["bash", "shell", "interpreter", "sandbox", "virtual-filesystem"]
 categories = ["command-line-utilities", "development-tools", "parser-implementations", "wasm", "emulators"]
