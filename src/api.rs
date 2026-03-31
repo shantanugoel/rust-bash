@@ -363,7 +363,7 @@ impl RustBashBuilder {
 
         setup_default_filesystem(fs.as_ref(), &env_map, &commands)?;
 
-        let env: HashMap<String, Variable> = env_map
+        let mut env: HashMap<String, Variable> = env_map
             .into_iter()
             .map(|(k, v)| {
                 (
@@ -375,6 +375,14 @@ impl RustBashBuilder {
                 )
             })
             .collect();
+
+        // Non-exported shell variables with default values
+        for (name, val) in &[("OPTIND", "1"), ("OPTERR", "1")] {
+            env.entry(name.to_string()).or_insert_with(|| Variable {
+                value: VariableValue::Scalar(val.to_string()),
+                attrs: VariableAttrs::empty(),
+            });
+        }
 
         let state = InterpreterState {
             fs,

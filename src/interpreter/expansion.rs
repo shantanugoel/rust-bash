@@ -464,7 +464,14 @@ fn expand_parameter(
             default_value,
         } => {
             let val = resolve_parameter(parameter, state, *indirect);
-            if should_use_default(&val, test_type, state, parameter) {
+            let use_default = if *indirect {
+                // For indirect expansion, check the indirect target
+                let target_name = resolve_parameter(parameter, state, false);
+                should_use_indirect_default(&val, &target_name, test_type, state)
+            } else {
+                should_use_default(&val, test_type, state, parameter)
+            };
+            if use_default {
                 if let Some(dv) = default_value {
                     let expanded = expand_raw_string_ctx(dv, state, in_dq)?;
                     push_segment(words, &expanded, in_dq, in_dq);
@@ -481,7 +488,13 @@ fn expand_parameter(
             default_value,
         } => {
             let val = resolve_parameter(parameter, state, *indirect);
-            if should_use_default(&val, test_type, state, parameter) {
+            let use_default = if *indirect {
+                let target_name = resolve_parameter(parameter, state, false);
+                should_use_indirect_default(&val, &target_name, test_type, state)
+            } else {
+                should_use_default(&val, test_type, state, parameter)
+            };
+            if use_default {
                 if let Some(dv) = default_value {
                     let expanded = expand_raw_string_ctx(dv, state, in_dq)?;
                     push_segment(words, &expanded, in_dq, in_dq);
@@ -497,7 +510,13 @@ fn expand_parameter(
             error_message,
         } => {
             let val = resolve_parameter(parameter, state, *indirect);
-            if should_use_default(&val, test_type, state, parameter) {
+            let use_default = if *indirect {
+                let target_name = resolve_parameter(parameter, state, false);
+                should_use_indirect_default(&val, &target_name, test_type, state)
+            } else {
+                should_use_default(&val, test_type, state, parameter)
+            };
+            if use_default {
                 let param_name = parameter_name(parameter);
                 let msg = if let Some(raw) = error_message {
                     expand_raw_string_ctx(raw, state, in_dq)?
@@ -507,6 +526,7 @@ fn expand_parameter(
                 return Err(RustBashError::ExpansionError {
                     message: format!("{param_name}: {msg}"),
                     exit_code: 127,
+                    should_exit: true,
                 });
             }
             push_segment(words, &val, in_dq, in_dq);
@@ -518,9 +538,13 @@ fn expand_parameter(
             alternative_value,
         } => {
             let val = resolve_parameter(parameter, state, *indirect);
-            if !should_use_default(&val, test_type, state, parameter)
-                && let Some(av) = alternative_value
-            {
+            let use_default = if *indirect {
+                let target_name = resolve_parameter(parameter, state, false);
+                should_use_indirect_default(&val, &target_name, test_type, state)
+            } else {
+                should_use_default(&val, test_type, state, parameter)
+            };
+            if !use_default && let Some(av) = alternative_value {
                 let expanded = expand_raw_string_ctx(av, state, in_dq)?;
                 push_segment(words, &expanded, in_dq, in_dq);
             }
@@ -668,32 +692,65 @@ fn expand_parameter(
             offset,
             length,
         } => {
-            let val = resolve_parameter(parameter, state, *indirect);
-            let char_count = val.chars().count();
-            let off = parse_arithmetic_value(&offset.value);
-            let off = if off < 0 {
-                (char_count as i64 + off).max(0) as usize
-            } else {
-                off as usize
-            };
-            let substr: String = if let Some(len_expr) = length {
-                let len = parse_arithmetic_value(&len_expr.value);
-                let len = if len < 0 {
-                    ((char_count as i64) - (off as i64) + len).max(0) as usize
+            // Check if this is an array/positional parameter needing element-level slicing
+            if let Some((values, concatenate)) = get_vectorized_values(parameter, state, *indirect)
+            {
+                let elem_count = values.len() as i64;
+                // For positional params $@/$*, offset 0 means $0 (shell name) in some contexts,
+                // but in practice ${@:n:m} uses 0-based offset on the values array
+                let is_positional = matches!(
+                    parameter,
+                    Parameter::Special(SpecialParameter::AllPositionalParameters { .. })
+                );
+                let off_raw = parse_arithmetic_value(&offset.value);
+                let off = if is_positional && off_raw > 0 {
+                    // For $@, offset 1 means "start from $1" which is values[0]
+                    (off_raw - 1) as usize
+                } else if off_raw < 0 {
+                    (elem_count + off_raw).max(0) as usize
                 } else {
-                    len as usize
+                    off_raw as usize
                 };
-                if off <= char_count {
-                    val.chars().skip(off).take(len).collect()
+                let sliced: Vec<String> = if let Some(len_expr) = length {
+                    let len = parse_arithmetic_value(&len_expr.value);
+                    let len = if len < 0 {
+                        (elem_count - off as i64 + len).max(0) as usize
+                    } else {
+                        len as usize
+                    };
+                    values.into_iter().skip(off).take(len).collect()
+                } else {
+                    values.into_iter().skip(off).collect()
+                };
+                push_vectorized(sliced, concatenate, words, state, in_dq);
+            } else {
+                let val = resolve_parameter(parameter, state, *indirect);
+                let char_count = val.chars().count();
+                let off = parse_arithmetic_value(&offset.value);
+                let off = if off < 0 {
+                    (char_count as i64 + off).max(0) as usize
+                } else {
+                    off as usize
+                };
+                let substr: String = if let Some(len_expr) = length {
+                    let len = parse_arithmetic_value(&len_expr.value);
+                    let len = if len < 0 {
+                        ((char_count as i64) - (off as i64) + len).max(0) as usize
+                    } else {
+                        len as usize
+                    };
+                    if off <= char_count {
+                        val.chars().skip(off).take(len).collect()
+                    } else {
+                        String::new()
+                    }
+                } else if off <= char_count {
+                    val.chars().skip(off).collect()
                 } else {
                     String::new()
-                }
-            } else if off <= char_count {
-                val.chars().skip(off).collect()
-            } else {
-                String::new()
-            };
-            push_segment(words, &substr, in_dq, in_dq);
+                };
+                push_segment(words, &substr, in_dq, in_dq);
+            }
         }
         ParameterExpr::ReplaceSubstring {
             parameter,
@@ -702,77 +759,119 @@ fn expand_parameter(
             replacement,
             match_kind,
         } => {
-            let val = resolve_parameter(parameter, state, *indirect);
             let repl = replacement.as_deref().unwrap_or("");
-            let result = match match_kind {
-                SubstringMatchKind::FirstOccurrence => {
-                    if let Some((start, end)) = pattern::first_match(&val, pat) {
-                        format!("{}{}{}", &val[..start], repl, &val[end..])
-                    } else {
-                        val
+            let do_replace = |val: &str| -> String {
+                match match_kind {
+                    SubstringMatchKind::FirstOccurrence => {
+                        if let Some((start, end)) = pattern::first_match(val, pat) {
+                            format!("{}{}{}", &val[..start], repl, &val[end..])
+                        } else {
+                            val.to_string()
+                        }
                     }
-                }
-                SubstringMatchKind::Anywhere => pattern::replace_all(&val, pat, repl),
-                SubstringMatchKind::Prefix => {
-                    if let Some(len) = pattern::longest_prefix_match(&val, pat) {
-                        format!("{repl}{}", &val[len..])
-                    } else {
-                        val
+                    SubstringMatchKind::Anywhere => pattern::replace_all(val, pat, repl),
+                    SubstringMatchKind::Prefix => {
+                        if let Some(len) = pattern::longest_prefix_match(val, pat) {
+                            format!("{repl}{}", &val[len..])
+                        } else {
+                            val.to_string()
+                        }
                     }
-                }
-                SubstringMatchKind::Suffix => {
-                    if let Some(idx) = pattern::longest_suffix_match(&val, pat) {
-                        format!("{}{repl}", &val[..idx])
-                    } else {
-                        val
+                    SubstringMatchKind::Suffix => {
+                        if let Some(idx) = pattern::longest_suffix_match(val, pat) {
+                            format!("{}{repl}", &val[..idx])
+                        } else {
+                            val.to_string()
+                        }
                     }
                 }
             };
-            push_segment(words, &result, in_dq, in_dq);
+            if let Some((values, concatenate)) = get_vectorized_values(parameter, state, *indirect)
+            {
+                let results: Vec<String> = values.iter().map(|v| do_replace(v)).collect();
+                push_vectorized(results, concatenate, words, state, in_dq);
+            } else {
+                let val = resolve_parameter(parameter, state, *indirect);
+                let result = do_replace(&val);
+                push_segment(words, &result, in_dq, in_dq);
+            }
         }
         ParameterExpr::UppercaseFirstChar {
             parameter,
             indirect,
             ..
         } => {
-            let val = resolve_parameter(parameter, state, *indirect);
-            let result = uppercase_first(&val);
-            push_segment(words, &result, in_dq, in_dq);
+            if let Some((values, concatenate)) = get_vectorized_values(parameter, state, *indirect)
+            {
+                let results: Vec<String> = values.iter().map(|v| uppercase_first(v)).collect();
+                push_vectorized(results, concatenate, words, state, in_dq);
+            } else {
+                let val = resolve_parameter(parameter, state, *indirect);
+                let result = uppercase_first(&val);
+                push_segment(words, &result, in_dq, in_dq);
+            }
         }
         ParameterExpr::UppercasePattern {
             parameter,
             indirect,
             ..
         } => {
-            let val = resolve_parameter(parameter, state, *indirect);
-            push_segment(words, &val.to_uppercase(), in_dq, in_dq);
+            if let Some((values, concatenate)) = get_vectorized_values(parameter, state, *indirect)
+            {
+                let results: Vec<String> = values.iter().map(|v| v.to_uppercase()).collect();
+                push_vectorized(results, concatenate, words, state, in_dq);
+            } else {
+                let val = resolve_parameter(parameter, state, *indirect);
+                push_segment(words, &val.to_uppercase(), in_dq, in_dq);
+            }
         }
         ParameterExpr::LowercaseFirstChar {
             parameter,
             indirect,
             ..
         } => {
-            let val = resolve_parameter(parameter, state, *indirect);
-            let result = lowercase_first(&val);
-            push_segment(words, &result, in_dq, in_dq);
+            if let Some((values, concatenate)) = get_vectorized_values(parameter, state, *indirect)
+            {
+                let results: Vec<String> = values.iter().map(|v| lowercase_first(v)).collect();
+                push_vectorized(results, concatenate, words, state, in_dq);
+            } else {
+                let val = resolve_parameter(parameter, state, *indirect);
+                let result = lowercase_first(&val);
+                push_segment(words, &result, in_dq, in_dq);
+            }
         }
         ParameterExpr::LowercasePattern {
             parameter,
             indirect,
             ..
         } => {
-            let val = resolve_parameter(parameter, state, *indirect);
-            push_segment(words, &val.to_lowercase(), in_dq, in_dq);
+            if let Some((values, concatenate)) = get_vectorized_values(parameter, state, *indirect)
+            {
+                let results: Vec<String> = values.iter().map(|v| v.to_lowercase()).collect();
+                push_vectorized(results, concatenate, words, state, in_dq);
+            } else {
+                let val = resolve_parameter(parameter, state, *indirect);
+                push_segment(words, &val.to_lowercase(), in_dq, in_dq);
+            }
         }
         ParameterExpr::Transform {
             parameter,
             indirect,
             op,
         } => {
-            let val = resolve_parameter(parameter, state, *indirect);
             let var_name = parameter_name(parameter);
-            let result = apply_transform(&val, op, &var_name, state);
-            push_segment(words, &result, in_dq, in_dq);
+            if let Some((values, concatenate)) = get_vectorized_values(parameter, state, *indirect)
+            {
+                let results: Vec<String> = values
+                    .iter()
+                    .map(|v| apply_transform(v, op, &var_name, state))
+                    .collect();
+                push_vectorized(results, concatenate, words, state, in_dq);
+            } else {
+                let val = resolve_parameter(parameter, state, *indirect);
+                let result = apply_transform(&val, op, &var_name, state);
+                push_segment(words, &result, in_dq, in_dq);
+            }
         }
         ParameterExpr::VariableNames { prefix, .. } => {
             let mut names: Vec<String> = state
@@ -827,13 +926,27 @@ fn expand_parameter_mut(
             default_value,
         } => {
             let val = resolve_parameter_maybe_mut(parameter, state, *indirect)?;
-            if should_use_default(&val, test_type, state, parameter) {
+            let use_default = if *indirect {
+                let target_name = resolve_parameter_maybe_mut(parameter, state, false)?;
+                should_use_indirect_default(&val, &target_name, test_type, state)
+            } else {
+                should_use_default(&val, test_type, state, parameter)
+            };
+            if use_default {
                 let dv = if let Some(raw) = default_value {
                     expand_raw_string_mut_ctx(raw, state, in_dq)?
                 } else {
                     String::new()
                 };
-                if let Parameter::Named(name) = parameter {
+                if *indirect {
+                    // For ${!ref:=default}, assign to the indirect target
+                    if let Parameter::Named(_) = parameter {
+                        let target_name = resolve_parameter_maybe_mut(parameter, state, false)?;
+                        if !target_name.is_empty() {
+                            set_variable(state, &target_name, dv.clone())?;
+                        }
+                    }
+                } else if let Parameter::Named(name) = parameter {
                     set_variable(state, name, dv.clone())?;
                 }
                 push_segment(words, &dv, in_dq, in_dq);
@@ -851,6 +964,128 @@ fn expand_parameter_mut(
             let at_empty = expand_param_value(&val, words, state, in_dq, parameter);
             Ok(at_empty)
         }
+        ParameterExpr::Substring {
+            parameter,
+            indirect,
+            offset,
+            length,
+        } => {
+            if let Some((_, concatenate)) = get_vectorized_values(parameter, state, *indirect) {
+                // Array/positional slicing with full arithmetic evaluation.
+                let is_positional = matches!(
+                    parameter,
+                    Parameter::Special(SpecialParameter::AllPositionalParameters { .. })
+                );
+
+                // Get key-value pairs for proper sparse-array handling.
+                let kv_pairs = get_array_kv_pairs(parameter, state);
+                let elem_count = kv_pairs.len() as i64;
+                let max_key = kv_pairs.last().map(|(k, _)| *k).unwrap_or(0) as i64;
+
+                // Evaluate offset as arithmetic.
+                let expanded_off = expand_arith_expression(&offset.value, state)?;
+                let off_raw =
+                    crate::interpreter::arithmetic::eval_arithmetic(&expanded_off, state)?;
+
+                // Compute the key-based threshold for indexed arrays.
+                // For negative offsets: threshold = max_key + 1 + offset.
+                // For positional params, negative offsets use element count.
+                let compute_threshold = |raw: i64| -> Option<usize> {
+                    if is_positional {
+                        if raw > 0 {
+                            Some((raw - 1) as usize)
+                        } else if raw < 0 {
+                            let t = elem_count + raw;
+                            if t < 0 { None } else { Some(t as usize) }
+                        } else {
+                            Some(0)
+                        }
+                    } else if raw < 0 {
+                        let t = max_key + 1 + raw;
+                        if t < 0 { None } else { Some(t as usize) }
+                    } else {
+                        Some(raw as usize)
+                    }
+                };
+
+                let sliced: Vec<String> = if let Some(len_expr) = length {
+                    let expanded_len = expand_arith_expression(&len_expr.value, state)?;
+                    let len_raw =
+                        crate::interpreter::arithmetic::eval_arithmetic(&expanded_len, state)?;
+                    if len_raw < 0 {
+                        return Err(RustBashError::ExpansionError {
+                            message: format!("{}: substring expression < 0", offset.value),
+                            exit_code: 1,
+                            should_exit: false,
+                        });
+                    }
+                    let len = len_raw as usize;
+                    match compute_threshold(off_raw) {
+                        None => Vec::new(),
+                        Some(threshold) if is_positional => kv_pairs
+                            .into_iter()
+                            .map(|(_, v)| v)
+                            .skip(threshold)
+                            .take(len)
+                            .collect(),
+                        Some(threshold) => kv_pairs
+                            .into_iter()
+                            .filter(|(k, _)| *k >= threshold)
+                            .map(|(_, v)| v)
+                            .take(len)
+                            .collect(),
+                    }
+                } else {
+                    // No length — take all from offset.
+                    match compute_threshold(off_raw) {
+                        None => Vec::new(),
+                        Some(threshold) if is_positional => kv_pairs
+                            .into_iter()
+                            .map(|(_, v)| v)
+                            .skip(threshold)
+                            .collect(),
+                        Some(threshold) => kv_pairs
+                            .into_iter()
+                            .filter(|(k, _)| *k >= threshold)
+                            .map(|(_, v)| v)
+                            .collect(),
+                    }
+                };
+                push_vectorized(sliced, concatenate, words, state, in_dq);
+            } else {
+                // Scalar substring.
+                let val = resolve_parameter_maybe_mut(parameter, state, *indirect)?;
+                let char_count = val.chars().count();
+                let expanded_off = expand_arith_expression(&offset.value, state)?;
+                let off = crate::interpreter::arithmetic::eval_arithmetic(&expanded_off, state)?;
+                let off = if off < 0 {
+                    (char_count as i64 + off).max(0) as usize
+                } else {
+                    off as usize
+                };
+                let substr: String = if let Some(len_expr) = length {
+                    let expanded_len = expand_arith_expression(&len_expr.value, state)?;
+                    let len =
+                        crate::interpreter::arithmetic::eval_arithmetic(&expanded_len, state)?;
+                    let len = if len < 0 {
+                        ((char_count as i64) - (off as i64) + len).max(0) as usize
+                    } else {
+                        len as usize
+                    };
+                    if off <= char_count {
+                        val.chars().skip(off).take(len).collect()
+                    } else {
+                        String::new()
+                    }
+                } else if off <= char_count {
+                    val.chars().skip(off).collect()
+                } else {
+                    String::new()
+                };
+                push_segment(words, &substr, in_dq, in_dq);
+            }
+            Ok(false)
+        }
         // All other expressions delegate to immutable
         other => expand_parameter(other, words, state, in_dq),
     }
@@ -864,15 +1099,22 @@ fn resolve_parameter_maybe_mut(
     indirect: bool,
 ) -> Result<String, RustBashError> {
     // Check for circular namerefs on Named parameters.
-    if let Parameter::Named(name) = parameter {
-        crate::interpreter::resolve_nameref(name, state)?;
+    if let Parameter::Named(name) = parameter
+        && let Err(_) = crate::interpreter::resolve_nameref(name, state)
+    {
+        // Circular nameref: set exit code 1, return empty
+        // (bash prints a warning to stderr here — we silently fail to avoid
+        // bypassing VFS with eprintln!)
+        state.last_exit_code = 1;
+        return Ok(String::new());
     }
     let val = match parameter {
         Parameter::Named(name) if name == "RANDOM" => next_random(state).to_string(),
+        Parameter::NamedWithIndex { name, index } => resolve_array_element_mut(name, index, state)?,
         _ => resolve_parameter_direct(parameter, state),
     };
     if indirect {
-        Ok(get_var(state, &val).unwrap_or_default())
+        Ok(resolve_indirect_value(&val, state))
     } else {
         Ok(val)
     }
@@ -1576,9 +1818,60 @@ fn check_nounset(parameter: &Parameter, state: &InterpreterState) -> Result<(), 
 fn resolve_parameter(parameter: &Parameter, state: &InterpreterState, indirect: bool) -> String {
     let val = resolve_parameter_direct(parameter, state);
     if indirect {
-        get_var(state, &val).unwrap_or_default()
+        resolve_indirect_value(&val, state)
     } else {
         val
+    }
+}
+
+/// Given a string that is the value of `${!ref}`, resolve it as a variable reference.
+/// Handles: simple names, `arr[idx]`, positional params (`1`, `2`), and special (`@`, `*`).
+fn resolve_indirect_value(target: &str, state: &InterpreterState) -> String {
+    if target.is_empty() {
+        return String::new();
+    }
+    // Check for array subscript: name[index]
+    if let Some(bracket_pos) = target.find('[')
+        && target.ends_with(']')
+    {
+        let name = &target[..bracket_pos];
+        let index_raw = &target[bracket_pos + 1..target.len() - 1];
+        if index_raw == "@" || index_raw == "*" {
+            // ${!ref} where ref=arr[@] or ref=arr[*]
+            let concatenate = index_raw == "*";
+            return resolve_all_elements(name, concatenate, state);
+        }
+        // Expand simple $var references in the index.
+        let index = expand_simple_dollar_vars(index_raw, state);
+        return resolve_array_element(name, &index, state);
+    }
+    // Check for positional parameter (numeric string)
+    if let Ok(n) = target.parse::<u32>() {
+        if n == 0 {
+            return state.shell_name.clone();
+        }
+        return state
+            .positional_params
+            .get(n as usize - 1)
+            .cloned()
+            .unwrap_or_default();
+    }
+    // Check for special parameters
+    match target {
+        "@" => state.positional_params.join(" "),
+        "*" => {
+            let sep = match get_var(state, "IFS") {
+                Some(s) => s.chars().next().map(|c| c.to_string()).unwrap_or_default(),
+                None => " ".to_string(),
+            };
+            state.positional_params.join(&sep)
+        }
+        "#" => state.positional_params.len().to_string(),
+        "?" => state.last_exit_code.to_string(),
+        "-" => String::new(),
+        "$" => std::process::id().to_string(),
+        "!" => String::new(),
+        _ => get_var(state, target).unwrap_or_default(),
     }
 }
 
@@ -1606,6 +1899,17 @@ fn resolve_parameter_direct(parameter: &Parameter, state: &InterpreterState) -> 
     }
 }
 
+/// Strip surrounding quotes (single or double) from a string.
+/// Used for associative array key lookups where `A["key"]` and `A['key']` should use `key`.
+fn strip_quotes(s: &str) -> String {
+    let s = s.trim();
+    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
+        s[1..s.len() - 1].to_string()
+    } else {
+        s.to_string()
+    }
+}
+
 /// Resolve `${arr[index]}` — look up a specific element of an array variable.
 fn resolve_array_element(name: &str, index: &str, state: &InterpreterState) -> String {
     // Handle call-stack pseudo-arrays before checking env.
@@ -1619,15 +1923,105 @@ fn resolve_array_element(name: &str, index: &str, state: &InterpreterState) -> S
     };
     match &var.value {
         VariableValue::IndexedArray(map) => {
-            let idx = simple_arith_eval(index, state) as usize;
-            map.get(&idx).cloned().unwrap_or_default()
+            let idx = simple_arith_eval(index, state);
+            let actual_idx = if idx < 0 {
+                let max_key = map.keys().next_back().copied().unwrap_or(0);
+                let resolved = max_key as i64 + 1 + idx;
+                if resolved < 0 {
+                    return String::new();
+                }
+                resolved as usize
+            } else {
+                idx as usize
+            };
+            map.get(&actual_idx).cloned().unwrap_or_default()
         }
-        VariableValue::AssociativeArray(map) => map.get(index).cloned().unwrap_or_default(),
+        VariableValue::AssociativeArray(map) => {
+            let key = strip_quotes(index);
+            map.get(&key).cloned().unwrap_or_default()
+        }
         VariableValue::Scalar(s) => {
-            let idx = simple_arith_eval(index, state) as usize;
-            if idx == 0 { s.clone() } else { String::new() }
+            let idx = simple_arith_eval(index, state);
+            if idx == 0 || idx == -1 {
+                s.clone()
+            } else {
+                String::new()
+            }
         }
     }
+}
+
+/// Mutable variant of `resolve_array_element` that can expand `$`-references
+/// and evaluate full arithmetic expressions in the index (e.g. `${a[$i]}`,
+/// `${a[i-4]}`, `${a[$(echo 1)]}`).
+fn resolve_array_element_mut(
+    name: &str,
+    index: &str,
+    state: &mut InterpreterState,
+) -> Result<String, RustBashError> {
+    // Handle call-stack pseudo-arrays before checking env.
+    if let Some(val) = resolve_call_stack_element(name, index, state) {
+        return Ok(val);
+    }
+    use crate::interpreter::VariableValue;
+    let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
+
+    // Check if associative array — use key as string, not arithmetic.
+    let is_assoc = state
+        .env
+        .get(&resolved)
+        .is_some_and(|v| matches!(&v.value, VariableValue::AssociativeArray(_)));
+
+    if is_assoc {
+        // Expand $-references in the key string, then strip quotes.
+        let expanded = expand_arith_expression(index, state)?;
+        let key = strip_quotes(&expanded);
+        let val = state
+            .env
+            .get(&resolved)
+            .and_then(|v| {
+                if let VariableValue::AssociativeArray(map) = &v.value {
+                    map.get(&key).cloned()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+        return Ok(val);
+    }
+
+    // Indexed array or scalar: expand $-references then evaluate as arithmetic.
+    let expanded = expand_arith_expression(index, state)?;
+    let idx = crate::interpreter::arithmetic::eval_arithmetic(&expanded, state)?;
+
+    let val = state
+        .env
+        .get(&resolved)
+        .map(|var| match &var.value {
+            VariableValue::IndexedArray(map) => {
+                let actual_idx = if idx < 0 {
+                    let max_key = map.keys().next_back().copied().unwrap_or(0);
+                    let resolved_idx = max_key as i64 + 1 + idx;
+                    if resolved_idx < 0 {
+                        return String::new();
+                    }
+                    resolved_idx as usize
+                } else {
+                    idx as usize
+                };
+                map.get(&actual_idx).cloned().unwrap_or_default()
+            }
+            VariableValue::Scalar(s) => {
+                if idx == 0 || idx == -1 {
+                    s.clone()
+                } else {
+                    String::new()
+                }
+            }
+            _ => String::new(),
+        })
+        .unwrap_or_default();
+    Ok(val)
 }
 
 /// Resolve `${FUNCNAME[i]}`, `${BASH_SOURCE[i]}`, `${BASH_LINENO[i]}` from the call stack.
@@ -1656,7 +2050,7 @@ fn resolve_call_stack_element(name: &str, index: &str, state: &InterpreterState)
 
 /// Simple arithmetic evaluation for array indices in immutable contexts.
 /// Handles integer literals, variable names, and simple expressions.
-fn simple_arith_eval(expr: &str, state: &InterpreterState) -> i64 {
+pub(crate) fn simple_arith_eval(expr: &str, state: &InterpreterState) -> i64 {
     let trimmed = expr.trim();
     // Try as integer literal
     if let Ok(n) = trimmed.parse::<i64>() {
@@ -1826,6 +2220,51 @@ fn get_array_values(name: &str, state: &InterpreterState) -> Vec<String> {
                 vec![s.clone()]
             }
         }
+    }
+}
+
+/// Get (key, value) pairs from an array or positional parameters.
+/// Keys are numeric indices cast to `usize` for indexed arrays and positional params.
+/// Used by Substring/slice expansion to support sparse-array key-based offsets.
+fn get_array_kv_pairs(parameter: &Parameter, state: &InterpreterState) -> Vec<(usize, String)> {
+    match parameter {
+        Parameter::NamedWithAllIndices { name, .. } => {
+            if let Some(vals) = get_call_stack_values(name, state) {
+                return vals.into_iter().enumerate().collect();
+            }
+            use crate::interpreter::VariableValue;
+            let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
+            let Some(var) = state.env.get(&resolved) else {
+                return Vec::new();
+            };
+            match &var.value {
+                VariableValue::IndexedArray(map) => {
+                    map.iter().map(|(&k, v)| (k, v.clone())).collect()
+                }
+                VariableValue::AssociativeArray(map) => {
+                    // Assoc arrays don't have meaningful numeric keys for slicing,
+                    // but bash allows it — just use enumeration order.
+                    map.values()
+                        .enumerate()
+                        .map(|(i, v)| (i, v.clone()))
+                        .collect()
+                }
+                VariableValue::Scalar(s) => {
+                    if s.is_empty() {
+                        vec![]
+                    } else {
+                        vec![(0, s.clone())]
+                    }
+                }
+            }
+        }
+        Parameter::Special(SpecialParameter::AllPositionalParameters { .. }) => state
+            .positional_params
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (i, v.clone()))
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -2134,10 +2573,57 @@ fn resolve_special(sp: &SpecialParameter, state: &InterpreterState) -> String {
 
 fn get_var(state: &InterpreterState, name: &str) -> Option<String> {
     let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
+    // If the resolved name is an array subscript (e.g. from a nameref to "a[2]"),
+    // handle it as an array element lookup.
+    if let Some(bracket_pos) = resolved.find('[')
+        && resolved.ends_with(']')
+    {
+        let arr_name = &resolved[..bracket_pos];
+        let index_raw = &resolved[bracket_pos + 1..resolved.len() - 1];
+        // Expand simple $var references in the index.
+        let index = expand_simple_dollar_vars(index_raw, state);
+        return Some(resolve_array_element(arr_name, &index, state));
+    }
     state
         .env
         .get(&resolved)
         .map(|v| v.value.as_scalar().to_string())
+}
+
+/// Expand simple `$name` variable references in a string.
+/// Used for nameref targets like `A[$key]` where the index contains a variable.
+fn expand_simple_dollar_vars(s: &str, state: &InterpreterState) -> String {
+    if !s.contains('$') {
+        return s.to_string();
+    }
+    let mut result = String::new();
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '$' && i + 1 < chars.len() {
+            i += 1;
+            let mut var_name = String::new();
+            while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
+                var_name.push(chars[i]);
+                i += 1;
+            }
+            if !var_name.is_empty() {
+                let resolved_var = crate::interpreter::resolve_nameref_or_self(&var_name, state);
+                let val = state
+                    .env
+                    .get(&resolved_var)
+                    .map(|v| v.value.as_scalar().to_string())
+                    .unwrap_or_default();
+                result.push_str(&val);
+            } else {
+                result.push('$');
+            }
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+    result
 }
 
 fn should_use_default(
@@ -2149,6 +2635,25 @@ fn should_use_default(
     match test_type {
         ParameterTestType::UnsetOrNull => val.is_empty() || is_unset(state, parameter),
         ParameterTestType::Unset => is_unset(state, parameter),
+    }
+}
+
+/// For indirect expansion (`${!ref-default}`), check whether the *indirect target*
+/// is unset/null rather than the original parameter.
+fn should_use_indirect_default(
+    val: &str,
+    target_name: &str,
+    test_type: &ParameterTestType,
+    state: &InterpreterState,
+) -> bool {
+    if target_name.is_empty() {
+        // The reference variable itself is unset → target is unset
+        return true;
+    }
+    let is_target_unset = is_unset(state, &Parameter::Named(target_name.to_string()));
+    match test_type {
+        ParameterTestType::UnsetOrNull => val.is_empty() || is_target_unset,
+        ParameterTestType::Unset => is_target_unset,
     }
 }
 
@@ -2180,7 +2685,18 @@ fn is_unset(state: &InterpreterState, parameter: &Parameter) -> bool {
                 return false;
             }
             let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
-            !state.env.contains_key(&resolved)
+            match state.env.get(&resolved) {
+                None => true,
+                Some(var) => {
+                    // For indexed arrays, $name is equivalent to ${name[0]},
+                    // so it's "unset" if index 0 is not present.
+                    use crate::interpreter::VariableValue;
+                    match &var.value {
+                        VariableValue::IndexedArray(map) => !map.contains_key(&0),
+                        _ => false,
+                    }
+                }
+            }
         }
         Parameter::Positional(n) => {
             if *n == 0 {
@@ -2201,13 +2717,23 @@ fn is_unset(state: &InterpreterState, parameter: &Parameter) -> bool {
                     use crate::interpreter::VariableValue;
                     match &var.value {
                         VariableValue::IndexedArray(map) => {
-                            let idx = simple_arith_eval(index, state) as usize;
-                            !map.contains_key(&idx)
+                            let idx = simple_arith_eval(index, state);
+                            let actual_idx = if idx < 0 {
+                                let max_key = map.keys().next_back().copied().unwrap_or(0);
+                                let resolved_idx = max_key as i64 + 1 + idx;
+                                if resolved_idx < 0 {
+                                    return true;
+                                }
+                                resolved_idx as usize
+                            } else {
+                                idx as usize
+                            };
+                            !map.contains_key(&actual_idx)
                         }
                         VariableValue::AssociativeArray(map) => !map.contains_key(index.as_str()),
                         VariableValue::Scalar(_) => {
-                            let idx = simple_arith_eval(index, state) as usize;
-                            idx != 0
+                            let idx = simple_arith_eval(index, state);
+                            idx != 0 && idx != -1
                         }
                     }
                 }

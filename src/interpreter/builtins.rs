@@ -864,9 +864,25 @@ fn builtin_unset(
     args: &[String],
     state: &mut InterpreterState,
 ) -> Result<ExecResult, RustBashError> {
-    for arg in args {
-        if arg.starts_with('-') {
-            continue; // skip flags like -v, -f
+    let mut unset_func = false;
+    let mut names_start = 0;
+    for (i, arg) in args.iter().enumerate() {
+        if arg == "-f" {
+            unset_func = true;
+            names_start = i + 1;
+        } else if arg == "-v" {
+            unset_func = false;
+            names_start = i + 1;
+        } else if arg.starts_with('-') {
+            names_start = i + 1;
+        } else {
+            break;
+        }
+    }
+    for arg in &args[names_start..] {
+        if unset_func {
+            state.functions.remove(arg.as_str());
+            continue;
         }
         // Check for array element unset: name[index]
         if let Some(bracket_pos) = arg.find('[')
@@ -898,18 +914,54 @@ fn builtin_unset(
                 .is_some_and(|v| matches!(v.value, VariableValue::Scalar(_)));
 
             if is_indexed {
-                if let Ok(idx) = crate::interpreter::arithmetic::eval_arithmetic(index_str, state)
-                    && idx >= 0
-                    && let Some(var) = state.env.get_mut(name)
-                    && let VariableValue::IndexedArray(map) = &mut var.value
-                {
-                    map.remove(&(idx as usize));
+                if let Ok(idx) = crate::interpreter::arithmetic::eval_arithmetic(index_str, state) {
+                    let actual_idx = if idx < 0 {
+                        // Resolve negative index relative to max key.
+                        let max_key = state.env.get(name).and_then(|v| {
+                            if let VariableValue::IndexedArray(map) = &v.value {
+                                map.keys().next_back().copied()
+                            } else {
+                                None
+                            }
+                        });
+                        if let Some(mk) = max_key {
+                            let resolved = mk as i64 + 1 + idx;
+                            if resolved < 0 {
+                                return Ok(ExecResult {
+                                    stderr: format!(
+                                        "unset: {name}[{index_str}]: bad array subscript\n"
+                                    ),
+                                    exit_code: 1,
+                                    ..ExecResult::default()
+                                });
+                            }
+                            Some(resolved as usize)
+                        } else {
+                            None
+                        }
+                    } else {
+                        Some(idx as usize)
+                    };
+                    if let Some(actual) = actual_idx
+                        && let Some(var) = state.env.get_mut(name)
+                        && let VariableValue::IndexedArray(map) = &mut var.value
+                    {
+                        map.remove(&actual);
+                    }
                 }
-            } else if is_assoc
-                && let Some(var) = state.env.get_mut(name)
-                && let VariableValue::AssociativeArray(map) = &mut var.value
-            {
-                map.remove(index_str);
+            } else if is_assoc {
+                // Expand variables and strip quotes in the key.
+                let word = brush_parser::ast::Word {
+                    value: index_str.to_string(),
+                    loc: None,
+                };
+                let expanded_key =
+                    crate::interpreter::expansion::expand_word_to_string_mut(&word, state)?;
+                if let Some(var) = state.env.get_mut(name)
+                    && let VariableValue::AssociativeArray(map) = &mut var.value
+                {
+                    map.remove(&expanded_key);
+                }
             } else if is_scalar
                 && index_str == "0"
                 && let Some(var) = state.env.get_mut(name)
@@ -926,6 +978,28 @@ fn builtin_unset(
                 exit_code: 1,
                 ..ExecResult::default()
             });
+        }
+        // Resolve nameref: unset the target, not the ref itself.
+        let is_nameref = state
+            .env
+            .get(arg.as_str())
+            .is_some_and(|v| v.attrs.contains(VariableAttrs::NAMEREF));
+        if is_nameref {
+            let target = crate::interpreter::resolve_nameref_or_self(arg, state);
+            if target != *arg {
+                // Check if target is readonly.
+                if let Some(var) = state.env.get(target.as_str())
+                    && var.readonly()
+                {
+                    return Ok(ExecResult {
+                        stderr: format!("unset: {target}: cannot unset: readonly variable\n"),
+                        exit_code: 1,
+                        ..ExecResult::default()
+                    });
+                }
+                state.env.remove(target.as_str());
+                continue;
+            }
         }
         state.env.remove(arg.as_str());
     }
@@ -1492,56 +1566,77 @@ fn declare_append_value(
     name: &str,
     value: &str,
     flag_attrs: VariableAttrs,
-    _make_assoc_array: bool,
+    make_assoc_array: bool,
     _make_indexed_array: bool,
 ) -> Result<(), RustBashError> {
     // Handle array append: name+=(val1 val2 ...)
     if let Some(inner) = value.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
-        // Find current max index + 1
-        let start_idx = match state.env.get(name) {
-            Some(var) => match &var.value {
-                VariableValue::IndexedArray(map) => {
-                    map.keys().next_back().map(|k| k + 1).unwrap_or(0)
-                }
-                VariableValue::Scalar(s) if s.is_empty() => 0,
-                VariableValue::Scalar(_) => 1,
-                VariableValue::AssociativeArray(_) => 0,
-            },
-            None => 0,
-        };
+        // Check if the target is an assoc array
+        let is_assoc = make_assoc_array
+            || state
+                .env
+                .get(name)
+                .is_some_and(|v| matches!(v.value, VariableValue::AssociativeArray(_)));
 
-        // Create array if it doesn't exist
-        if !state.env.contains_key(name) {
-            state.env.insert(
-                name.to_string(),
-                Variable {
-                    value: VariableValue::IndexedArray(std::collections::BTreeMap::new()),
-                    attrs: flag_attrs,
-                },
-            );
-        }
-
-        // Convert scalar to array if needed
-        if let Some(var) = state.env.get_mut(name)
-            && let VariableValue::Scalar(s) = &var.value
-        {
-            let mut map = std::collections::BTreeMap::new();
-            if !s.is_empty() {
-                map.insert(0, s.clone());
+        if is_assoc {
+            // Create assoc array if it doesn't exist
+            if !state.env.contains_key(name) {
+                state.env.insert(
+                    name.to_string(),
+                    Variable {
+                        value: VariableValue::AssociativeArray(std::collections::BTreeMap::new()),
+                        attrs: flag_attrs,
+                    },
+                );
             }
-            var.value = VariableValue::IndexedArray(map);
-        }
+            parse_and_set_assoc_array_append(state, name, inner)?;
+        } else {
+            // Find current max index + 1
+            let start_idx = match state.env.get(name) {
+                Some(var) => match &var.value {
+                    VariableValue::IndexedArray(map) => {
+                        map.keys().next_back().map(|k| k + 1).unwrap_or(0)
+                    }
+                    VariableValue::Scalar(s) if s.is_empty() => 0,
+                    VariableValue::Scalar(_) => 1,
+                    VariableValue::AssociativeArray(_) => 0,
+                },
+                None => 0,
+            };
 
-        let words = shell_split_array_body(inner);
-        let mut idx = start_idx;
-        for word in &words {
-            let val = unquote_simple(word);
-            crate::interpreter::set_array_element(state, name, idx, val)?;
-            idx += 1;
-        }
+            // Create array if it doesn't exist
+            if !state.env.contains_key(name) {
+                state.env.insert(
+                    name.to_string(),
+                    Variable {
+                        value: VariableValue::IndexedArray(std::collections::BTreeMap::new()),
+                        attrs: flag_attrs,
+                    },
+                );
+            }
 
-        if let Some(var) = state.env.get_mut(name) {
-            var.attrs.insert(flag_attrs);
+            // Convert scalar to array if needed
+            if let Some(var) = state.env.get_mut(name)
+                && let VariableValue::Scalar(s) = &var.value
+            {
+                let mut map = std::collections::BTreeMap::new();
+                if !s.is_empty() {
+                    map.insert(0, s.clone());
+                }
+                var.value = VariableValue::IndexedArray(map);
+            }
+
+            let words = shell_split_array_body(inner);
+            let mut idx = start_idx;
+            for word in &words {
+                let val = unquote_simple(word);
+                crate::interpreter::set_array_element(state, name, idx, val)?;
+                idx += 1;
+            }
+
+            if let Some(var) = state.env.get_mut(name) {
+                var.attrs.insert(flag_attrs);
+            }
         }
     } else {
         // Scalar append
@@ -1594,6 +1689,10 @@ fn declare_with_value(
         var.attrs.insert(flag_attrs);
         if !matches!(var.value, VariableValue::AssociativeArray(_)) {
             var.value = VariableValue::AssociativeArray(std::collections::BTreeMap::new());
+        }
+        // Parse assoc array literal: ([key1]=val1 [key2]=val2 ...)
+        if let Some(inner) = value.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
+            parse_and_set_assoc_array(state, name, inner)?;
         }
     } else if make_indexed_array {
         let var = state
@@ -1714,6 +1813,57 @@ fn parse_and_set_indexed_array(
             let value = unquote_simple(word);
             crate::interpreter::set_array_element(state, name, idx, value)?;
             idx += 1;
+        }
+    }
+    Ok(())
+}
+
+/// Parse and set associative array from literal body: `[key1]=val1 [key2]=val2 ...`
+fn parse_and_set_assoc_array(
+    state: &mut InterpreterState,
+    name: &str,
+    body: &str,
+) -> Result<(), RustBashError> {
+    let words = shell_split_array_body(body);
+    // Reset the array to empty.
+    if let Some(var) = state.env.get_mut(name) {
+        var.value = VariableValue::AssociativeArray(std::collections::BTreeMap::new());
+    }
+    for word in &words {
+        if let Some(rest) = word.strip_prefix('[') {
+            // [key]=value form
+            if let Some(eq_pos) = rest.find("]=") {
+                let key = unquote_simple(&rest[..eq_pos]);
+                let value = unquote_simple(&rest[eq_pos + 2..]);
+                crate::interpreter::set_assoc_element(state, name, key, value)?;
+            } else if let Some(key_str) = rest.strip_suffix(']') {
+                // [key]= with empty value (no = sign) — just a key with empty value
+                let key = unquote_simple(key_str);
+                crate::interpreter::set_assoc_element(state, name, key, String::new())?;
+            }
+        }
+        // Non-[key]=val entries are ignored for assoc arrays
+    }
+    Ok(())
+}
+
+/// Parse and append to an associative array from body text (no reset).
+fn parse_and_set_assoc_array_append(
+    state: &mut InterpreterState,
+    name: &str,
+    body: &str,
+) -> Result<(), RustBashError> {
+    let words = shell_split_array_body(body);
+    for word in &words {
+        if let Some(rest) = word.strip_prefix('[') {
+            if let Some(eq_pos) = rest.find("]=") {
+                let key = unquote_simple(&rest[..eq_pos]);
+                let value = unquote_simple(&rest[eq_pos + 2..]);
+                crate::interpreter::set_assoc_element(state, name, key, value)?;
+            } else if let Some(key_str) = rest.strip_suffix(']') {
+                let key = unquote_simple(key_str);
+                crate::interpreter::set_assoc_element(state, name, key, String::new())?;
+            }
         }
     }
     Ok(())
@@ -3356,6 +3506,7 @@ fn builtin_command(
             fs: &*fs,
             cwd: &cwd,
             env: &env,
+            variables: None,
             stdin,
             stdin_bytes: None,
             limits: &limits,
@@ -3498,6 +3649,7 @@ fn builtin_builtin(
             fs: &*fs,
             cwd: &cwd,
             env: &env,
+            variables: None,
             stdin,
             stdin_bytes: None,
             limits: &limits,

@@ -5162,8 +5162,9 @@ fn declare_nameref_write() {
 #[test]
 fn declare_nameref_circular_error() {
     let mut sh = shell();
-    let r = sh.exec("declare -n a=b; declare -n b=a; echo $a");
-    assert!(r.is_err());
+    // Bash prints a warning for circular namerefs but continues (exit 0).
+    let r = sh.exec("declare -n a=b; declare -n b=a; echo $a").unwrap();
+    assert_eq!(r.exit_code, 0);
 }
 
 #[test]

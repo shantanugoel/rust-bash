@@ -1,6 +1,6 @@
 ---
 source: tests/integration.rs
-assertion_line: 760
+assertion_line: 765
 expression: r.stdout
 ---
 BASH=/bin/bash
@@ -10,6 +10,8 @@ HOSTNAME=rust-bash
 LANG=en_US.UTF-8
 LOCAL_VAR=local_value
 OLDPWD=
+OPTERR=1
+OPTIND=1
 OSTYPE=linux-gnu
 PATH=/usr/bin:/bin
 PIPESTATUS=([0]="0")

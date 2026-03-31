@@ -323,9 +323,15 @@ fn execute_command(
     };
 
     match result {
-        Err(RustBashError::ExpansionError { message, exit_code }) => {
+        Err(RustBashError::ExpansionError {
+            message,
+            exit_code,
+            should_exit,
+        }) => {
             state.last_exit_code = exit_code;
-            state.should_exit = true;
+            if should_exit {
+                state.should_exit = true;
+            }
             Ok(ExecResult {
                 stderr: format!("rust-bash: {message}\n"),
                 exit_code,
@@ -356,6 +362,11 @@ enum Assignment {
         name: String,
         elements: Vec<(Option<usize>, String)>,
     },
+    /// `declare -A name=([k]=v ...)` — associative array assignment
+    AssocArray {
+        name: String,
+        elements: Vec<(String, String)>,
+    },
     /// `name[index]=value` — single array element
     ArrayElement {
         name: String,
@@ -373,6 +384,11 @@ enum Assignment {
         name: String,
         elements: Vec<(Option<usize>, String)>,
     },
+    /// `name+=(val1 val2 ...)` — append to associative array
+    AppendAssocArray {
+        name: String,
+        elements: Vec<(String, String)>,
+    },
     /// `name+=value` — append to scalar
     AppendScalar { name: String, value: String },
 }
@@ -382,9 +398,11 @@ impl Assignment {
         match self {
             Assignment::Scalar { name, .. }
             | Assignment::IndexedArray { name, .. }
+            | Assignment::AssocArray { name, .. }
             | Assignment::ArrayElement { name, .. }
             | Assignment::AppendArrayElement { name, .. }
             | Assignment::AppendArray { name, .. }
+            | Assignment::AppendAssocArray { name, .. }
             | Assignment::AppendScalar { name, .. } => name,
         }
     }
@@ -412,33 +430,77 @@ fn process_assignment(
             }
         }
         (ast::AssignmentName::VariableName(name), ast::AssignmentValue::Array(items)) => {
-            let mut elements = Vec::new();
-            for (opt_idx_word, val_word) in items {
-                let idx = if let Some(idx_word) = opt_idx_word {
-                    let idx_str = expand_word_to_string_mut(idx_word, state)?;
-                    let idx_val = crate::interpreter::arithmetic::eval_arithmetic(&idx_str, state)?;
-                    if idx_val < 0 {
-                        return Err(RustBashError::Execution(format!(
-                            "negative array subscript: {idx_val}"
-                        )));
-                    }
-                    Some(idx_val as usize)
+            // Check if target is an associative array
+            let is_assoc = state
+                .env
+                .get(name)
+                .is_some_and(|v| matches!(v.value, VariableValue::AssociativeArray(_)));
+            if is_assoc {
+                let mut elements = Vec::new();
+                for (opt_idx_word, val_word) in items {
+                    let key = if let Some(idx_word) = opt_idx_word {
+                        expand_word_to_string_mut(idx_word, state)?
+                    } else {
+                        // Assoc arrays require explicit keys
+                        String::new()
+                    };
+                    let val = expand_word_to_string_mut(val_word, state)?;
+                    elements.push((key, val));
+                }
+                if append {
+                    Ok(Assignment::AppendAssocArray {
+                        name: name.clone(),
+                        elements,
+                    })
                 } else {
-                    None
-                };
-                let val = expand_word_to_string_mut(val_word, state)?;
-                elements.push((idx, val));
-            }
-            if append {
-                Ok(Assignment::AppendArray {
-                    name: name.clone(),
-                    elements,
-                })
+                    Ok(Assignment::AssocArray {
+                        name: name.clone(),
+                        elements,
+                    })
+                }
             } else {
-                Ok(Assignment::IndexedArray {
-                    name: name.clone(),
-                    elements,
-                })
+                let mut elements = Vec::new();
+                for (opt_idx_word, val_word) in items {
+                    let idx = if let Some(idx_word) = opt_idx_word {
+                        let idx_str = expand_word_to_string_mut(idx_word, state)?;
+                        let idx_val =
+                            crate::interpreter::arithmetic::eval_arithmetic(&idx_str, state)?;
+                        if idx_val < 0 {
+                            return Err(RustBashError::Execution(format!(
+                                "negative array subscript: {idx_val}"
+                            )));
+                        }
+                        Some(idx_val as usize)
+                    } else {
+                        None
+                    };
+                    // Use expand_word_mut so brace expansion works inside array literals:
+                    // a=( v{0..9} ) should expand to 10 separate elements.
+                    let vals = expand_word_mut(val_word, state)?;
+                    if vals.is_empty() {
+                        elements.push((idx, String::new()));
+                    } else {
+                        for (i, val) in vals.into_iter().enumerate() {
+                            if i == 0 {
+                                elements.push((idx, val));
+                            } else {
+                                // Subsequent brace-expanded words get auto-indexed (None)
+                                elements.push((None, val));
+                            }
+                        }
+                    }
+                }
+                if append {
+                    Ok(Assignment::AppendArray {
+                        name: name.clone(),
+                        elements,
+                    })
+                } else {
+                    Ok(Assignment::IndexedArray {
+                        name: name.clone(),
+                        elements,
+                    })
+                }
             }
         }
         (
@@ -517,6 +579,39 @@ fn apply_assignment(
                 },
             );
         }
+        Assignment::AssocArray { name, elements } => {
+            if let Some(var) = state.env.get(&name)
+                && var.readonly()
+            {
+                return Err(RustBashError::Execution(format!(
+                    "{name}: readonly variable"
+                )));
+            }
+            let limit = state.limits.max_array_elements;
+            let mut map = std::collections::BTreeMap::new();
+            for (key, val) in elements {
+                if map.len() >= limit {
+                    return Err(RustBashError::LimitExceeded {
+                        limit_name: "max_array_elements",
+                        limit_value: limit,
+                        actual_value: map.len() + 1,
+                    });
+                }
+                map.insert(key, val);
+            }
+            let attrs = state
+                .env
+                .get(&name)
+                .map(|v| v.attrs)
+                .unwrap_or(VariableAttrs::empty());
+            state.env.insert(
+                name,
+                Variable {
+                    value: VariableValue::AssociativeArray(map),
+                    attrs,
+                },
+            );
+        }
         Assignment::ArrayElement { name, index, value } => {
             // Check if target is an associative array
             let is_assoc = state
@@ -528,12 +623,8 @@ fn apply_assignment(
             } else {
                 // Evaluate index as arithmetic expression
                 let idx = crate::interpreter::arithmetic::eval_arithmetic(&index, state)?;
-                if idx < 0 {
-                    return Err(RustBashError::Execution(format!(
-                        "negative array subscript: {idx}"
-                    )));
-                }
-                set_array_element(state, &name, idx as usize, value)?;
+                let uidx = resolve_negative_array_index(idx, &name, state)?;
+                set_array_element(state, &name, uidx, value)?;
             }
         }
         Assignment::AppendArrayElement { name, index, value } => {
@@ -554,12 +645,7 @@ fn apply_assignment(
                 crate::interpreter::set_assoc_element(state, &name, index, new_val)?;
             } else {
                 let idx = crate::interpreter::arithmetic::eval_arithmetic(&index, state)?;
-                if idx < 0 {
-                    return Err(RustBashError::Execution(format!(
-                        "negative array subscript: {idx}"
-                    )));
-                }
-                let uidx = idx as usize;
+                let uidx = resolve_negative_array_index(idx, &name, state)?;
                 let current = state
                     .env
                     .get(&name)
@@ -616,6 +702,21 @@ fn apply_assignment(
                 auto_idx = idx + 1;
             }
         }
+        Assignment::AppendAssocArray { name, elements } => {
+            // If the variable doesn't exist yet, create it as assoc
+            if !state.env.contains_key(&name) {
+                state.env.insert(
+                    name.clone(),
+                    Variable {
+                        value: VariableValue::AssociativeArray(std::collections::BTreeMap::new()),
+                        attrs: VariableAttrs::empty(),
+                    },
+                );
+            }
+            for (key, val) in elements {
+                crate::interpreter::set_assoc_element(state, &name, key, val)?;
+            }
+        }
         Assignment::AppendScalar { name, value } => {
             // For integer variables, += performs arithmetic addition.
             let target = crate::interpreter::resolve_nameref(&name, state)?;
@@ -645,6 +746,38 @@ fn apply_assignment(
         }
     }
     Ok(())
+}
+
+/// Resolve a negative array index to a positive one based on the current max key.
+/// In bash, `a[-1]` refers to the last element (max_key), `a[-2]` to the one before, etc.
+fn resolve_negative_array_index(
+    idx: i64,
+    name: &str,
+    state: &InterpreterState,
+) -> Result<usize, RustBashError> {
+    if idx >= 0 {
+        return Ok(idx as usize);
+    }
+    let max_key = state.env.get(name).and_then(|v| match &v.value {
+        VariableValue::IndexedArray(map) => map.keys().next_back().copied(),
+        VariableValue::Scalar(_) => Some(0),
+        _ => None,
+    });
+    match max_key {
+        Some(mk) => {
+            let resolved = mk as i64 + 1 + idx;
+            if resolved < 0 {
+                Err(RustBashError::Execution(format!(
+                    "{name}: bad array subscript"
+                )))
+            } else {
+                Ok(resolved as usize)
+            }
+        }
+        None => Err(RustBashError::Execution(format!(
+            "{name}: bad array subscript"
+        ))),
+    }
 }
 
 /// Apply an assignment, converting `Execution` errors to shell errors (stderr +
@@ -755,12 +888,16 @@ fn execute_simple_command(
                         ast::AssignmentValue::Array(items) => {
                             let mut parts = Vec::new();
                             for (opt_idx_word, val_word) in items {
-                                let val = expand_word_to_string_mut(val_word, state)?;
+                                let vals = expand_word_mut(val_word, state)?;
                                 if let Some(idx_word) = opt_idx_word {
                                     let idx_str = expand_word_to_string_mut(idx_word, state)?;
-                                    parts.push(format!("[{idx_str}]={val}"));
+                                    let first = vals.first().cloned().unwrap_or_default();
+                                    parts.push(format!("[{idx_str}]={first}"));
+                                    for v in vals.into_iter().skip(1) {
+                                        parts.push(v);
+                                    }
                                 } else {
-                                    parts.push(val);
+                                    parts.extend(vals);
                                 }
                             }
                             args.push(format!("{name}=({})", parts.join(" ")));
@@ -802,6 +939,8 @@ fn execute_simple_command(
                         name, index, value, ..
                     } => format!("{name}[{index}]+={value}"),
                     Assignment::AppendArray { name, .. } => format!("{name}+=(...)"),
+                    Assignment::AssocArray { name, .. } => format!("{name}=(...)"),
+                    Assignment::AppendAssocArray { name, .. } => format!("{name}+=(...)"),
                     Assignment::AppendScalar { name, value } => format!("{name}+={value}"),
                 })
                 .collect();
@@ -1714,6 +1853,8 @@ fn dispatch_command(
             .iter()
             .map(|(k, v)| (k.clone(), v.value.as_scalar().to_string()))
             .collect();
+        // Clone variables for `test -v` array element checks (before mutable borrow).
+        let vars_clone = state.env.clone();
         let fs = Arc::clone(&state.fs);
         let cwd = state.cwd.clone();
         let limits = state.limits.clone();
@@ -1727,6 +1868,7 @@ fn dispatch_command(
             fs: &*fs,
             cwd: &cwd,
             env: &env,
+            variables: Some(&vars_clone),
             stdin,
             stdin_bytes: binary_stdin.as_deref(),
             limits: &limits,
@@ -2715,11 +2857,24 @@ fn execute_extended_test(
     expr: &ast::ExtendedTestExpr,
     state: &mut InterpreterState,
 ) -> Result<ExecResult, RustBashError> {
-    let result = eval_extended_test_expr(expr, state)?;
-    Ok(ExecResult {
-        exit_code: if result { 0 } else { 1 },
-        ..ExecResult::default()
-    })
+    match eval_extended_test_expr(expr, state) {
+        Ok(result) => Ok(ExecResult {
+            exit_code: if result { 0 } else { 1 },
+            ..ExecResult::default()
+        }),
+        Err(RustBashError::Execution(ref msg)) => {
+            // Regex compilation errors → exit code 2
+            // Arithmetic errors (division by zero, etc.) → exit code 1
+            let exit_code = if msg.contains("invalid regex") { 2 } else { 1 };
+            state.last_exit_code = exit_code;
+            Ok(ExecResult {
+                stderr: format!("rust-bash: {msg}\n"),
+                exit_code,
+                ..ExecResult::default()
+            })
+        }
+        Err(e) => Err(e),
+    }
 }
 
 fn eval_extended_test_expr(
@@ -2743,6 +2898,12 @@ fn eval_extended_test_expr(
         }
         ast::ExtendedTestExpr::Parenthesized(inner) => eval_extended_test_expr(inner, state),
         ast::ExtendedTestExpr::UnaryTest(pred, word) => {
+            use brush_parser::ast::UnaryPredicate;
+            // Handle -v specially: we need access to full interpreter state for array elements
+            if matches!(pred, UnaryPredicate::ShellVariableIsSetAndAssigned) {
+                let operand = expand_word_to_string_mut(word, state)?;
+                return Ok(test_variable_is_set(&operand, state));
+            }
             let operand = expand_word_to_string_mut(word, state)?;
             let env: HashMap<String, String> = state
                 .env
@@ -2762,9 +2923,17 @@ fn eval_extended_test_expr(
                 ast::BinaryPredicate::StringMatchesRegex
                     | ast::BinaryPredicate::StringContainsSubstring
             ) {
-                // For =~, expand the right side but preserve it as a regex pattern
+                // For =~, if the pattern is entirely quoted, treat as literal string match.
+                // In bash, [[ str =~ 'pat' ]] uses literal matching, not regex.
+                let raw = &right_word.value;
+                let is_fully_quoted = is_word_fully_quoted(raw);
                 let pattern = expand_word_to_string_mut(right_word, state)?;
-                return eval_regex_match(&left, &pattern, state);
+                if is_fully_quoted {
+                    return Ok(left.contains(&pattern));
+                }
+                // Check for partial quoting — extract quoted portions and escape them
+                let effective_pattern = build_regex_with_quoted_literals(raw, state)?;
+                return eval_regex_match(&left, &effective_pattern, state);
             }
 
             let right = expand_word_to_string_mut(right_word, state)?;
@@ -2797,6 +2966,92 @@ fn eval_extended_test_expr(
             }
         }
     }
+}
+
+/// Check if a variable (possibly an array element) is set.
+/// Handles `a[i]` syntax for array element checks.
+fn test_variable_is_set(operand: &str, state: &mut InterpreterState) -> bool {
+    // Check for array subscript syntax: name[index]
+    if let Some(bracket_pos) = operand.find('[')
+        && operand.ends_with(']')
+    {
+        let name = &operand[..bracket_pos];
+        let index = &operand[bracket_pos + 1..operand.len() - 1];
+        let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
+
+        if index == "@" || index == "*" {
+            return state
+                .env
+                .get(&resolved)
+                .is_some_and(|var| match &var.value {
+                    VariableValue::IndexedArray(map) => !map.is_empty(),
+                    VariableValue::AssociativeArray(map) => !map.is_empty(),
+                    _ => false,
+                });
+        }
+
+        // Determine variable type before evaluating arithmetic.
+        let var_type = state.env.get(&resolved).map(|var| match &var.value {
+            VariableValue::IndexedArray(_) => 0,
+            VariableValue::AssociativeArray(_) => 1,
+            VariableValue::Scalar(_) => 2,
+        });
+
+        return match var_type {
+            Some(0) => {
+                // Indexed array: evaluate index as arithmetic.
+                let idx = eval_index_arithmetic(index, state);
+                let Some(var) = state.env.get(&resolved) else {
+                    return false;
+                };
+                if let VariableValue::IndexedArray(map) = &var.value {
+                    let actual_idx = if idx < 0 {
+                        let max_key = map.keys().next_back().copied().unwrap_or(0);
+                        let resolved_idx = max_key as i64 + 1 + idx;
+                        if resolved_idx < 0 {
+                            return false;
+                        }
+                        resolved_idx as usize
+                    } else {
+                        idx as usize
+                    };
+                    map.contains_key(&actual_idx)
+                } else {
+                    false
+                }
+            }
+            Some(1) => {
+                // Associative array: use index as string key.
+                state
+                    .env
+                    .get(&resolved)
+                    .and_then(|var| {
+                        if let VariableValue::AssociativeArray(map) = &var.value {
+                            Some(map.contains_key(index))
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false)
+            }
+            Some(2) => {
+                // Scalar: index 0 or -1 means it's set.
+                let idx = eval_index_arithmetic(index, state);
+                idx == 0 || idx == -1
+            }
+            _ => false,
+        };
+    }
+    // Plain variable name
+    let resolved = crate::interpreter::resolve_nameref_or_self(operand, state);
+    state.env.contains_key(&resolved)
+}
+
+/// Evaluate an array index expression using full arithmetic evaluation.
+/// Falls back to simple_arith_eval on errors.
+fn eval_index_arithmetic(index: &str, state: &mut InterpreterState) -> i64 {
+    crate::interpreter::arithmetic::eval_arithmetic(index, state)
+        .unwrap_or_else(|_| crate::interpreter::expansion::simple_arith_eval(index, state))
 }
 
 fn eval_regex_match(
@@ -2842,4 +3097,122 @@ fn eval_regex_match(
         );
         Ok(false)
     }
+}
+
+/// Check if a raw word value is entirely wrapped in quotes.
+fn is_word_fully_quoted(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    if trimmed.len() < 2 {
+        return false;
+    }
+    // Single quotes: 'content'
+    if trimmed.starts_with('\'') && trimmed.ends_with('\'') {
+        return true;
+    }
+    // Double quotes: "content"
+    if trimmed.starts_with('"') && trimmed.ends_with('"') {
+        return true;
+    }
+    // $'content' or $"content"
+    if (trimmed.starts_with("$'") && trimmed.ends_with('\''))
+        || (trimmed.starts_with("$\"") && trimmed.ends_with('"'))
+    {
+        return true;
+    }
+    false
+}
+
+/// Build a regex pattern from a raw word, escaping quoted portions as literals.
+/// In bash, quoted parts of a regex pattern are treated as literal text.
+fn build_regex_with_quoted_literals(
+    raw: &str,
+    state: &mut InterpreterState,
+) -> Result<String, RustBashError> {
+    let mut result = String::new();
+    let chars: Vec<char> = raw.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '\'' => {
+                // Single-quoted: everything until next ' is literal
+                i += 1;
+                let mut literal = String::new();
+                while i < chars.len() && chars[i] != '\'' {
+                    literal.push(chars[i]);
+                    i += 1;
+                }
+                if i < chars.len() {
+                    i += 1; // skip closing '
+                }
+                result.push_str(&regex::escape(&literal));
+            }
+            '"' => {
+                // Double-quoted: until matching " (expand variables inside)
+                i += 1;
+                let mut content = String::new();
+                while i < chars.len() && chars[i] != '"' {
+                    if chars[i] == '\\' && i + 1 < chars.len() {
+                        content.push(chars[i + 1]);
+                        i += 2;
+                    } else {
+                        content.push(chars[i]);
+                        i += 1;
+                    }
+                }
+                if i < chars.len() {
+                    i += 1; // skip closing "
+                }
+                // Expand variables in the content
+                let word = ast::Word {
+                    value: content,
+                    loc: None,
+                };
+                let expanded = expand_word_to_string_mut(&word, state)?;
+                result.push_str(&regex::escape(&expanded));
+            }
+            '\\' if i + 1 < chars.len() => {
+                // Escaped character: treat as literal
+                result.push_str(&regex::escape(&chars[i + 1].to_string()));
+                i += 2;
+            }
+            '$' => {
+                // Variable expansion — expand and keep as regex
+                let mut var_text = String::new();
+                var_text.push('$');
+                i += 1;
+                if i < chars.len() && chars[i] == '{' {
+                    // ${...}
+                    var_text.push('{');
+                    i += 1;
+                    let mut depth = 1;
+                    while i < chars.len() && depth > 0 {
+                        if chars[i] == '{' {
+                            depth += 1;
+                        } else if chars[i] == '}' {
+                            depth -= 1;
+                        }
+                        var_text.push(chars[i]);
+                        i += 1;
+                    }
+                } else {
+                    // $name
+                    while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
+                        var_text.push(chars[i]);
+                        i += 1;
+                    }
+                }
+                let word = ast::Word {
+                    value: var_text,
+                    loc: None,
+                };
+                let expanded = expand_word_to_string_mut(&word, state)?;
+                result.push_str(&expanded);
+            }
+            c => {
+                result.push(c);
+                i += 1;
+            }
+        }
+    }
+    Ok(result)
 }

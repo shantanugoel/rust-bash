@@ -1243,15 +1243,26 @@ fn read_array_element(state: &mut InterpreterState, name: &str, index: i64) -> i
     let Some(var) = state.env.get(&resolved) else {
         return 0;
     };
-    let idx = index as usize;
     let val_str = match &var.value {
-        VariableValue::IndexedArray(map) => map.get(&idx).map(|s| s.as_str()).unwrap_or(""),
+        VariableValue::IndexedArray(map) => {
+            let actual_idx = if index < 0 {
+                let max_key = map.keys().next_back().copied().unwrap_or(0);
+                let resolved = max_key as i64 + 1 + index;
+                if resolved < 0 {
+                    return 0;
+                }
+                resolved as usize
+            } else {
+                index as usize
+            };
+            map.get(&actual_idx).map(|s| s.as_str()).unwrap_or("")
+        }
         VariableValue::AssociativeArray(map) => map
             .get(&index.to_string())
             .map(|s| s.as_str())
             .unwrap_or(""),
         VariableValue::Scalar(s) => {
-            if idx == 0 {
+            if index == 0 || index == -1 {
                 s.as_str()
             } else {
                 ""
@@ -1268,10 +1279,47 @@ fn write_array_element(
     index: i64,
     value: i64,
 ) -> Result<(), RustBashError> {
+    use crate::interpreter::VariableValue;
+    // Check if the target is an associative array — use string key
+    let is_assoc = state
+        .env
+        .get(name)
+        .is_some_and(|v| matches!(v.value, VariableValue::AssociativeArray(_)));
+    if is_assoc {
+        return crate::interpreter::set_assoc_element(
+            state,
+            name,
+            index.to_string(),
+            value.to_string(),
+        );
+    }
     if index < 0 {
-        return Err(RustBashError::Execution(format!(
-            "negative array subscript: {index}"
-        )));
+        let max_key = state.env.get(name).and_then(|v| match &v.value {
+            VariableValue::IndexedArray(map) => map.keys().next_back().copied(),
+            VariableValue::Scalar(_) => Some(0),
+            _ => None,
+        });
+        match max_key {
+            Some(mk) => {
+                let resolved = mk as i64 + 1 + index;
+                if resolved < 0 {
+                    return Err(RustBashError::Execution(format!(
+                        "{name}: bad array subscript"
+                    )));
+                }
+                return crate::interpreter::set_array_element(
+                    state,
+                    name,
+                    resolved as usize,
+                    value.to_string(),
+                );
+            }
+            None => {
+                return Err(RustBashError::Execution(format!(
+                    "{name}: bad array subscript"
+                )));
+            }
+        }
     }
     crate::interpreter::set_array_element(state, name, index as usize, value.to_string())
 }

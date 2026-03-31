@@ -42,12 +42,14 @@ impl std::error::Error for VfsError {}
 pub enum RustBashError {
     Parse(String),
     Execution(String),
-    /// An expansion-time error that should abort the current command and set
-    /// the exit code, but NOT crash the entire `exec()` call. Used for
-    /// `${var:?msg}` which prints to stderr and exits the script with a code.
+    /// An expansion-time error that aborts the current command and sets the
+    /// exit code.  When `should_exit` is true the *script* also terminates
+    /// (used by `${var:?msg}`).  When false, only the current command is
+    /// aborted (used for e.g. negative substring length).
     ExpansionError {
         message: String,
         exit_code: i32,
+        should_exit: bool,
     },
     /// A failglob error: no glob matches found when `shopt -s failglob` is on.
     /// Aborts the current simple command (exit code 1) but does NOT exit the script.

@@ -126,7 +126,46 @@ fn try_unary(op: &str, operand: &str, ctx: &CommandContext) -> Option<bool> {
             Some(false) // unsupported file tests always false
         }
         "-v" => {
-            // Shell variable is set — we check via env in context
+            // Shell variable is set — check array elements if name[index] form
+            if let Some(bracket_pos) = operand.find('[')
+                && operand.ends_with(']')
+            {
+                let name = &operand[..bracket_pos];
+                let index = &operand[bracket_pos + 1..operand.len() - 1];
+                // Strip quotes from index for assoc array keys
+                let index_clean = if (index.starts_with('"') && index.ends_with('"'))
+                    || (index.starts_with('\'') && index.ends_with('\''))
+                {
+                    &index[1..index.len() - 1]
+                } else {
+                    index
+                };
+                if let Some(vars) = ctx.variables {
+                    if let Some(var) = vars.get(name) {
+                        return Some(match &var.value {
+                            crate::interpreter::VariableValue::IndexedArray(map) => {
+                                let idx = eval_index_expr(index_clean, vars);
+                                if idx < 0 {
+                                    let max_key = map.keys().next_back().copied().unwrap_or(0);
+                                    let resolved = max_key as i64 + 1 + idx;
+                                    resolved >= 0 && map.contains_key(&(resolved as usize))
+                                } else {
+                                    map.contains_key(&(idx as usize))
+                                }
+                            }
+                            crate::interpreter::VariableValue::AssociativeArray(map) => {
+                                // Expand simple $var references in the key.
+                                let expanded = expand_simple_vars(index_clean, vars);
+                                map.contains_key(&expanded)
+                            }
+                            crate::interpreter::VariableValue::Scalar(s) => {
+                                index_clean == "0" && !s.is_empty()
+                            }
+                        });
+                    }
+                    return Some(false);
+                }
+            }
             Some(ctx.env.contains_key(operand))
         }
         _ => None,
@@ -198,6 +237,72 @@ fn parse_bash_int(s: &str) -> Option<i64> {
 }
 
 // ── File test helpers ─────────────────────────────────────────────
+
+/// Evaluate an array index expression using available variable context.
+/// Handles: integer literals, simple variable names, and basic binary ops (+, -, *).
+fn eval_index_expr(
+    expr: &str,
+    vars: &std::collections::HashMap<String, crate::interpreter::Variable>,
+) -> i64 {
+    let trimmed = expr.trim();
+    // Integer literal
+    if let Ok(n) = trimmed.parse::<i64>() {
+        return n;
+    }
+    // Single variable name
+    if trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return vars
+            .get(trimmed)
+            .map(|v| v.value.as_scalar().parse::<i64>().unwrap_or(0))
+            .unwrap_or(0);
+    }
+    // Simple binary expression: look for +, -, * (not at start for unary minus)
+    type BinOp = (char, fn(i64, i64) -> i64);
+    let ops: [BinOp; 3] = [
+        ('+', |a, b| a + b),
+        ('-', |a, b| a - b),
+        ('*', |a, b| a * b),
+    ];
+    for (ch, op) in ops {
+        // Find the operator not at position 0
+        if let Some(pos) = trimmed[1..].find(ch).map(|p| p + 1) {
+            let left = eval_index_expr(&trimmed[..pos], vars);
+            let right = eval_index_expr(&trimmed[pos + 1..], vars);
+            return op(left, right);
+        }
+    }
+    0
+}
+
+/// Expand simple `$name` references in a string using the variable context.
+fn expand_simple_vars(
+    s: &str,
+    vars: &std::collections::HashMap<String, crate::interpreter::Variable>,
+) -> String {
+    let mut result = String::new();
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '$' && i + 1 < chars.len() {
+            i += 1;
+            let mut name = String::new();
+            while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
+                name.push(chars[i]);
+                i += 1;
+            }
+            if let Some(var) = vars.get(&name) {
+                result.push_str(var.value.as_scalar());
+            }
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+    result
+}
 
 fn resolve_test_path(path_str: &str, ctx: &CommandContext) -> String {
     if path_str.starts_with('/') {

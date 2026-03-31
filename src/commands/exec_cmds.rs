@@ -903,6 +903,7 @@ mod tests {
             fs,
             cwd: "/",
             env,
+            variables: None,
             stdin,
             stdin_bytes: None,
             limits,

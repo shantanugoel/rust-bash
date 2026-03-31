@@ -425,6 +425,81 @@ pub(crate) fn set_variable(
     // Resolve nameref chain to find the actual target variable.
     let target = resolve_nameref(name, state)?;
 
+    // If the resolved target is an array subscript (e.g. from a nameref to "a[2]"),
+    // set the array element directly.
+    if let Some(bracket_pos) = target.find('[')
+        && target.ends_with(']')
+    {
+        let arr_name = &target[..bracket_pos];
+        let index_raw = &target[bracket_pos + 1..target.len() - 1];
+        // Expand variables and strip quotes from the index.
+        let word = brush_parser::ast::Word {
+            value: index_raw.to_string(),
+            loc: None,
+        };
+        let expanded_key = crate::interpreter::expansion::expand_word_to_string_mut(&word, state)?;
+
+        if let Some(var) = state.env.get(arr_name)
+            && var.readonly()
+        {
+            return Err(RustBashError::Execution(format!(
+                "{arr_name}: readonly variable"
+            )));
+        }
+
+        // Determine variable type and evaluate index before mutable borrow.
+        let is_assoc = state
+            .env
+            .get(arr_name)
+            .is_some_and(|v| matches!(v.value, VariableValue::AssociativeArray(_)));
+        let numeric_idx = if !is_assoc {
+            crate::interpreter::arithmetic::eval_arithmetic(&expanded_key, state).unwrap_or(0)
+        } else {
+            0
+        };
+
+        match state.env.get_mut(arr_name) {
+            Some(var) => match &mut var.value {
+                VariableValue::AssociativeArray(map) => {
+                    map.insert(expanded_key, value);
+                }
+                VariableValue::IndexedArray(map) => {
+                    let actual_idx = if numeric_idx < 0 {
+                        let max_key = map.keys().next_back().copied().unwrap_or(0);
+                        let resolved = max_key as i64 + 1 + numeric_idx;
+                        if resolved < 0 {
+                            0usize
+                        } else {
+                            resolved as usize
+                        }
+                    } else {
+                        numeric_idx as usize
+                    };
+                    map.insert(actual_idx, value);
+                }
+                VariableValue::Scalar(s) => {
+                    if numeric_idx == 0 || numeric_idx == -1 {
+                        *s = value;
+                    }
+                }
+            },
+            None => {
+                // Create as indexed array with the element.
+                let idx = expanded_key.parse::<usize>().unwrap_or(0);
+                let mut map = std::collections::BTreeMap::new();
+                map.insert(idx, value);
+                state.env.insert(
+                    arr_name.to_string(),
+                    Variable {
+                        value: VariableValue::IndexedArray(map),
+                        attrs: VariableAttrs::empty(),
+                    },
+                );
+            }
+        }
+        return Ok(());
+    }
+
     // SECONDS assignment resets the shell timer.
     if target == "SECONDS" {
         if let Ok(offset) = value.parse::<u64>() {
