@@ -1,6 +1,6 @@
 # Ordered Oils fix queue as of 2026-03-31.
 # Source of truth: current live Oils run (`cargo test --test oils_spec -- --nocapture --test-threads=1`).
-# Current totals: 1413 pass / 765 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
+# Current totals: 1399 pass / 764 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
 #
 # This is a file-level backlog, ordered by recommended implementation sequence.
 # Each line is one Oils `.test.sh` file with remaining xfails.
@@ -9,20 +9,19 @@
 # `builtin-cd.test` and `redirect.test` stay on the queue, but expect a small VFS/symlink/fd tail to remain until M9.
 
 ## Parser, Expansion, Quoting, Assignment
-- dparen.test (xfail=1) remaining: missing stdout_stderr.py helper for redirect test
-- parse-errors.test (xfail=7) remaining: long token (needs python2), `${%}` parser literal, `}` on second line, invalid for-loop var, interactive parse error, array literal inside array
-- assign-extended.test (xfail=17) `declare` / `typeset` / `declare -p` semantics
-- var-sub-quote.test (xfail=19) quoted parameter expansion fidelity
-- word-split.test (xfail=19) IFS, `$@`, `$*`, empty-string splitting semantics
-- command-sub.test (xfail=18) command-sub quoting and newline semantics
+- parse-errors.test (xfail=6) remaining: long token (needs python2), `${%}` parser literal, `}` on second line, interactive parse error, array literal inside array
+- assign-extended.test (xfail=15) `declare` / `typeset` / `declare -p` semantics
+- var-sub-quote.test (xfail=16) quoted parameter expansion fidelity
+- word-split.test (xfail=11) IFS, `$@`, `$*`, empty-string splitting semantics
+- command-sub.test (xfail=16) command-sub quoting and newline semantics
 - arith.test (xfail=18) arithmetic edge cases that feed many later failures
-- assign.test (xfail=14) assignment semantics and error handling
+- assign.test (xfail=13) assignment semantics and error handling
 - var-op-test.test (xfail=16) parameter test operators
 - var-op-bash.test (xfail=16) bash-specific parameter operators
 - here-doc.test (xfail=14) here-doc parsing and expansion tail
 - array-literal.test (xfail=13) array-literal parse / assignment semantics
 - var-op-patsub.test (xfail=12) pattern substitution semantics
-- var-op-strip.test (xfail=10) prefix/suffix strip semantics
+- var-op-strip.test (xfail=9) prefix/suffix strip semantics
 - arith-context.test (xfail=8) arithmetic parser / evaluator context rules
 - append.test (xfail=8) `+=` semantics for scalars and arrays
 - quote.test (xfail=6) quoting parse/runtime fidelity
@@ -66,13 +65,13 @@
 - builtin-special.test (xfail=10) POSIX special builtin semantics
 - strict-options.test (xfail=9) strict mode control-flow / argv behavior
 - builtin-getopts.test (xfail=6) `getopts`, `OPTIND`, `OPTARG` edge cases
-- loop.test (xfail=7) `break` / `continue` / loop validation tail
+- loop.test (xfail=6) `break` / `continue` / loop validation tail
 - sh-options-bash.test (xfail=5) `SHELLOPTS` / `BASHOPTS` fidelity
 - builtin-meta-assign.test (xfail=5) assignment-builtin interaction tail
 - case_.test (xfail=4) `case` parsing / pattern tail
 - exit-status.test (xfail=4) shell exit-code bookkeeping
 - builtin-type.test (xfail=3) smaller `type` output / keyword cases
-- builtin-bash.test (xfail=4) `bash` / `sh` builtin tail
+- builtin-bash.test (xfail=3) `bash` / `sh` builtin tail
 - builtin-misc.test (xfail=2) leftover builtin behavior gaps
 - builtin-dirs.test (xfail=2) directory-stack builtin tail
 - vars-bash.test (xfail=1) bash-specific variable tail
@@ -92,7 +91,7 @@
 ## Execution, Redirects, Globs, Filesystem Fidelity
 - sh-usage.test (xfail=15) `sh` / `bash` invocation and argument handling
 - bugs.test (xfail=10) mixed regression bucket; sweep after core semantics are stable
-- redirect.test (xfail=9) redirection semantics; leave the final fd/VFS tail for M9
+- redirect.test (xfail=8) redirection semantics; leave the final fd/VFS tail for M9
 - builtin-cd.test (xfail=9) `cd` / `pwd` semantics; leave the final symlink/PWD fidelity tail for M9
 - redirect-multi.test (xfail=8) multi-redirect word expansion and ambiguity
 - glob.test (xfail=7) remaining glob semantics and locale/order edge cases

@@ -1056,11 +1056,19 @@ fn execute_simple_command(
             for a in assignments {
                 apply_assignment_shell_error(a, state, &mut result)?;
             }
+            if !state.pending_cmdsub_stderr.is_empty() {
+                let cmdsub_stderr = std::mem::take(&mut state.pending_cmdsub_stderr);
+                result.stderr = format!("{cmdsub_stderr}{}", result.stderr);
+            }
             return Ok(result);
         }
         let mut result = ExecResult::default();
         for a in assignments {
             apply_assignment_shell_error(a, state, &mut result)?;
+        }
+        if !state.pending_cmdsub_stderr.is_empty() {
+            let cmdsub_stderr = std::mem::take(&mut state.pending_cmdsub_stderr);
+            result.stderr = format!("{cmdsub_stderr}{}", result.stderr);
         }
         return Ok(result);
     };
@@ -1073,6 +1081,10 @@ fn execute_simple_command(
         };
         for a in assignments {
             apply_assignment_shell_error(a, state, &mut result)?;
+        }
+        if !state.pending_cmdsub_stderr.is_empty() {
+            let cmdsub_stderr = std::mem::take(&mut state.pending_cmdsub_stderr);
+            result.stderr = format!("{cmdsub_stderr}{}", result.stderr);
         }
         return Ok(result);
     }
@@ -1217,6 +1229,12 @@ fn execute_simple_command(
         // 7. Dispatch command
         let mut result = dispatch_command(&cmd_name, &args, state, &effective_stdin)?;
 
+        // 7a. Drain command-substitution stderr accumulated during expansion
+        if !state.pending_cmdsub_stderr.is_empty() {
+            let cmdsub_stderr = std::mem::take(&mut state.pending_cmdsub_stderr);
+            result.stderr = format!("{cmdsub_stderr}{}", result.stderr);
+        }
+
         // 7b. Emit xtrace to stderr
         if let Some(ref ps4) = pre_ps4 {
             let mut trace = format_xtrace_command(ps4, &cmd_name, &args);
@@ -1336,6 +1354,12 @@ fn execute_compound_command(
         }
     };
 
+    // Drain command-substitution stderr accumulated during expansion
+    if !state.pending_cmdsub_stderr.is_empty() {
+        let cmdsub_stderr = std::mem::take(&mut state.pending_cmdsub_stderr);
+        result.stderr = format!("{cmdsub_stderr}{}", result.stderr);
+    }
+
     // Apply redirections attached to the compound command
     if let Some(redir_list) = redirects {
         let redir_refs: Vec<&ast::IoRedirect> = redir_list.0.iter().collect();
@@ -1409,6 +1433,21 @@ fn execute_for(
     use crate::interpreter::ControlFlow;
 
     let mut result = ExecResult::default();
+
+    // Bash reports an error when the variable name is invalid
+    // (e.g. `for i.j in a b c` → "not a valid identifier").
+    let var_name = &for_clause.variable_name;
+    if !var_name.is_empty()
+        && (!var_name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            || var_name.starts_with(|c: char| c.is_ascii_digit()))
+    {
+        result.stderr = format!("rust-bash: `{var_name}': not a valid identifier\n");
+        result.exit_code = 1;
+        state.last_exit_code = 1;
+        return Ok(result);
+    }
 
     let values: Vec<String> = if let Some(words) = &for_clause.values {
         let mut vals = Vec::new();
@@ -1696,6 +1735,7 @@ fn execute_subshell(
         proc_sub_counter: state.proc_sub_counter,
         proc_sub_prealloc: HashMap::new(),
         pipe_stdin_bytes: None,
+        pending_cmdsub_stderr: String::new(),
     };
 
     let result = execute_compound_list(list, &mut sub_state, stdin);
@@ -1870,6 +1910,7 @@ fn make_exec_callback(
             proc_sub_counter: 0,
             proc_sub_prealloc: HashMap::new(),
             pipe_stdin_bytes: None,
+            pending_cmdsub_stderr: String::new(),
         };
 
         let result = execute_program(&program, &mut sub_state)?;
@@ -3096,6 +3137,7 @@ fn make_proc_sub_state(state: &mut InterpreterState) -> InterpreterState {
         proc_sub_counter: state.proc_sub_counter,
         proc_sub_prealloc: HashMap::new(),
         pipe_stdin_bytes: None,
+        pending_cmdsub_stderr: String::new(),
     }
 }
 

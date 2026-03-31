@@ -738,6 +738,7 @@ dparen.test:(( )) in if statement
 dparen.test:(( )) result
 dparen.test:(( )) with arrays
 dparen.test:(( )) with error
+dparen.test:(( )) with redirect
 dparen.test:Assigning whole raray (( b = a ))
 dparen.test:BUG: (( V = A[K] )) doesn't retrieve the right value
 dparen.test:Example of incrementing associative array entry with var key (ble.sh)
@@ -983,6 +984,7 @@ parse-errors.test:%foo=() is parse error (regression)
 parse-errors.test:Incomplete for
 parse-errors.test:Incomplete if
 parse-errors.test:Incomplete while
+parse-errors.test:Invalid for loop variable name
 parse-errors.test:array literal in case
 parse-errors.test:array literal inside loop is a parse error
 parse-errors.test:bad var name globally isn't parsed like an assignment
@@ -1411,3 +1413,23 @@ xtrace.test:xtrace with paths
 xtrace.test:xtrace with tabs
 xtrace.test:xtrace with variables in PS4
 xtrace.test:xtrace with whitespace, quotes, and backslash
+assign-extended.test:declare
+assign-extended.test:declare -p
+var-sub-quote.test:Inner single quotes, outer double quotes
+var-sub-quote.test:Multiple words: outer double quotes, inner single quotes#1
+var-sub-quote.test:comparison: :- operator with single quoted arg
+word-split.test:$* with empty IFS
+word-split.test:IFS empty doesn't do splitting
+word-split.test:IFS unset behaves like $' \t\n'
+word-split.test:IFS='' with $@ and $* (bug #627)
+word-split.test:IFS='' with $@ and $* and printf (bug #627)
+word-split.test:IFS='' with ${a[@]} and ${a[*]} (bug #627)
+word-split.test:4 x 3 table: (default IFS, IFS='', IFS=zx) x ( $* "$*" $@ "$@" )
+word-split.test:4 x 3 table - with for loop
+assign.test:redirect after bare assignment
+builtin-bash.test:mapfile -t doesn't remove \r
+command-sub.test:Command Sub trailing newline removed
+command-sub.test:Command Sub trailing whitespace not removed
+redirect.test:&>> appends stdout and stderr
+var-op-strip.test:Nested % and # operators (bug reported by Crestwave)
+loop.test:for loop with invalid identifier

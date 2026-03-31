@@ -390,6 +390,9 @@ pub struct InterpreterState {
     /// Binary data from the previous pipeline stage, set by `execute_pipeline()`
     /// and consumed by `dispatch_command()` to populate `CommandContext::stdin_bytes`.
     pub(crate) pipe_stdin_bytes: Option<Vec<u8>>,
+    /// Stderr accumulated from command substitutions during word expansion.
+    /// Drained by the enclosing command execution into its `ExecResult.stderr`.
+    pub(crate) pending_cmdsub_stderr: String,
 }
 
 // ── Parsing ──────────────────────────────────────────────────────────
@@ -905,6 +908,7 @@ mod tests {
             proc_sub_counter: 0,
             proc_sub_prealloc: HashMap::new(),
             pipe_stdin_bytes: None,
+            pending_cmdsub_stderr: String::new(),
         }
     }
 }

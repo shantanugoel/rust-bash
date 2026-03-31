@@ -245,6 +245,7 @@ fn execute_command_substitution(
         proc_sub_counter: state.proc_sub_counter,
         proc_sub_prealloc: HashMap::new(),
         pipe_stdin_bytes: None,
+        pending_cmdsub_stderr: String::new(),
     };
 
     let result = execute_program(&program, &mut sub_state);
@@ -258,6 +259,12 @@ fn execute_command_substitution(
 
     // $? reflects the exit code of the substituted command
     state.last_exit_code = result.exit_code;
+
+    // In bash, stderr from command substitution passes through to the parent.
+    // Accumulate it so the enclosing command can include it in its ExecResult.
+    if !result.stderr.is_empty() {
+        state.pending_cmdsub_stderr.push_str(&result.stderr);
+    }
 
     // Strip trailing newlines from captured stdout
     let mut output = result.stdout;
@@ -421,6 +428,7 @@ fn expand_parameter(
     state: &InterpreterState,
     in_dq: bool,
 ) -> Result<bool, RustBashError> {
+    validate_expr_parameter(expr)?;
     let mut at_empty = false;
     let ext = state.shopt_opts.extglob;
     match expr {
@@ -919,6 +927,7 @@ fn expand_parameter_mut(
     state: &mut InterpreterState,
     in_dq: bool,
 ) -> Result<bool, RustBashError> {
+    validate_expr_parameter(expr)?;
     match expr {
         ParameterExpr::AssignDefaultValues {
             parameter,
@@ -1140,7 +1149,22 @@ fn expand_param_value(
             if *concatenate {
                 // $* — join with first char of IFS.
                 // IFS unset → default space; IFS="" → no separator.
-                let sep = match get_var(state, "IFS") {
+                let ifs_val = get_var(state, "IFS");
+                let ifs_empty = matches!(&ifs_val, Some(s) if s.is_empty());
+                if !in_dq && ifs_empty {
+                    // Unquoted $* with IFS='': each param is a separate word (like $@)
+                    if state.positional_params.is_empty() {
+                        return true;
+                    }
+                    for (i, param) in state.positional_params.iter().enumerate() {
+                        if i > 0 {
+                            start_new_word(words);
+                        }
+                        push_segment(words, param, false, false);
+                    }
+                    return false;
+                }
+                let sep = match ifs_val {
                     Some(s) => s.chars().next().map(|c| c.to_string()).unwrap_or_default(),
                     None => " ".to_string(),
                 };
@@ -1167,7 +1191,22 @@ fn expand_param_value(
             let values = get_array_values(name, state);
             if *concatenate {
                 // ${arr[*]} — join with first char of IFS
-                let sep = match get_var(state, "IFS") {
+                let ifs_val = get_var(state, "IFS");
+                let ifs_empty = matches!(&ifs_val, Some(s) if s.is_empty());
+                if !in_dq && ifs_empty {
+                    // Unquoted ${arr[*]} with IFS='': each element separate (like ${arr[@]})
+                    if values.is_empty() {
+                        return true;
+                    }
+                    for (i, v) in values.iter().enumerate() {
+                        if i > 0 {
+                            start_new_word(words);
+                        }
+                        push_segment(words, v, false, false);
+                    }
+                    return false;
+                }
+                let sep = match ifs_val {
                     Some(s) => s.chars().next().map(|c| c.to_string()).unwrap_or_default(),
                     None => " ".to_string(),
                 };
@@ -1881,6 +1920,46 @@ fn check_nounset(parameter: &Parameter, state: &InterpreterState) -> Result<(), 
         )));
     }
     Ok(())
+}
+
+/// Reject invalid parameter names like `${%}`.
+/// Bash reports "bad substitution" for these.
+fn validate_parameter_name(parameter: &Parameter) -> Result<(), RustBashError> {
+    if let Parameter::Named(name) = parameter
+        && (name.is_empty()
+            || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            || name.starts_with(|c: char| c.is_ascii_digit()))
+    {
+        return Err(RustBashError::Execution(format!(
+            "${{{name}}}: bad substitution"
+        )));
+    }
+    Ok(())
+}
+
+/// Extract the parameter from any ParameterExpr variant and validate it.
+fn validate_expr_parameter(expr: &ParameterExpr) -> Result<(), RustBashError> {
+    let param = match expr {
+        ParameterExpr::Parameter { parameter, .. }
+        | ParameterExpr::UseDefaultValues { parameter, .. }
+        | ParameterExpr::AssignDefaultValues { parameter, .. }
+        | ParameterExpr::IndicateErrorIfNullOrUnset { parameter, .. }
+        | ParameterExpr::UseAlternativeValue { parameter, .. }
+        | ParameterExpr::ParameterLength { parameter, .. }
+        | ParameterExpr::RemoveSmallestSuffixPattern { parameter, .. }
+        | ParameterExpr::RemoveLargestSuffixPattern { parameter, .. }
+        | ParameterExpr::RemoveSmallestPrefixPattern { parameter, .. }
+        | ParameterExpr::RemoveLargestPrefixPattern { parameter, .. }
+        | ParameterExpr::Substring { parameter, .. }
+        | ParameterExpr::UppercaseFirstChar { parameter, .. }
+        | ParameterExpr::UppercasePattern { parameter, .. }
+        | ParameterExpr::LowercaseFirstChar { parameter, .. }
+        | ParameterExpr::LowercasePattern { parameter, .. }
+        | ParameterExpr::ReplaceSubstring { parameter, .. }
+        | ParameterExpr::Transform { parameter, .. } => parameter,
+        ParameterExpr::VariableNames { .. } | ParameterExpr::MemberKeys { .. } => return Ok(()),
+    };
+    validate_parameter_name(param)
 }
 
 fn resolve_parameter(parameter: &Parameter, state: &InterpreterState, indirect: bool) -> String {
@@ -2892,7 +2971,7 @@ fn expand_raw_string_ctx(
 
     let mut words: Vec<WordInProgress> = vec![Vec::new()];
     for piece_ws in &pieces {
-        expand_word_piece(&piece_ws.piece, &mut words, state, in_dq)?;
+        expand_raw_piece(&piece_ws.piece, &mut words, state, in_dq)?;
     }
     let result = finalize_no_split(words);
     Ok(result.join(" "))
@@ -2909,10 +2988,41 @@ fn expand_raw_string_mut_ctx(
 
     let mut words: Vec<WordInProgress> = vec![Vec::new()];
     for piece_ws in &pieces {
-        expand_word_piece_mut(&piece_ws.piece, &mut words, state, in_dq)?;
+        expand_raw_piece_mut(&piece_ws.piece, &mut words, state, in_dq)?;
     }
     let result = finalize_no_split(words);
     Ok(result.join(" "))
+}
+
+/// Expand a word piece from a parameter expansion operand.
+/// When `in_dq` is true, single quotes are literal characters (not quote
+/// delimiters), matching bash behavior for e.g. `"${var:-'hello'}"`.
+fn expand_raw_piece(
+    piece: &WordPiece,
+    words: &mut Vec<WordInProgress>,
+    state: &InterpreterState,
+    in_dq: bool,
+) -> Result<bool, RustBashError> {
+    if in_dq && let WordPiece::SingleQuotedText(s) = piece {
+        // Inside DQ context, single quotes are literal characters.
+        push_segment(words, &format!("'{s}'"), true, true);
+        return Ok(false);
+    }
+    expand_word_piece(piece, words, state, in_dq)
+}
+
+/// Mutable variant of `expand_raw_piece`.
+fn expand_raw_piece_mut(
+    piece: &WordPiece,
+    words: &mut Vec<WordInProgress>,
+    state: &mut InterpreterState,
+    in_dq: bool,
+) -> Result<bool, RustBashError> {
+    if in_dq && let WordPiece::SingleQuotedText(s) = piece {
+        push_segment(words, &format!("'{s}'"), true, true);
+        return Ok(false);
+    }
+    expand_word_piece_mut(piece, words, state, in_dq)
 }
 
 /// Expand shell variables inside an arithmetic expression before evaluation.

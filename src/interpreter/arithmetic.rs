@@ -1528,6 +1528,7 @@ mod tests {
             proc_sub_counter: 0,
             proc_sub_prealloc: HashMap::new(),
             pipe_stdin_bytes: None,
+            pending_cmdsub_stderr: String::new(),
         }
     }
 

@@ -1621,8 +1621,8 @@ fn declare_print(
 
     if var_args.is_empty() {
         if has_filter {
-            // Filter by attribute
-            let mut lines: Vec<String> = state
+            // Filter by attribute, sort by name
+            let mut entries: Vec<(&String, &Variable)> = state
                 .env
                 .iter()
                 .filter(|(_, v)| {
@@ -1643,15 +1643,28 @@ fn declare_print(
                     }
                     false
                 })
+                .collect();
+            entries.sort_by_key(|(name, _)| name.as_str());
+            let stdout: String = entries
+                .iter()
                 .map(|(k, v)| format_declare_line(k, v))
                 .collect();
-            lines.sort();
             return Ok(ExecResult {
-                stdout: lines.join(""),
+                stdout,
                 ..ExecResult::default()
             });
         }
-        return declare_list_all(state);
+        // `declare -p` with no args — list all with declare prefix, sort by name
+        let mut entries: Vec<(&String, &Variable)> = state.env.iter().collect();
+        entries.sort_by_key(|(name, _)| name.as_str());
+        let stdout: String = entries
+            .iter()
+            .map(|(k, v)| format_declare_line(k, v))
+            .collect();
+        return Ok(ExecResult {
+            stdout,
+            ..ExecResult::default()
+        });
     }
     let mut stdout = String::new();
     let mut stderr = String::new();
@@ -1674,16 +1687,41 @@ fn declare_print(
 
 /// List all variables with their declarations.
 fn declare_list_all(state: &InterpreterState) -> Result<ExecResult, RustBashError> {
-    let mut lines: Vec<String> = state
-        .env
+    // Bare `declare` uses simple `name=value` format (no `declare` prefix).
+    let mut entries: Vec<(&String, &Variable)> = state.env.iter().collect();
+    entries.sort_by_key(|(name, _)| name.as_str());
+    let stdout: String = entries
         .iter()
-        .map(|(k, v)| format_declare_line(k, v))
+        .map(|(name, var)| format_simple_line(name, var))
         .collect();
-    lines.sort();
     Ok(ExecResult {
-        stdout: lines.join(""),
+        stdout,
         ..ExecResult::default()
     })
+}
+
+/// Format `name=value` (used by bare `declare` and `local`).
+fn format_simple_line(name: &str, var: &Variable) -> String {
+    match &var.value {
+        VariableValue::Scalar(s) => format!("{name}={s}\n"),
+        VariableValue::IndexedArray(map) => {
+            let elems: Vec<String> = map.iter().map(|(k, v)| format!("[{k}]=\"{v}\"")).collect();
+            format!("{name}=({})\n", elems.join(" "))
+        }
+        VariableValue::AssociativeArray(map) => {
+            let mut entries: Vec<(&String, &String)> = map.iter().collect();
+            entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+            let elems: Vec<String> = entries
+                .iter()
+                .map(|(k, v)| format!("[{k}]=\"{v}\""))
+                .collect();
+            if elems.is_empty() {
+                format!("{name}=()\n")
+            } else {
+                format!("{name}=({} )\n", elems.join(" "))
+            }
+        }
+    }
 }
 
 /// Format a single `declare -<flags> name="value"` line.
@@ -3329,6 +3367,24 @@ fn builtin_local(
         } else {
             var_args.push(arg);
         }
+    }
+
+    // bare `local` with no args — list local variables in simple name=value format
+    if var_args.is_empty() {
+        let mut stdout = String::new();
+        if let Some(scope) = state.local_scopes.last() {
+            let mut names: Vec<&String> = scope.keys().collect();
+            names.sort();
+            for name in names {
+                if let Some(var) = state.env.get(name.as_str()) {
+                    stdout.push_str(&format_simple_line(name, var));
+                }
+            }
+        }
+        return Ok(ExecResult {
+            stdout,
+            ..ExecResult::default()
+        });
     }
 
     let mut exit_code = 0;
@@ -5034,6 +5090,7 @@ fn run_in_subshell(
         proc_sub_counter: state.proc_sub_counter,
         proc_sub_prealloc: HashMap::new(),
         pipe_stdin_bytes: None,
+        pending_cmdsub_stderr: String::new(),
     };
 
     let result = execute_program(program, &mut sub_state);
@@ -5145,6 +5202,7 @@ mod tests {
             proc_sub_counter: 0,
             proc_sub_prealloc: HashMap::new(),
             pipe_stdin_bytes: None,
+            pending_cmdsub_stderr: String::new(),
         }
     }
 
