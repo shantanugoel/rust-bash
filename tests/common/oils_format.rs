@@ -299,15 +299,22 @@ fn byte_offset_of_nth_token(s: &str, n: usize) -> usize {
 
 /// Parse a multiline `## STDOUT:` / `## STDERR:` block.
 /// Reads lines until `## END` and returns the collected text plus the number of lines consumed
-/// (including the `## END` line).
+/// (including the `## END` line).  A `## ` line that is *not* `## END` also terminates the block
+/// (without being consumed) — this handles adjacent override blocks such as
+/// `## STDOUT: ... ## N-I mksh STDOUT: ... ## END`.
 fn parse_multiline_block(lines: &[&str]) -> (String, usize) {
     let mut result = String::new();
     let mut consumed = 0;
     for line in lines {
-        consumed += 1;
         if *line == "## END" {
+            consumed += 1; // consume the terminator
             break;
         }
+        if line.starts_with("## ") {
+            // Another metadata line starts a new section — don't consume it.
+            break;
+        }
+        consumed += 1;
         if !result.is_empty() {
             result.push('\n');
         }
@@ -476,5 +483,13 @@ pub fn run_parser_unit_tests() {
         assert_eq!(file.cases[0].expected_stdout, Some("nope\n".to_string()));
     }
 
-    eprintln!("--- oils_format parser: all 20 unit tests passed");
+    // Multiline STDOUT block terminated by override STDOUT block (parser bug fix)
+    {
+        let input =
+            "#### test\necho hi\n## STDOUT:\n1\n1\n0\n## N-I mksh STDOUT:\n127\n127\n127\n## END\n";
+        let file = parse_oils_file(input);
+        assert_eq!(file.cases[0].expected_stdout, Some("1\n1\n0\n".to_string()));
+    }
+
+    eprintln!("--- oils_format parser: all 21 unit tests passed");
 }

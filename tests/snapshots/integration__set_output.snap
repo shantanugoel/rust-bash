@@ -1,11 +1,11 @@
 ---
 source: tests/integration.rs
-assertion_line: 765
+assertion_line: 767
 expression: r.stdout
 ---
 BASH=/bin/bash
 BASHOPTS=
-BASH_VERSION=0.2.0
+BASH_VERSION=0.3.0
 HOME=/home/user
 HOSTNAME=rust-bash
 LANG=en_US.UTF-8

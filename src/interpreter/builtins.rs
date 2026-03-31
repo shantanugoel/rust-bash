@@ -1120,7 +1120,13 @@ fn builtin_unset(
                 continue;
             }
         }
-        state.env.remove(arg.as_str());
+        // In bash, bare `unset name` prefers variables. If no variable exists,
+        // fall back to unsetting a function with the same name.
+        if state.env.contains_key(arg.as_str()) {
+            state.env.remove(arg.as_str());
+        } else {
+            state.functions.remove(arg.as_str());
+        }
     }
     Ok(ExecResult::default())
 }
@@ -1593,7 +1599,8 @@ fn declare_functions(
     for name in var_args {
         if state.functions.contains_key(name.as_str()) {
             if names_only {
-                stdout.push_str(&format!("declare -f {name}\n"));
+                // `declare -F name` outputs just the name (no `declare -f` prefix).
+                stdout.push_str(&format!("{name}\n"));
             }
         } else {
             exit_code = 1;
@@ -1799,6 +1806,7 @@ fn declare_append_value(
                 .env
                 .get(name)
                 .is_some_and(|v| matches!(v.value, VariableValue::AssociativeArray(_)));
+        let non_readonly_attrs = flag_attrs - VariableAttrs::READONLY;
 
         if is_assoc {
             // Create assoc array if it doesn't exist
@@ -1807,11 +1815,16 @@ fn declare_append_value(
                     name.to_string(),
                     Variable {
                         value: VariableValue::AssociativeArray(std::collections::BTreeMap::new()),
-                        attrs: flag_attrs,
+                        attrs: non_readonly_attrs,
                     },
                 );
             }
             parse_and_set_assoc_array_append(state, name, inner)?;
+            if flag_attrs.contains(VariableAttrs::READONLY)
+                && let Some(var) = state.env.get_mut(name)
+            {
+                var.attrs.insert(VariableAttrs::READONLY);
+            }
         } else {
             // Find current max index + 1
             let start_idx = match state.env.get(name) {
@@ -1832,7 +1845,7 @@ fn declare_append_value(
                     name.to_string(),
                     Variable {
                         value: VariableValue::IndexedArray(std::collections::BTreeMap::new()),
-                        attrs: flag_attrs,
+                        attrs: non_readonly_attrs,
                     },
                 );
             }
@@ -1857,7 +1870,12 @@ fn declare_append_value(
             }
 
             if let Some(var) = state.env.get_mut(name) {
-                var.attrs.insert(flag_attrs);
+                var.attrs.insert(non_readonly_attrs);
+            }
+            if flag_attrs.contains(VariableAttrs::READONLY)
+                && let Some(var) = state.env.get_mut(name)
+            {
+                var.attrs.insert(VariableAttrs::READONLY);
             }
         }
     } else {
@@ -1901,6 +1919,7 @@ fn declare_with_value(
     }
 
     if make_assoc_array {
+        let non_readonly_attrs = flag_attrs - VariableAttrs::READONLY;
         let var = state
             .env
             .entry(name.to_string())
@@ -1908,7 +1927,7 @@ fn declare_with_value(
                 value: VariableValue::AssociativeArray(std::collections::BTreeMap::new()),
                 attrs: VariableAttrs::empty(),
             });
-        var.attrs.insert(flag_attrs);
+        var.attrs.insert(non_readonly_attrs);
         if !matches!(var.value, VariableValue::AssociativeArray(_)) {
             var.value = VariableValue::AssociativeArray(std::collections::BTreeMap::new());
         }
@@ -1916,7 +1935,13 @@ fn declare_with_value(
         if let Some(inner) = value.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
             parse_and_set_assoc_array(state, name, inner)?;
         }
+        if flag_attrs.contains(VariableAttrs::READONLY)
+            && let Some(var) = state.env.get_mut(name)
+        {
+            var.attrs.insert(VariableAttrs::READONLY);
+        }
     } else if make_indexed_array {
+        let non_readonly_attrs = flag_attrs - VariableAttrs::READONLY;
         let var = state
             .env
             .entry(name.to_string())
@@ -1924,7 +1949,7 @@ fn declare_with_value(
                 value: VariableValue::IndexedArray(std::collections::BTreeMap::new()),
                 attrs: VariableAttrs::empty(),
             });
-        var.attrs.insert(flag_attrs);
+        var.attrs.insert(non_readonly_attrs);
         if !matches!(var.value, VariableValue::IndexedArray(_)) {
             var.value = VariableValue::IndexedArray(std::collections::BTreeMap::new());
         }
@@ -1934,8 +1959,14 @@ fn declare_with_value(
         } else if !value.is_empty() {
             crate::interpreter::set_array_element(state, name, 0, value.to_string())?;
         }
+        if flag_attrs.contains(VariableAttrs::READONLY)
+            && let Some(var) = state.env.get_mut(name)
+        {
+            var.attrs.insert(VariableAttrs::READONLY);
+        }
     } else if let Some(inner) = value.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
         // `declare name=(x y z)` without -a flag — auto-create indexed array.
+        let non_readonly_attrs = flag_attrs - VariableAttrs::READONLY;
         let var = state
             .env
             .entry(name.to_string())
@@ -1943,11 +1974,16 @@ fn declare_with_value(
                 value: VariableValue::IndexedArray(std::collections::BTreeMap::new()),
                 attrs: VariableAttrs::empty(),
             });
-        var.attrs.insert(flag_attrs);
+        var.attrs.insert(non_readonly_attrs);
         if !matches!(var.value, VariableValue::IndexedArray(_)) {
             var.value = VariableValue::IndexedArray(std::collections::BTreeMap::new());
         }
         parse_and_set_indexed_array(state, name, inner)?;
+        if flag_attrs.contains(VariableAttrs::READONLY)
+            && let Some(var) = state.env.get_mut(name)
+        {
+            var.attrs.insert(VariableAttrs::READONLY);
+        }
     } else {
         let non_readonly_attrs = flag_attrs - VariableAttrs::READONLY;
         let var = state

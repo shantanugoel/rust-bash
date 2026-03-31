@@ -1,7 +1,23 @@
 # Ordered Oils fix queue as of 2026-03-31.
 # Source of truth: current live Oils run (`cargo test --test oils_spec -- --nocapture --test-threads=1`).
-# Current totals: 1399 pass / 764 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
+# Current totals: 1449 pass / 714 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
 #
+# ── How the Oils test infra works ──
+# Runner:      tests/oils_spec.rs (datatest_stable harness, discovers .test.sh files)
+# Format:      tests/common/oils_format.rs parses the Oils .test.sh format into cases
+# Pass-list:   tests/fixtures/oils/pass-list.txt — one "file:case name" per line.
+#              Everything IN the list must pass; everything NOT in it defaults to xfail.
+#              Unexpected passes and regressions are both hard failures.
+# Regenerate:  OILS_GENERATE_PASS_LIST=1 cargo test --test oils_spec 2>/dev/null \
+#                | grep '^PASS_LIST:' | sed 's/^PASS_LIST://' | sort > pass-list.txt
+#              ⚠ Run multi-threaded (default); single-threaded gives fewer passes due to
+#              pre-existing test-isolation flakiness. Take the union of 3 runs for stability.
+# Run one file: cargo test --test oils_spec -- "assign-extended" --nocapture --test-threads=1
+# Verbose xfails: OILS_VERBOSE_XFAIL=1 cargo test --test oils_spec -- "file" --nocapture
+# Skip list:   skip_files() in oils_spec.rs — whole-file skips for non-applicable tests.
+# Override precedence in .test.sh format: N-I > BUG > OK > default (per-shell).
+#
+# ── Backlog ──
 # This is a file-level backlog, ordered by recommended implementation sequence.
 # Each line is one Oils `.test.sh` file with remaining xfails.
 # Permanent whole-file skips are intentionally excluded.
@@ -10,14 +26,14 @@
 
 ## Parser, Expansion, Quoting, Assignment
 - parse-errors.test (xfail=6) remaining: long token (needs python2), `${%}` parser literal, `}` on second line, interactive parse error, array literal inside array
-- assign-extended.test (xfail=15) `declare` / `typeset` / `declare -p` semantics
+- assign-extended.test (xfail=10) `declare` / `typeset` / `declare -p` semantics
 - var-sub-quote.test (xfail=16) quoted parameter expansion fidelity
 - word-split.test (xfail=11) IFS, `$@`, `$*`, empty-string splitting semantics
 - command-sub.test (xfail=16) command-sub quoting and newline semantics
 - arith.test (xfail=18) arithmetic edge cases that feed many later failures
 - assign.test (xfail=13) assignment semantics and error handling
 - var-op-test.test (xfail=16) parameter test operators
-- var-op-bash.test (xfail=16) bash-specific parameter operators
+- var-op-bash.test (xfail=15) bash-specific parameter operators
 - here-doc.test (xfail=14) here-doc parsing and expansion tail
 - array-literal.test (xfail=13) array-literal parse / assignment semantics
 - var-op-patsub.test (xfail=12) pattern substitution semantics
@@ -29,7 +45,7 @@
 - var-op-slice.test (xfail=7) slicing semantics
 - var-num.test (xfail=6) numeric special variables / expansions
 - func-parsing.test (xfail=6) function-definition parse edge cases
-- brace-expansion.test (xfail=6) brace expansion tail
+- brace-expansion.test (xfail=5) brace expansion tail
 - shell-grammar.test (xfail=4) grammar fidelity beyond current parser happy path
 - whitespace.test (xfail=5) whitespace-sensitive parsing / execution
 - var-sub.test (xfail=4) remaining unquoted parameter expansion cases
@@ -52,15 +68,15 @@
 - sh-options.test (xfail=10) shell option state, invocation flags, `$-`, `shopt`
 - builtin-type-bash.test (xfail=14) `type` / PATH / alias / function precedence
 - dbracket.test (xfail=6) `[[ ... ]]` parse/runtime semantics
-- xtrace.test (xfail=8) tracing output fidelity and `PS4` behavior
+- xtrace.test (xfail=5) tracing output fidelity and `PS4` behavior
 - vars-special.test (xfail=13) `BASHPID`, `LINENO`, `$_`, startup defaults, pipeline state
 - builtin-set.test (xfail=9) `set` flag handling and side effects
 - errexit.test (xfail=13) `set -e` / redirection / alias / function behavior
-- builtin-echo.test (xfail=10) escape behavior and bash echo quirks
+- builtin-echo.test (xfail=8) escape behavior and bash echo quirks
 - command_.test (xfail=11) command lookup / PATH / cache / script execution behavior
-- builtin-meta.test (xfail=11) `command -v/-V`, `builtin`, `command -p`
+- builtin-meta.test (xfail=10) `command -v/-V`, `builtin`, `command -p`
 - builtin-eval-source.test (xfail=7) `eval` / `source` option and PATH semantics
-- builtin-vars.test (xfail=9) `unset`, `local`, export / scope edge cases
+- builtin-vars.test (xfail=8) `unset`, `local`, export / scope edge cases
 - builtin-bracket.test (xfail=11) `test` / `[` predicate fidelity
 - builtin-special.test (xfail=10) POSIX special builtin semantics
 - strict-options.test (xfail=9) strict mode control-flow / argv behavior
