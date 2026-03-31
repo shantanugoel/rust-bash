@@ -1,6 +1,6 @@
 # Ordered Oils fix queue as of 2026-03-31.
 # Source of truth: current live Oils run (`cargo test --test oils_spec -- --nocapture --test-threads=1`).
-# Current totals: 1449 pass / 714 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
+# Current totals: 1470 pass / 729 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
 #
 # ── How the Oils test infra works ──
 # Runner:      tests/oils_spec.rs (datatest_stable harness, discovers .test.sh files)
@@ -26,9 +26,9 @@
 
 ## Parser, Expansion, Quoting, Assignment
 - parse-errors.test (xfail=6) remaining: long token (needs python2), `${%}` parser literal, `}` on second line, interactive parse error, array literal inside array
-- assign-extended.test (xfail=10) `declare` / `typeset` / `declare -p` semantics
-- var-sub-quote.test (xfail=16) quoted parameter expansion fidelity
-- word-split.test (xfail=11) IFS, `$@`, `$*`, empty-string splitting semantics
+- assign-extended.test (xfail=8) `declare` / `typeset` / `declare -p` semantics
+- var-sub-quote.test (xfail=6) quoted parameter expansion fidelity
+- word-split.test (xfail=7) IFS, `$@`, `$*`, empty-string splitting semantics
 - command-sub.test (xfail=16) command-sub quoting and newline semantics
 - arith.test (xfail=18) arithmetic edge cases that feed many later failures
 - assign.test (xfail=13) assignment semantics and error handling
@@ -36,8 +36,8 @@
 - var-op-bash.test (xfail=15) bash-specific parameter operators
 - here-doc.test (xfail=14) here-doc parsing and expansion tail
 - array-literal.test (xfail=13) array-literal parse / assignment semantics
-- var-op-patsub.test (xfail=12) pattern substitution semantics
-- var-op-strip.test (xfail=9) prefix/suffix strip semantics
+- var-op-patsub.test (xfail=11) pattern substitution semantics
+- var-op-strip.test (xfail=7) prefix/suffix strip semantics
 - arith-context.test (xfail=8) arithmetic parser / evaluator context rules
 - append.test (xfail=8) `+=` semantics for scalars and arrays
 - quote.test (xfail=6) quoting parse/runtime fidelity
@@ -54,7 +54,7 @@
 - for-expr.test (xfail=3) C-style `for ((...))` parse/runtime fidelity
 - fatal-errors.test (xfail=3) fatal parse/runtime error behavior
 - sh-func.test (xfail=2) shell-function parsing / invocation tail
-- word-eval.test (xfail=2) word evaluation corner cases
+- word-eval.test (xfail=1) word evaluation corner cases
 - arith-dynamic.test (xfail=1) dynamic arithmetic lookup tail
 - temp-binding.test (xfail=1) temporary binding semantics
 - if_.test (xfail=1) `if` control-flow edge case
@@ -96,7 +96,7 @@
 ## Arrays, Indirection, Regex, Introspection
 - array-sparse.test (xfail=20) sparse-array semantics and negative-index handling
 - var-ref.test (xfail=18) indirect expansion and guarded expansion semantics
-- array.test (xfail=16) array assignment / env-binding / strict-array behavior
+- array.test (xfail=15) array assignment / env-binding / strict-array behavior
 - nameref.test (xfail=14) `declare -n` and reference semantics
 - regex.test (xfail=9) `[[ ... =~ ... ]]` parse/runtime regex behavior
 - array-assign.test (xfail=10) assignment forms for arrays

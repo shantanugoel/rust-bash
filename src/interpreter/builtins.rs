@@ -1767,23 +1767,38 @@ fn format_declare_line(name: &str, var: &Variable) -> String {
     };
 
     match &var.value {
-        VariableValue::Scalar(s) => format!("declare {flag_str}{name}=\"{s}\"\n"),
+        VariableValue::Scalar(s) => {
+            if var.attrs.contains(VariableAttrs::DECLARED_ONLY) {
+                format!("declare {flag_str}{name}\n")
+            } else {
+                format!("declare {flag_str}{name}=\"{s}\"\n")
+            }
+        }
         VariableValue::IndexedArray(map) => {
-            let elems: Vec<String> = map.iter().map(|(k, v)| format!("[{k}]=\"{v}\"")).collect();
-            format!("declare {flag_str}{name}=({})\n", elems.join(" "))
+            if var.attrs.contains(VariableAttrs::DECLARED_ONLY) {
+                format!("declare {flag_str}{name}\n")
+            } else {
+                let elems: Vec<String> =
+                    map.iter().map(|(k, v)| format!("[{k}]=\"{v}\"")).collect();
+                format!("declare {flag_str}{name}=({})\n", elems.join(" "))
+            }
         }
         VariableValue::AssociativeArray(map) => {
-            let mut entries: Vec<(&String, &String)> = map.iter().collect();
-            entries.sort_by(|(a, _), (b, _)| a.cmp(b));
-            let elems: Vec<String> = entries
-                .iter()
-                .map(|(k, v)| format!("[{k}]=\"{v}\""))
-                .collect();
-            if elems.is_empty() {
-                format!("declare {flag_str}{name}=()\n")
+            if var.attrs.contains(VariableAttrs::DECLARED_ONLY) {
+                format!("declare {flag_str}{name}\n")
             } else {
-                // Bash outputs a trailing space before closing paren
-                format!("declare {flag_str}{name}=({} )\n", elems.join(" "))
+                let mut entries: Vec<(&String, &String)> = map.iter().collect();
+                entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+                let elems: Vec<String> = entries
+                    .iter()
+                    .map(|(k, v)| format!("[{k}]=\"{v}\""))
+                    .collect();
+                if elems.is_empty() {
+                    format!("declare {flag_str}{name}=()\n")
+                } else {
+                    // Bash outputs a trailing space before closing paren
+                    format!("declare {flag_str}{name}=({} )\n", elems.join(" "))
+                }
             }
         }
     }
@@ -2034,7 +2049,7 @@ fn declare_without_value(
             name.to_string(),
             Variable {
                 value,
-                attrs: flag_attrs,
+                attrs: flag_attrs | VariableAttrs::DECLARED_ONLY,
             },
         );
     }
@@ -3564,13 +3579,20 @@ fn builtin_local(
                 } else {
                     VariableValue::Scalar(String::new())
                 };
-                state.env.insert(
-                    arg.to_string(),
-                    Variable {
-                        value,
-                        attrs: VariableAttrs::empty(),
-                    },
-                );
+                let mut attrs = VariableAttrs::DECLARED_ONLY;
+                if make_readonly {
+                    attrs.insert(VariableAttrs::READONLY);
+                }
+                if make_exported {
+                    attrs.insert(VariableAttrs::EXPORTED);
+                }
+                if make_integer {
+                    attrs.insert(VariableAttrs::INTEGER);
+                }
+                if make_nameref {
+                    attrs.insert(VariableAttrs::NAMEREF);
+                }
+                state.env.insert(arg.to_string(), Variable { value, attrs });
             }
         }
     }

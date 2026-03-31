@@ -185,6 +185,7 @@ array.test:a[$x$y] on LHS and RHS
 array.test:All elements quoted
 array.test:All elements unquoted
 array.test:Append sparse arrays
+array.test:array default
 array.test:array over multiple lines
 array.test:Array syntax in wrong place
 array.test:array with empty string
@@ -245,12 +246,14 @@ assign-extended.test:declare -f exit code indicates function existence
 assign-extended.test:declare -F prints function names
 assign-extended.test:declare -p
 assign-extended.test:declare -paA
+assign-extended.test:declare -p and value.Undef
 assign-extended.test:declare -p arr
 assign-extended.test:declare -p foo=bar doesn't make sense
 assign-extended.test:declare -pg
 assign-extended.test:declare -pg var
 assign-extended.test:declare -pnrx
 assign-extended.test:declare -pnrx var
+assign-extended.test:declare -p UNDEF (and typeset) -- prints something to stderr
 assign-extended.test:declare -p var
 assign-extended.test:declare -p var (exit status)
 assign-extended.test:dynamic array parsing is not allowed
@@ -1265,6 +1268,7 @@ var-op-patsub.test:Replace char class
 var-op-patsub.test:Replace fixed strings
 var-op-patsub.test:Replace hard glob
 var-op-patsub.test:Replace is longest match
+var-op-patsub.test:Replacement with special chars (bug fix)
 var-op-patsub.test:Right Anchored Pattern replacement with %
 var-op-slice.test:${array[@]::} has implicit length of zero - for ble.sh
 var-op-slice.test:Negative second arg is position, not length!
@@ -1283,6 +1287,7 @@ var-op-slice.test:String slice
 var-op-slice.test:String slice with math
 var-op-strip.test:Append using replacement of %
 var-op-strip.test:Bug fix: Test that you can remove everything with glob
+var-op-strip.test:extglob in pattern
 var-op-strip.test:\(\) in pattern (regression)
 var-op-strip.test:Nested % and # operators (bug reported by Crestwave)
 var-op-strip.test:Prepend using replacement of #
@@ -1300,6 +1305,7 @@ var-op-strip.test:strip * (bug regression)
 var-op-strip.test:Strip char class
 var-op-strip.test:strip none
 var-op-strip.test:strip unquoted and quoted ?
+var-op-strip.test:strip unquoted and quoted [a]
 var-op-strip.test:Test that you can remove everything with const
 var-op-test.test:$@ ("") and - and +
 var-op-test.test:"$*" ("" "") and - and + (IFS=)
@@ -1359,31 +1365,42 @@ vars-special.test:$_ with word splitting
 vars-special.test:UID EUID PPID can't be changed
 var-sub-quote.test:-
 var-sub-quote.test::-
+var-sub-quote.test:$'' allowed within VarSub arguments
 var-sub-quote.test:"${empty:-}"
 var-sub-quote.test:${empty:-}
+var-sub-quote.test:"${undef-'c d'}" and "${foo%'c d'}" are parsed differently
 var-sub-quote.test:comparison: :- operator with single quoted arg
 var-sub-quote.test:Inner double quotes
 var-sub-quote.test:Inner double quotes, outer double quotes
 var-sub-quote.test:Inner single quotes
 var-sub-quote.test:Inner single quotes, outer double quotes
+var-sub-quote.test:Mixed inner quotes
 var-sub-quote.test:Mixed inner quotes with outer quotes
+var-sub-quote.test:Multiple words: no outer quotes, inner double quotes#1
+var-sub-quote.test:Multiple words: no outer quotes, inner double quotes#2
+var-sub-quote.test:Multiple words: no outer quotes, inner single quotes#1
 var-sub-quote.test:Multiple words: no outer quotes, inner single quotes#2
 var-sub-quote.test:Multiple words: no quotes
 var-sub-quote.test:Multiple words: outer double quotes, inner double quotes#1
 var-sub-quote.test:Multiple words: outer double quotes, inner double quotes#2
 var-sub-quote.test:Multiple words: outer double quotes, inner single quotes#1
+var-sub-quote.test:Multiple words: outer double quotes, inner single quotes#2
 var-sub-quote.test:Multiple words: outer double quotes, no inner quotes#1
 var-sub-quote.test:Multiple words: outer double quotes, no inner quotes#2
+var-sub-quote.test:No outer quotes, Multiple internal quotes
+var-sub-quote.test:/ operator with single quoted arg (causes syntax error in regex in OSH, reported by Crestwave)
+var-sub-quote.test:# operator with single quoted arg (dash/ash and bash/mksh disagree, reported by Crestwave)
 var-sub-quote.test:part_value tree on RHS
-var-sub-quote.test:Strip a string with single quotes, double quoted
-var-sub-quote.test:Strip a string with single quotes, unquoted
+var-sub-quote.test:part_value tree with multiple words
 var-sub-quote.test:substitution of IFS character, quoted and unquoted
 var-sub-quote.test:Syntax error for single quote in double quote
+var-sub-quote.test:The string to strip can be single quoted, outer is unquoted
 var-sub-quote.test:Var substitution with newlines (#2492)
 var-sub-quote.test:Var substitution with \n in value
 var-sub-quote.test:Var with multiple words: no quotes
 var-sub.test:Here doc with bad "$@" delimiter
 var-sub.test:Nested ${}
+word-eval.test:Default values -- more cases
 word-eval.test:Evaluation of constant parts
 word-eval.test:Evaluation of each part
 word-eval.test:Globbing after splitting
@@ -1400,6 +1417,9 @@ word-split.test:4 x 3 table - with for loop
 word-split.test:Bug #1664, \\ with noglob
 word-split.test:Bug #628 split on : with : in literal word
 word-split.test:Bug #698, similar crash
+word-split.test:default value can yield multiple words
+word-split.test:default value can yield multiple words with part joining
+word-split.test:default value with unquoted IFS char
 word-split.test:empty $@ and $* is elided
 word-split.test:empty argv
 word-split.test:Empty IFS bug #2141 (from pnut)
@@ -1422,6 +1442,7 @@ word-split.test:Leading/trailing word elision with non-whitespace IFS
 word-split.test:Leading ' ' vs leading ' _ '
 word-split.test:Multiple non-whitespace IFS chars.
 word-split.test:no splitting when IFS is empty
+word-split.test:Regression: "${v:-AxBxC}"x should not be split
 word-split.test:Regression: "${!v*}"x should not be split
 word-split.test:Tilde sub is not split, but var sub is
 word-split.test:Trailing space

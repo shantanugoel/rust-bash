@@ -482,8 +482,7 @@ fn expand_parameter(
             };
             if use_default {
                 if let Some(dv) = default_value {
-                    let expanded = expand_raw_string_ctx(dv, state, in_dq)?;
-                    push_segment(words, &expanded, in_dq, in_dq);
+                    expand_raw_into_words(dv, words, state, in_dq)?;
                 }
             } else {
                 push_segment(words, &val, in_dq, in_dq);
@@ -505,6 +504,8 @@ fn expand_parameter(
             };
             if use_default {
                 if let Some(dv) = default_value {
+                    // AssignDefaultValues collapses to a single string for both
+                    // assignment and expansion (bash behavior).
                     let expanded = expand_raw_string_ctx(dv, state, in_dq)?;
                     push_segment(words, &expanded, in_dq, in_dq);
                 }
@@ -554,8 +555,7 @@ fn expand_parameter(
                 should_use_default(&val, test_type, state, parameter)
             };
             if !use_default && let Some(av) = alternative_value {
-                let expanded = expand_raw_string_ctx(av, state, in_dq)?;
-                push_segment(words, &expanded, in_dq, in_dq);
+                expand_raw_into_words(av, words, state, in_dq)?;
             }
             // If unset/null, expand to nothing
         }
@@ -566,10 +566,14 @@ fn expand_parameter(
         } => {
             if let Some((values, concatenate)) = get_vectorized_values(parameter, state, *indirect)
             {
+                let pat_expanded = pattern
+                    .as_ref()
+                    .map(|p| expand_pattern_string(p, state))
+                    .transpose()?;
                 let results: Vec<String> = values
                     .iter()
                     .map(|v| {
-                        if let Some(pat) = pattern
+                        if let Some(ref pat) = pat_expanded
                             && let Some(idx) = pattern::shortest_suffix_match_ext(v, pat, ext)
                         {
                             v[..idx].to_string()
@@ -582,7 +586,8 @@ fn expand_parameter(
             } else {
                 let val = resolve_parameter(parameter, state, *indirect);
                 let result = if let Some(pat) = pattern {
-                    if let Some(idx) = pattern::shortest_suffix_match_ext(&val, pat, ext) {
+                    let pat = expand_pattern_string(pat, state)?;
+                    if let Some(idx) = pattern::shortest_suffix_match_ext(&val, &pat, ext) {
                         val[..idx].to_string()
                     } else {
                         val
@@ -600,10 +605,14 @@ fn expand_parameter(
         } => {
             if let Some((values, concatenate)) = get_vectorized_values(parameter, state, *indirect)
             {
+                let pat_expanded = pattern
+                    .as_ref()
+                    .map(|p| expand_pattern_string(p, state))
+                    .transpose()?;
                 let results: Vec<String> = values
                     .iter()
                     .map(|v| {
-                        if let Some(pat) = pattern
+                        if let Some(ref pat) = pat_expanded
                             && let Some(idx) = pattern::longest_suffix_match_ext(v, pat, ext)
                         {
                             v[..idx].to_string()
@@ -616,7 +625,8 @@ fn expand_parameter(
             } else {
                 let val = resolve_parameter(parameter, state, *indirect);
                 let result = if let Some(pat) = pattern {
-                    if let Some(idx) = pattern::longest_suffix_match_ext(&val, pat, ext) {
+                    let pat = expand_pattern_string(pat, state)?;
+                    if let Some(idx) = pattern::longest_suffix_match_ext(&val, &pat, ext) {
                         val[..idx].to_string()
                     } else {
                         val
@@ -634,10 +644,14 @@ fn expand_parameter(
         } => {
             if let Some((values, concatenate)) = get_vectorized_values(parameter, state, *indirect)
             {
+                let pat_expanded = pattern
+                    .as_ref()
+                    .map(|p| expand_pattern_string(p, state))
+                    .transpose()?;
                 let results: Vec<String> = values
                     .iter()
                     .map(|v| {
-                        if let Some(pat) = pattern
+                        if let Some(ref pat) = pat_expanded
                             && let Some(len) = pattern::shortest_prefix_match_ext(v, pat, ext)
                         {
                             v[len..].to_string()
@@ -650,7 +664,8 @@ fn expand_parameter(
             } else {
                 let val = resolve_parameter(parameter, state, *indirect);
                 let result = if let Some(pat) = pattern {
-                    if let Some(len) = pattern::shortest_prefix_match_ext(&val, pat, ext) {
+                    let pat = expand_pattern_string(pat, state)?;
+                    if let Some(len) = pattern::shortest_prefix_match_ext(&val, &pat, ext) {
                         val[len..].to_string()
                     } else {
                         val
@@ -668,10 +683,14 @@ fn expand_parameter(
         } => {
             if let Some((values, concatenate)) = get_vectorized_values(parameter, state, *indirect)
             {
+                let pat_expanded = pattern
+                    .as_ref()
+                    .map(|p| expand_pattern_string(p, state))
+                    .transpose()?;
                 let results: Vec<String> = values
                     .iter()
                     .map(|v| {
-                        if let Some(pat) = pattern
+                        if let Some(ref pat) = pat_expanded
                             && let Some(len) = pattern::longest_prefix_match_ext(v, pat, ext)
                         {
                             v[len..].to_string()
@@ -684,7 +703,8 @@ fn expand_parameter(
             } else {
                 let val = resolve_parameter(parameter, state, *indirect);
                 let result = if let Some(pat) = pattern {
-                    if let Some(len) = pattern::longest_prefix_match_ext(&val, pat, ext) {
+                    let pat = expand_pattern_string(pat, state)?;
+                    if let Some(len) = pattern::longest_prefix_match_ext(&val, &pat, ext) {
                         val[len..].to_string()
                     } else {
                         val
@@ -764,30 +784,35 @@ fn expand_parameter(
         ParameterExpr::ReplaceSubstring {
             parameter,
             indirect,
-            pattern: pat,
-            replacement,
+            pattern: raw_pat,
+            replacement: raw_repl,
             match_kind,
         } => {
-            let repl = replacement.as_deref().unwrap_or("");
+            let pat = expand_pattern_string(raw_pat, state)?;
+            let repl_expanded = raw_repl
+                .as_ref()
+                .map(|r| expand_replacement_string(r, state))
+                .transpose()?;
+            let repl = repl_expanded.as_deref().unwrap_or("");
             let do_replace = |val: &str| -> String {
                 match match_kind {
                     SubstringMatchKind::FirstOccurrence => {
-                        if let Some((start, end)) = pattern::first_match_ext(val, pat, ext) {
+                        if let Some((start, end)) = pattern::first_match_ext(val, &pat, ext) {
                             format!("{}{}{}", &val[..start], repl, &val[end..])
                         } else {
                             val.to_string()
                         }
                     }
-                    SubstringMatchKind::Anywhere => pattern::replace_all_ext(val, pat, repl, ext),
+                    SubstringMatchKind::Anywhere => pattern::replace_all_ext(val, &pat, repl, ext),
                     SubstringMatchKind::Prefix => {
-                        if let Some(len) = pattern::longest_prefix_match_ext(val, pat, ext) {
+                        if let Some(len) = pattern::longest_prefix_match_ext(val, &pat, ext) {
                             format!("{repl}{}", &val[len..])
                         } else {
                             val.to_string()
                         }
                     }
                     SubstringMatchKind::Suffix => {
-                        if let Some(idx) = pattern::longest_suffix_match_ext(val, pat, ext) {
+                        if let Some(idx) = pattern::longest_suffix_match_ext(val, &pat, ext) {
                             format!("{}{repl}", &val[..idx])
                         } else {
                             val.to_string()
@@ -943,13 +968,13 @@ fn expand_parameter_mut(
                 should_use_default(&val, test_type, state, parameter)
             };
             if use_default {
+                // AssignDefaultValues collapses to a single string.
                 let dv = if let Some(raw) = default_value {
                     expand_raw_string_mut_ctx(raw, state, in_dq)?
                 } else {
                     String::new()
                 };
                 if *indirect {
-                    // For ${!ref:=default}, assign to the indirect target
                     if let Parameter::Named(_) = parameter {
                         let target_name = resolve_parameter_maybe_mut(parameter, state, false)?;
                         if !target_name.is_empty() {
@@ -3025,7 +3050,256 @@ fn expand_raw_piece_mut(
     expand_word_piece_mut(piece, words, state, in_dq)
 }
 
-/// Expand shell variables inside an arithmetic expression before evaluation.
+/// Expand a parameter expansion operand (default value, alternative value)
+/// directly into the word list, preserving inner quoting for proper IFS splitting.
+///
+/// Unlike `expand_raw_string_ctx` which collapses to a single string, this
+/// preserves the quoting structure of inner quoted segments so that IFS splitting
+/// correctly separates words: `${Unset:-"a b" c}` → `["a b", "c"]`.
+fn expand_raw_into_words(
+    raw: &str,
+    words: &mut Vec<WordInProgress>,
+    state: &InterpreterState,
+    in_dq: bool,
+) -> Result<(), RustBashError> {
+    let options = parser_options();
+    let pieces = brush_parser::word::parse(raw, &options)
+        .map_err(|e| RustBashError::Parse(e.to_string()))?;
+    for piece_ws in &pieces {
+        expand_default_piece(&piece_ws.piece, words, state, in_dq)?;
+    }
+    Ok(())
+}
+
+/// Expand a word piece in default/alternative value context.
+///
+/// When not in double-quote context, literal `Text` pieces are pushed as
+/// unquoted (subject to IFS splitting), matching bash behavior where
+/// `${Unset:-a b}` word-splits like a bare `a b`.
+///
+/// When in DQ context, single-quoted text has its single quotes treated as
+/// literal characters with the content undergoing parameter expansion,
+/// matching bash behavior where `"${Unset:-'$var'}"` expands `$var`.
+fn expand_default_piece(
+    piece: &WordPiece,
+    words: &mut Vec<WordInProgress>,
+    state: &InterpreterState,
+    in_dq: bool,
+) -> Result<bool, RustBashError> {
+    if in_dq {
+        if let WordPiece::SingleQuotedText(s) = piece {
+            // Inside DQ, single quotes are literal characters.
+            // The content undergoes parameter expansion.
+            push_segment(words, "'", true, true);
+            let options = parser_options();
+            if let Ok(inner_pieces) = brush_parser::word::parse(s, &options) {
+                for inner in &inner_pieces {
+                    expand_word_piece(&inner.piece, words, state, true)?;
+                }
+            } else {
+                push_segment(words, s, true, true);
+            }
+            push_segment(words, "'", true, true);
+            return Ok(false);
+        }
+        return expand_word_piece(piece, words, state, true);
+    }
+    // Outside DQ: literal text is unquoted (subject to IFS splitting)
+    if let WordPiece::Text(s) = piece {
+        push_segment(words, s, false, false);
+        return Ok(false);
+    }
+    expand_word_piece(piece, words, state, false)
+}
+
+/// Expand a pattern string from a strip/replace operator, processing quotes.
+///
+/// Single quotes, double quotes, and ANSI-C quotes within patterns are
+/// always respected as quoting delimiters (even inside double-quoted
+/// `"${var%'pattern'}"`), and quote removal is performed on the result.
+/// Characters from inside quotes that are pattern-special (`?`, `*`, `[`, `]`)
+/// are backslash-escaped so the pattern matcher treats them as literal.
+/// Backslash escapes outside quotes are preserved for the pattern matcher.
+fn expand_pattern_string(pat: &str, state: &InterpreterState) -> Result<String, RustBashError> {
+    let mut result = String::new();
+    let mut chars = pat.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                // Single quote: take content literally, escape glob chars
+                for ch in chars.by_ref() {
+                    if ch == '\'' {
+                        break;
+                    }
+                    if matches!(ch, '?' | '*' | '[' | ']' | '\\') {
+                        result.push('\\');
+                    }
+                    result.push(ch);
+                }
+            }
+            '$' if chars.peek() == Some(&'\'') => {
+                // ANSI-C quote $'...' — escape glob chars in result
+                chars.next(); // skip opening '
+                while let Some(ch) = chars.next() {
+                    if ch == '\'' {
+                        break;
+                    }
+                    if ch == '\\' {
+                        if let Some(esc) = chars.next() {
+                            let decoded = match esc {
+                                'n' => '\n',
+                                't' => '\t',
+                                'r' => '\r',
+                                '\\' => '\\',
+                                '\'' => '\'',
+                                'a' => '\x07',
+                                'b' => '\x08',
+                                'e' | 'E' => '\x1b',
+                                'f' => '\x0c',
+                                'v' => '\x0b',
+                                _ => {
+                                    // Unknown escape — push both chars.
+                                    // Backslash is glob-special, so always escape it.
+                                    result.push('\\');
+                                    result.push('\\');
+                                    if matches!(esc, '?' | '*' | '[' | ']' | '\\') {
+                                        result.push('\\');
+                                    }
+                                    result.push(esc);
+                                    continue;
+                                }
+                            };
+                            if matches!(decoded, '?' | '*' | '[' | ']' | '\\') {
+                                result.push('\\');
+                            }
+                            result.push(decoded);
+                        }
+                    } else {
+                        if matches!(ch, '?' | '*' | '[' | ']' | '\\') {
+                            result.push('\\');
+                        }
+                        result.push(ch);
+                    }
+                }
+            }
+            '"' => {
+                // Double quote: expand variables inside, remove quote delimiters.
+                // Escape glob chars in expanded content.
+                let mut inner = String::new();
+                while let Some(ch) = chars.next() {
+                    if ch == '"' {
+                        break;
+                    }
+                    if ch == '\\' {
+                        if let Some(&next) = chars.peek()
+                            && matches!(next, '$' | '`' | '"' | '\\')
+                        {
+                            inner.push(next);
+                            chars.next();
+                            continue;
+                        }
+                        inner.push('\\');
+                    } else {
+                        inner.push(ch);
+                    }
+                }
+                let expanded = expand_raw_string_ctx(&inner, state, true)?;
+                for ch in expanded.chars() {
+                    if matches!(ch, '?' | '*' | '[' | ']' | '\\') {
+                        result.push('\\');
+                    }
+                    result.push(ch);
+                }
+            }
+            _ => {
+                result.push(c);
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// Expand a replacement string from a `${var//pattern/replacement}` operator.
+///
+/// Quote removal is performed but glob characters are NOT escaped,
+/// since the replacement is not used as a pattern.
+fn expand_replacement_string(
+    repl: &str,
+    state: &InterpreterState,
+) -> Result<String, RustBashError> {
+    let mut result = String::new();
+    let mut chars = repl.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                for ch in chars.by_ref() {
+                    if ch == '\'' {
+                        break;
+                    }
+                    result.push(ch);
+                }
+            }
+            '$' if chars.peek() == Some(&'\'') => {
+                chars.next();
+                while let Some(ch) = chars.next() {
+                    if ch == '\'' {
+                        break;
+                    }
+                    if ch == '\\' {
+                        if let Some(esc) = chars.next() {
+                            match esc {
+                                'n' => result.push('\n'),
+                                't' => result.push('\t'),
+                                'r' => result.push('\r'),
+                                '\\' => result.push('\\'),
+                                '\'' => result.push('\''),
+                                'a' => result.push('\x07'),
+                                'b' => result.push('\x08'),
+                                'e' | 'E' => result.push('\x1b'),
+                                'f' => result.push('\x0c'),
+                                'v' => result.push('\x0b'),
+                                _ => {
+                                    result.push('\\');
+                                    result.push(esc);
+                                }
+                            }
+                        }
+                    } else {
+                        result.push(ch);
+                    }
+                }
+            }
+            '"' => {
+                let mut inner = String::new();
+                while let Some(ch) = chars.next() {
+                    if ch == '"' {
+                        break;
+                    }
+                    if ch == '\\' {
+                        if let Some(&next) = chars.peek()
+                            && matches!(next, '$' | '`' | '"' | '\\')
+                        {
+                            inner.push(next);
+                            chars.next();
+                            continue;
+                        }
+                        inner.push('\\');
+                    } else {
+                        inner.push(ch);
+                    }
+                }
+                let expanded = expand_raw_string_ctx(&inner, state, true)?;
+                result.push_str(&expanded);
+            }
+            _ => {
+                result.push(c);
+            }
+        }
+    }
+    Ok(result)
+}
 /// This handles cases like `$((${zero}11))` where `zero=0` should yield `011`.
 pub(crate) fn expand_arith_expression(
     expr: &str,

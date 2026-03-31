@@ -1921,7 +1921,11 @@ impl super::VirtualCommand for WcCommand {
             }
             m
         };
-        let width = if max_val == 0 {
+        let width = if files.len() > 1 {
+            // GNU wc uses total byte count to determine field width for
+            // multi-file output, as it is the theoretical max for any column.
+            total_bytes.max(1).to_string().len()
+        } else if max_val == 0 {
             1
         } else {
             max_val.to_string().len()

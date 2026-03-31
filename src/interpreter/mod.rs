@@ -83,6 +83,8 @@ bitflags! {
         const LOWERCASE = 0b0000_1000;
         const UPPERCASE = 0b0001_0000;
         const NAMEREF   = 0b0010_0000;
+        /// Variable was declared but never assigned a value.
+        const DECLARED_ONLY = 0b0100_0000;
     }
 }
 
@@ -574,6 +576,7 @@ pub(crate) fn set_variable(
                 }
                 VariableValue::Scalar(s) => *s = value,
             }
+            var.attrs.remove(VariableAttrs::DECLARED_ONLY);
             // allexport: auto-export on every assignment
             if state.shell_opts.allexport {
                 var.attrs.insert(VariableAttrs::EXPORTED);
@@ -635,28 +638,31 @@ pub(crate) fn set_array_element(
 
     let limit = state.limits.max_array_elements;
     match state.env.get_mut(&target) {
-        Some(var) => match &mut var.value {
-            VariableValue::IndexedArray(map) => {
-                if !map.contains_key(&index) && map.len() >= limit {
-                    return Err(RustBashError::LimitExceeded {
-                        limit_name: "max_array_elements",
-                        limit_value: limit,
-                        actual_value: map.len() + 1,
-                    });
+        Some(var) => {
+            match &mut var.value {
+                VariableValue::IndexedArray(map) => {
+                    if !map.contains_key(&index) && map.len() >= limit {
+                        return Err(RustBashError::LimitExceeded {
+                            limit_name: "max_array_elements",
+                            limit_value: limit,
+                            actual_value: map.len() + 1,
+                        });
+                    }
+                    map.insert(index, value);
                 }
-                map.insert(index, value);
+                VariableValue::Scalar(_) => {
+                    let mut map = BTreeMap::new();
+                    map.insert(index, value);
+                    var.value = VariableValue::IndexedArray(map);
+                }
+                VariableValue::AssociativeArray(_) => {
+                    return Err(RustBashError::Execution(format!(
+                        "{target}: cannot use numeric index on associative array"
+                    )));
+                }
             }
-            VariableValue::Scalar(_) => {
-                let mut map = BTreeMap::new();
-                map.insert(index, value);
-                var.value = VariableValue::IndexedArray(map);
-            }
-            VariableValue::AssociativeArray(_) => {
-                return Err(RustBashError::Execution(format!(
-                    "{target}: cannot use numeric index on associative array"
-                )));
-            }
-        },
+            var.attrs.remove(VariableAttrs::DECLARED_ONLY);
+        }
         None => {
             let mut map = BTreeMap::new();
             map.insert(index, value);
@@ -709,23 +715,26 @@ pub(crate) fn set_assoc_element(
 
     let limit = state.limits.max_array_elements;
     match state.env.get_mut(&target) {
-        Some(var) => match &mut var.value {
-            VariableValue::AssociativeArray(map) => {
-                if !map.contains_key(&key) && map.len() >= limit {
-                    return Err(RustBashError::LimitExceeded {
-                        limit_name: "max_array_elements",
-                        limit_value: limit,
-                        actual_value: map.len() + 1,
-                    });
+        Some(var) => {
+            match &mut var.value {
+                VariableValue::AssociativeArray(map) => {
+                    if !map.contains_key(&key) && map.len() >= limit {
+                        return Err(RustBashError::LimitExceeded {
+                            limit_name: "max_array_elements",
+                            limit_value: limit,
+                            actual_value: map.len() + 1,
+                        });
+                    }
+                    map.insert(key, value);
                 }
-                map.insert(key, value);
+                _ => {
+                    return Err(RustBashError::Execution(format!(
+                        "{target}: not an associative array"
+                    )));
+                }
             }
-            _ => {
-                return Err(RustBashError::Execution(format!(
-                    "{target}: not an associative array"
-                )));
-            }
-        },
+            var.attrs.remove(VariableAttrs::DECLARED_ONLY);
+        }
         None => {
             return Err(RustBashError::Execution(format!(
                 "{target}: not an associative array"
