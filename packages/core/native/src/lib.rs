@@ -3,6 +3,7 @@
 //! Provides a `NativeBash` class for use from Node.js via the native addon.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -340,7 +341,7 @@ impl NativeBash {
             name: name.clone(),
             callback,
         };
-        self.inner.register_command(Box::new(cmd));
+        self.inner.register_command(Arc::new(cmd));
         Ok(())
     }
 }
