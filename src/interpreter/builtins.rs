@@ -671,7 +671,23 @@ fn parse_loop_level(
 // ── cd ──────────────────────────────────────────────────────────────
 
 fn builtin_cd(args: &[String], state: &mut InterpreterState) -> Result<ExecResult, RustBashError> {
-    let target = if args.is_empty() {
+    // Skip -- if present
+    let effective_args: &[String] = if args.first().is_some_and(|a| a == "--") {
+        &args[1..]
+    } else {
+        args
+    };
+
+    // bash rejects cd with 2+ positional arguments
+    if effective_args.len() > 1 {
+        return Ok(ExecResult {
+            stderr: "cd: too many arguments\n".to_string(),
+            exit_code: 1,
+            ..ExecResult::default()
+        });
+    }
+
+    let target = if effective_args.is_empty() {
         // cd with no args → $HOME
         match state.env.get("HOME") {
             Some(v) if !v.value.as_scalar().is_empty() => v.value.as_scalar().to_string(),
@@ -683,7 +699,7 @@ fn builtin_cd(args: &[String], state: &mut InterpreterState) -> Result<ExecResul
                 });
             }
         }
-    } else if args[0] == "-" {
+    } else if effective_args[0] == "-" {
         // cd - → $OLDPWD
         match state.env.get("OLDPWD") {
             Some(v) if !v.value.as_scalar().is_empty() => v.value.as_scalar().to_string(),
@@ -696,13 +712,72 @@ fn builtin_cd(args: &[String], state: &mut InterpreterState) -> Result<ExecResul
             }
         }
     } else {
-        args[0].clone()
+        effective_args[0].clone()
     };
 
-    // Resolve path (relative to cwd)
-    let resolved = resolve_path(&state.cwd, &target);
+    // CDPATH support: if target is relative and not starting with ./,
+    // try CDPATH directories first.
+    let mut cd_printed_path = String::new();
+    let resolved = if !target.starts_with('/')
+        && !target.starts_with("./")
+        && !target.starts_with("../")
+        && target != "."
+        && target != ".."
+    {
+        if let Some(cdpath_var) = state.env.get("CDPATH") {
+            let cdpath = cdpath_var.value.as_scalar().to_string();
+            let mut found = None;
+            for dir in cdpath.split(':') {
+                let base = if dir.is_empty() { "." } else { dir };
+                let candidate = resolve_path(
+                    &state.cwd,
+                    &format!("{}/{}", base.trim_end_matches('/'), &target),
+                );
+                let path = Path::new(&candidate);
+                if state.fs.exists(path)
+                    && state
+                        .fs
+                        .stat(path)
+                        .is_ok_and(|m| m.node_type == NodeType::Directory)
+                {
+                    cd_printed_path = candidate.clone();
+                    found = Some(candidate);
+                    break;
+                }
+            }
+            found.unwrap_or_else(|| resolve_path(&state.cwd, &target))
+        } else {
+            resolve_path(&state.cwd, &target)
+        }
+    } else {
+        resolve_path(&state.cwd, &target)
+    };
 
-    // Validate the path exists and is a directory
+    // Validate intermediate path components (cd BAD/.. should fail)
+    if target.contains('/') && !target.starts_with('/') {
+        let components: Vec<&str> = target.split('/').collect();
+        let mut check_path = state.cwd.clone();
+        for (i, comp) in components.iter().enumerate() {
+            if *comp == "." || comp.is_empty() {
+                continue;
+            }
+            if *comp == ".." {
+                // .. is valid if we have a parent
+                continue;
+            }
+            check_path = resolve_path(&check_path, comp);
+            // Only check intermediate components, not the final target
+            if i < components.len() - 1 && !state.fs.exists(Path::new(&check_path)) {
+                return Ok(ExecResult {
+                    stderr: format!("cd: {target}: No such file or directory\n"),
+                    exit_code: 1,
+                    ..ExecResult::default()
+                });
+            }
+        }
+    }
+
+    // Validate the final path exists and is a directory
     let path = Path::new(&resolved);
     if !state.fs.exists(path) {
         return Ok(ExecResult {
@@ -737,8 +812,10 @@ fn builtin_cd(args: &[String], state: &mut InterpreterState) -> Result<ExecResul
         var.attrs.insert(VariableAttrs::EXPORTED);
     }
 
-    // If cd -, print the new directory
-    let stdout = if !args.is_empty() && args[0] == "-" {
+    // Print directory if cd - or CDPATH match
+    let stdout = if (!effective_args.is_empty() && effective_args[0] == "-")
+        || !cd_printed_path.is_empty()
+    {
         format!("{}\n", state.cwd)
     } else {
         String::new()
@@ -3512,6 +3589,7 @@ fn builtin_command(
             limits: &limits,
             network_policy: &network_policy,
             exec: None,
+            shell_opts: None,
         };
 
         let cmd = state.commands.get(name.as_str()).unwrap();
@@ -3655,6 +3733,7 @@ fn builtin_builtin(
             limits: &limits,
             network_policy: &network_policy,
             exec: None,
+            shell_opts: None,
         };
 
         let cmd_result = cmd.execute(&sub_args, &ctx);
@@ -3996,7 +4075,40 @@ fn builtin_pushd(
         return Ok(dirs_output(state));
     }
 
-    let arg = &args[0];
+    // Reject multiple arguments
+    let mut positional = Vec::new();
+    let mut saw_dashdash = false;
+    for arg in args {
+        if saw_dashdash {
+            positional.push(arg);
+        } else if arg == "--" {
+            saw_dashdash = true;
+        } else if arg == "-" {
+            positional.push(arg);
+        } else if arg.starts_with('-')
+            && !arg[1..].chars().next().is_some_and(|c| c.is_ascii_digit())
+            && !arg.starts_with('+')
+        {
+            // Invalid flag like -z
+            return Ok(ExecResult {
+                stderr: format!("pushd: {arg}: invalid option\n"),
+                exit_code: 2,
+                ..ExecResult::default()
+            });
+        } else {
+            positional.push(arg);
+        }
+    }
+
+    if positional.len() > 1 {
+        return Ok(ExecResult {
+            stderr: "pushd: too many arguments\n".to_string(),
+            exit_code: 1,
+            ..ExecResult::default()
+        });
+    }
+
+    let arg = positional.first().copied().unwrap_or(&args[0]);
 
     // pushd +N / -N: rotate stack
     if (arg.starts_with('+') || arg.starts_with('-'))
@@ -4057,6 +4169,19 @@ fn builtin_popd(
 
     if !args.is_empty() {
         let arg = &args[0];
+
+        // `--` terminates options
+        if arg == "--" {
+            // popd -- is just popd (default behavior)
+            let top = state.dir_stack.remove(0);
+            let result = builtin_cd(std::slice::from_ref(&top), state)?;
+            if result.exit_code != 0 {
+                state.dir_stack.insert(0, top);
+                return Ok(result);
+            }
+            return Ok(dirs_output(state));
+        }
+
         // popd +N / -N: remove Nth entry
         if (arg.starts_with('+') || arg.starts_with('-'))
             && let Ok(n) = arg[1..].parse::<usize>()
@@ -4085,6 +4210,13 @@ fn builtin_popd(
             }
             return Ok(dirs_output(state));
         }
+
+        // Invalid argument (not +N or -N)
+        return Ok(ExecResult {
+            stderr: format!("popd: {arg}: invalid argument\n"),
+            exit_code: 2,
+            ..ExecResult::default()
+        });
     }
 
     // Default: pop top and cd there
@@ -4111,6 +4243,14 @@ fn builtin_dirs(
 
     for arg in args {
         if let Some(flags) = arg.strip_prefix('-') {
+            if flags.is_empty() {
+                // bare "-" is not a valid argument
+                return Ok(ExecResult {
+                    stderr: "dirs: -: invalid option\n".to_string(),
+                    exit_code: 1,
+                    ..ExecResult::default()
+                });
+            }
             for c in flags.chars() {
                 match c {
                     'c' => clear = true,
@@ -4129,6 +4269,16 @@ fn builtin_dirs(
                     }
                 }
             }
+        } else if arg.starts_with('+') {
+            // +N is ok (not yet handled but valid syntax)
+            continue;
+        } else {
+            // Non-flag arguments are not accepted
+            return Ok(ExecResult {
+                stderr: format!("dirs: {arg}: invalid argument\n"),
+                exit_code: 1,
+                ..ExecResult::default()
+            });
         }
     }
 
@@ -4158,7 +4308,7 @@ fn builtin_dirs(
             } else {
                 entry.clone()
             };
-            stdout.push_str(&format!(" {i}\t{display}\n"));
+            stdout.push_str(&format!(" {i}  {display}\n"));
         }
     } else if per_line {
         for entry in &entries {

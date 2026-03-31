@@ -91,6 +91,8 @@ pub struct GlobOptions {
     /// Treat `**` as recursive directory match (globstar).
     /// When false, `**` is treated as `*`.
     pub globstar: bool,
+    /// Enable extended glob patterns: `@(...)`, `+(...)`, `*(...)`, `?(...)`, `!(...)`.
+    pub extglob: bool,
 }
 
 /// Trait abstracting all filesystem operations.

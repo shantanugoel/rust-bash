@@ -385,6 +385,7 @@ mod tests {
             limits,
             network_policy,
             exec: None,
+            shell_opts: None,
         }
     }
 

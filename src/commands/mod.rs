@@ -49,6 +49,8 @@ pub struct CommandContext<'a> {
     pub limits: &'a ExecutionLimits,
     pub network_policy: &'a NetworkPolicy,
     pub exec: Option<ExecCallback<'a>>,
+    /// Shell options (`set -o`), used by `test -o optname`.
+    pub shell_opts: Option<&'a crate::interpreter::ShellOpts>,
 }
 
 /// Support status of a command flag.
@@ -507,7 +509,21 @@ impl VirtualCommand for TouchCommand {
         let mut stderr = String::new();
         let mut exit_code = 0;
 
-        let files: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        // Parse args: skip flags before `--`, treat everything after `--` as filenames
+        let mut files: Vec<&str> = Vec::new();
+        let mut past_options = false;
+        for arg in args {
+            if past_options {
+                files.push(arg.as_str());
+            } else if arg == "--" {
+                past_options = true;
+            } else if arg.starts_with('-') && arg.len() > 1 {
+                // skip known flags (e.g. -c, -m, -a, etc.)
+                continue;
+            } else {
+                files.push(arg.as_str());
+            }
+        }
 
         if files.is_empty() {
             return CommandResult {
@@ -519,9 +535,6 @@ impl VirtualCommand for TouchCommand {
         }
 
         for file in files {
-            if file.starts_with('-') {
-                continue; // skip flags
-            }
             let path = if file.starts_with('/') {
                 std::path::PathBuf::from(file)
             } else {
@@ -1224,6 +1237,7 @@ mod tests {
             limits: &limits,
             network_policy: &np,
             exec: None,
+            shell_opts: None,
         };
         let result = EchoCommand.execute(&[], &ctx);
         assert_eq!(result.stdout, "\n");
@@ -1243,6 +1257,7 @@ mod tests {
             limits: &limits,
             network_policy: &np,
             exec: None,
+            shell_opts: None,
         };
         let result = EchoCommand.execute(&["hello".into(), "world".into()], &ctx);
         assert_eq!(result.stdout, "hello world\n");
@@ -1261,6 +1276,7 @@ mod tests {
             limits: &limits,
             network_policy: &np,
             exec: None,
+            shell_opts: None,
         };
         let result = EchoCommand.execute(&["-n".into(), "hello".into()], &ctx);
         assert_eq!(result.stdout, "hello");
@@ -1279,6 +1295,7 @@ mod tests {
             limits: &limits,
             network_policy: &np,
             exec: None,
+            shell_opts: None,
         };
         let result = EchoCommand.execute(&["-e".into(), "hello\\nworld".into()], &ctx);
         assert_eq!(result.stdout, "hello\nworld\n");
@@ -1297,6 +1314,7 @@ mod tests {
             limits: &limits,
             network_policy: &np,
             exec: None,
+            shell_opts: None,
         };
         let result = EchoCommand.execute(&["-e".into(), "a\\tb".into()], &ctx);
         assert_eq!(result.stdout, "a\tb\n");
@@ -1315,6 +1333,7 @@ mod tests {
             limits: &limits,
             network_policy: &np,
             exec: None,
+            shell_opts: None,
         };
         let result = EchoCommand.execute(&["-e".into(), "hello\\cworld".into()], &ctx);
         assert_eq!(result.stdout, "hello");
@@ -1333,6 +1352,7 @@ mod tests {
             limits: &limits,
             network_policy: &np,
             exec: None,
+            shell_opts: None,
         };
         let result = EchoCommand.execute(&["-z".into(), "hello".into()], &ctx);
         assert_eq!(result.stdout, "-z hello\n");
@@ -1351,6 +1371,7 @@ mod tests {
             limits: &limits,
             network_policy: &np,
             exec: None,
+            shell_opts: None,
         };
         let result = EchoCommand.execute(&["-ne".into(), "hello\\nworld".into()], &ctx);
         assert_eq!(result.stdout, "hello\nworld");
@@ -1369,6 +1390,7 @@ mod tests {
             limits: &limits,
             network_policy: &np,
             exec: None,
+            shell_opts: None,
         };
         assert_eq!(TrueCommand.execute(&[], &ctx).exit_code, 0);
     }
@@ -1386,6 +1408,7 @@ mod tests {
             limits: &limits,
             network_policy: &np,
             exec: None,
+            shell_opts: None,
         };
         assert_eq!(FalseCommand.execute(&[], &ctx).exit_code, 1);
     }

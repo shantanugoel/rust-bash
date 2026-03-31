@@ -422,6 +422,7 @@ fn expand_parameter(
     in_dq: bool,
 ) -> Result<bool, RustBashError> {
     let mut at_empty = false;
+    let ext = state.shopt_opts.extglob;
     match expr {
         ParameterExpr::Parameter {
             parameter,
@@ -561,7 +562,7 @@ fn expand_parameter(
                     .iter()
                     .map(|v| {
                         if let Some(pat) = pattern
-                            && let Some(idx) = pattern::shortest_suffix_match(v, pat)
+                            && let Some(idx) = pattern::shortest_suffix_match_ext(v, pat, ext)
                         {
                             v[..idx].to_string()
                         } else {
@@ -573,7 +574,7 @@ fn expand_parameter(
             } else {
                 let val = resolve_parameter(parameter, state, *indirect);
                 let result = if let Some(pat) = pattern {
-                    if let Some(idx) = pattern::shortest_suffix_match(&val, pat) {
+                    if let Some(idx) = pattern::shortest_suffix_match_ext(&val, pat, ext) {
                         val[..idx].to_string()
                     } else {
                         val
@@ -595,7 +596,7 @@ fn expand_parameter(
                     .iter()
                     .map(|v| {
                         if let Some(pat) = pattern
-                            && let Some(idx) = pattern::longest_suffix_match(v, pat)
+                            && let Some(idx) = pattern::longest_suffix_match_ext(v, pat, ext)
                         {
                             v[..idx].to_string()
                         } else {
@@ -607,7 +608,7 @@ fn expand_parameter(
             } else {
                 let val = resolve_parameter(parameter, state, *indirect);
                 let result = if let Some(pat) = pattern {
-                    if let Some(idx) = pattern::longest_suffix_match(&val, pat) {
+                    if let Some(idx) = pattern::longest_suffix_match_ext(&val, pat, ext) {
                         val[..idx].to_string()
                     } else {
                         val
@@ -629,7 +630,7 @@ fn expand_parameter(
                     .iter()
                     .map(|v| {
                         if let Some(pat) = pattern
-                            && let Some(len) = pattern::shortest_prefix_match(v, pat)
+                            && let Some(len) = pattern::shortest_prefix_match_ext(v, pat, ext)
                         {
                             v[len..].to_string()
                         } else {
@@ -641,7 +642,7 @@ fn expand_parameter(
             } else {
                 let val = resolve_parameter(parameter, state, *indirect);
                 let result = if let Some(pat) = pattern {
-                    if let Some(len) = pattern::shortest_prefix_match(&val, pat) {
+                    if let Some(len) = pattern::shortest_prefix_match_ext(&val, pat, ext) {
                         val[len..].to_string()
                     } else {
                         val
@@ -663,7 +664,7 @@ fn expand_parameter(
                     .iter()
                     .map(|v| {
                         if let Some(pat) = pattern
-                            && let Some(len) = pattern::longest_prefix_match(v, pat)
+                            && let Some(len) = pattern::longest_prefix_match_ext(v, pat, ext)
                         {
                             v[len..].to_string()
                         } else {
@@ -675,7 +676,7 @@ fn expand_parameter(
             } else {
                 let val = resolve_parameter(parameter, state, *indirect);
                 let result = if let Some(pat) = pattern {
-                    if let Some(len) = pattern::longest_prefix_match(&val, pat) {
+                    if let Some(len) = pattern::longest_prefix_match_ext(&val, pat, ext) {
                         val[len..].to_string()
                     } else {
                         val
@@ -763,22 +764,22 @@ fn expand_parameter(
             let do_replace = |val: &str| -> String {
                 match match_kind {
                     SubstringMatchKind::FirstOccurrence => {
-                        if let Some((start, end)) = pattern::first_match(val, pat) {
+                        if let Some((start, end)) = pattern::first_match_ext(val, pat, ext) {
                             format!("{}{}{}", &val[..start], repl, &val[end..])
                         } else {
                             val.to_string()
                         }
                     }
-                    SubstringMatchKind::Anywhere => pattern::replace_all(val, pat, repl),
+                    SubstringMatchKind::Anywhere => pattern::replace_all_ext(val, pat, repl, ext),
                     SubstringMatchKind::Prefix => {
-                        if let Some(len) = pattern::longest_prefix_match(val, pat) {
+                        if let Some(len) = pattern::longest_prefix_match_ext(val, pat, ext) {
                             format!("{repl}{}", &val[len..])
                         } else {
                             val.to_string()
                         }
                     }
                     SubstringMatchKind::Suffix => {
-                        if let Some(idx) = pattern::longest_suffix_match(val, pat) {
+                        if let Some(idx) = pattern::longest_suffix_match_ext(val, pat, ext) {
                             format!("{}{repl}", &val[..idx])
                         } else {
                             val.to_string()
@@ -1001,8 +1002,11 @@ fn expand_parameter_mut(
                             Some(0)
                         }
                     } else if raw < 0 {
-                        let t = max_key + 1 + raw;
-                        if t < 0 { None } else { Some(t as usize) }
+                        let t = max_key.checked_add(1).and_then(|v| v.checked_add(raw));
+                        match t {
+                            Some(v) if v >= 0 => Some(v as usize),
+                            _ => None,
+                        }
                     } else {
                         Some(raw as usize)
                     }
@@ -1208,9 +1212,18 @@ struct SplitWord {
 /// Finalize expanded words by performing IFS splitting on unquoted segments.
 fn finalize_with_ifs_split(words: Vec<WordInProgress>, state: &InterpreterState) -> Vec<SplitWord> {
     let ifs = get_ifs(state);
+    let extglob = state.shopt_opts.extglob;
     let mut result = Vec::new();
     for word in words {
         ifs_split_word(&word, &ifs, &mut result);
+    }
+    // When extglob is enabled, mark words containing extglob syntax as glob-eligible
+    if extglob {
+        for w in &mut result {
+            if !w.may_glob && has_extglob_pattern(&w.text) {
+                w.may_glob = true;
+            }
+        }
     }
     result
 }
@@ -1226,6 +1239,23 @@ fn finalize_no_split(words: Vec<WordInProgress>) -> Vec<String> {
 /// Check whether a character is a glob metacharacter.
 fn is_glob_meta(c: char) -> bool {
     matches!(c, '*' | '?' | '[')
+}
+
+/// Check whether a string contains extglob syntax like `@(`, `+(`, `*(`, `?(`, `!(`.
+fn has_extglob_pattern(s: &str) -> bool {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i + 1 < b.len() {
+        if b[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if matches!(b[i], b'@' | b'+' | b'*' | b'?' | b'!') && b[i + 1] == b'(' {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 /// IFS-split a single expanded word (represented as segments) into result words.
@@ -1373,7 +1403,16 @@ fn glob_expand_words(
         dotglob: state.shopt_opts.dotglob,
         nocaseglob: state.shopt_opts.nocaseglob,
         globstar: state.shopt_opts.globstar,
+        extglob: state.shopt_opts.extglob,
     };
+
+    // Parse GLOBIGNORE patterns (colon-separated list)
+    let globignore_patterns: Vec<String> = get_var(state, "GLOBIGNORE")
+        .filter(|s| !s.is_empty())
+        .map(|s| s.split(':').map(String::from).collect())
+        .unwrap_or_default();
+    let has_globignore = !globignore_patterns.is_empty();
+
     let mut result = Vec::new();
 
     for w in words {
@@ -1391,8 +1430,37 @@ fn glob_expand_words(
                         actual_value: matches.len(),
                     });
                 }
+                let before_len = result.len();
                 for p in &matches {
-                    result.push(p.to_string_lossy().into_owned());
+                    let s = p.to_string_lossy().into_owned();
+                    // Apply GLOBIGNORE filtering
+                    if has_globignore {
+                        let basename = s.rsplit('/').next().unwrap_or(&s);
+                        // When GLOBIGNORE is set, . and .. are automatically excluded
+                        if basename == "." || basename == ".." {
+                            continue;
+                        }
+                        // Match GLOBIGNORE patterns against the full path
+                        if globignore_patterns
+                            .iter()
+                            .any(|pat| pattern::glob_match_path(pat, &s))
+                        {
+                            continue;
+                        }
+                    }
+                    result.push(s);
+                }
+                // When GLOBIGNORE filters ALL matches, treat as no-match
+                if has_globignore && result.len() == before_len {
+                    if state.shopt_opts.failglob {
+                        return Err(RustBashError::FailGlob {
+                            pattern: w.text.clone(),
+                        });
+                    }
+                    if state.shopt_opts.nullglob {
+                        continue;
+                    }
+                    result.push(w.text.clone());
                 }
             }
             _ => {
@@ -1869,7 +1937,7 @@ fn resolve_indirect_value(target: &str, state: &InterpreterState) -> String {
         "#" => state.positional_params.len().to_string(),
         "?" => state.last_exit_code.to_string(),
         "-" => String::new(),
-        "$" => std::process::id().to_string(),
+        "$" => "1".to_string(),
         "!" => String::new(),
         _ => get_var(state, target).unwrap_or_default(),
     }
@@ -2031,10 +2099,19 @@ fn resolve_call_stack_element(name: &str, index: &str, state: &InterpreterState)
         "FUNCNAME" | "BASH_SOURCE" | "BASH_LINENO" => {}
         _ => return None,
     }
-    let idx = simple_arith_eval(index, state) as usize;
+    let raw_idx = simple_arith_eval(index, state);
     // The call stack is ordered innermost-last; bash indexes 0 = current (innermost).
     // Build a reversed view: index 0 = top of stack, last = bottom ("main").
     let len = state.call_stack.len();
+    let idx = if raw_idx < 0 {
+        let resolved = len as i64 + raw_idx;
+        if resolved < 0 {
+            return Some(String::new());
+        }
+        resolved as usize
+    } else {
+        raw_idx as usize
+    };
     if idx >= len {
         return Some(String::new());
     }

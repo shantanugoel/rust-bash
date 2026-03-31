@@ -360,6 +360,7 @@ builtin-bash.test:mapfile (truncate delim): -t
 builtin-bash.test:readarray (synonym for mapfile)
 builtin-bracket.test:( )
 builtin-bracket.test:! -a
+builtin-bracket.test:-a as unary operator (alias of -e)
 builtin-bracket.test:[ a -eq b ]
 builtin-bracket.test:== and = does not do glob
 builtin-bracket.test:( ) ! -a -o with system version of [
@@ -368,6 +369,7 @@ builtin-bracket.test:Bug regression
 builtin-bracket.test:[ compare with literal -f
 builtin-bracket.test:-d
 builtin-bracket.test:[ '(' foo ] is runtime syntax error
+builtin-bracket.test:-G and -O for effective user ID and group ID
 builtin-bracket.test:-h and -L test for symlink
 builtin-bracket.test:More negative numbers
 builtin-bracket.test:-n
@@ -377,10 +379,12 @@ builtin-bracket.test:no recursive arith [ 1+2 -eq 3 ]
 builtin-bracket.test:-nt -ot
 builtin-bracket.test:-o
 builtin-bracket.test:one arg: empty string is false.  Equivalent to -n.
+builtin-bracket.test:-ot and -nt
 builtin-bracket.test:Overflow error
 builtin-bracket.test:] syntax errors
 builtin-bracket.test:-t 1 for stdout
 builtin-bracket.test:test -b -c -S (block, character, socket)
+builtin-bracket.test:test -o for options
 builtin-bracket.test:test -s
 builtin-bracket.test:test -S
 builtin-bracket.test:test with extra args is syntax error
@@ -393,8 +397,12 @@ builtin-bracket.test:-z '>' implies two token lookahead
 builtin-cd.test:$OLDPWD
 builtin-cd.test:cd and $PWD
 builtin-cd.test:cd away from dir that was deleted
+builtin-cd.test:cd BAD/..
+builtin-cd.test:CDPATH is respected
 builtin-cd.test:cd permits double bare dash
 builtin-cd.test:cd to nonexistent dir
+builtin-cd.test:cd with 2 or more args is allowed (strict_arg_parse disabled)
+builtin-cd.test:cd with 2 or more args - with strict_arg_parse
 builtin-cd.test:cd with no arguments
 builtin-cd.test:cd - without OLDPWD
 builtin-cd.test:chdir is a synonym for cd - busybox ash
@@ -409,6 +417,7 @@ builtin-cd.test:unset PWD; then pwd
 builtin-dirs.test:cd replaces the lowest entry on the directory stack!
 builtin-dirs.test:dirs builtin
 builtin-dirs.test:dirs -c to clear the stack
+builtin-dirs.test:dirs does not take arguments
 builtin-dirs.test:dirs -l to print in long format, no tilde prefix
 builtin-dirs.test:dirs -p to print one entry per line
 builtin-dirs.test:dirs test converting true home directory to tilde
@@ -416,7 +425,10 @@ builtin-dirs.test:dirs test of path alias `..`
 builtin-dirs.test:dirs test of path alias `.`
 builtin-dirs.test:dirs tilde test when $HOME is exactly $PWD
 builtin-dirs.test:dirs to print using tilde-prefix format
+builtin-dirs.test:dirs -v to print numbered stack, one entry per line
+builtin-dirs.test:pushd does not take more than one argument
 builtin-dirs.test:pushd/popd
+builtin-dirs.test:pushd usage
 builtin-echo.test:\0
 builtin-echo.test:\c stops processing input
 builtin-echo.test:echo dashes
@@ -430,6 +442,7 @@ builtin-echo.test:echo -e with hex escape
 builtin-echo.test:echo -e with octal escape
 builtin-echo.test:echo -e with whitespace C escapes
 builtin-echo.test:echo -ez (invalid flag)
+builtin-echo.test:echo to redirected directory is an error
 builtin-echo.test:\u6
 builtin-eval-source.test:Eval
 builtin-eval-source.test:Eval in bash does tilde expansion in array
@@ -536,9 +549,11 @@ builtin-read.test:read /dev/null
 builtin-read.test:read -d -n - respects delimiter and splits
 builtin-read.test:read does not respect C backslash escapes
 builtin-read.test:read from empty file
+builtin-read.test:read from redirected directory is non-fatal error
 builtin-read.test:read line from here doc
 builtin-read.test:read -n 0
 builtin-read.test:read -n doesn't strip whitespace (bug fix)
+builtin-read.test:read -n from directory
 builtin-read.test:read -n from pipe
 builtin-read.test:read -N ignores delimiters
 builtin-read.test:read -n with invalid arg
@@ -575,6 +590,7 @@ builtin-type-bash.test:type -p builtin -> not found
 builtin-type-bash.test:type -t -> alias
 builtin-type-bash.test:type -t -> builtin
 builtin-type-bash.test:type -t control flow
+builtin-type-bash.test:type -t doesn't find non-executable (like command -v)
 builtin-type-bash.test:type -t -> function
 builtin-type.test:special builtins are called out
 builtin-type.test:type -> not found
@@ -610,6 +626,9 @@ case_.test:Multiple Patterns Match
 case_.test:Pattern ? matches 1 code point (many bytes), but not multiple code points
 command-parsing.test:Prefix env on assignment
 command-parsing.test:Prefix env on control flow
+command-parsing.test:Redirect on assignment (enabled 7/2019)
+command-parsing.test:Redirect on control flow (ignored in OSH)
+command-parsing.test:Redirect on control flow with ysh:all (no_parse_ignored)
 command-sub.test:Backtick
 command-sub.test:Backtick 2
 command-sub.test:case
@@ -696,10 +715,53 @@ exit-status.test:If subshell true WITH ARGUMENT
 exit-status.test:If subshell true WITH OUTPUT is different
 exit-status.test:More test cases with empty argv
 exit-status.test:Truncating 'return' status
+extglob-files.test:Extended glob as argument to ${undef:-} (dynamic globbing)
+extglob-files.test:Extended glob in same word as array
+extglob-files.test:Extended glob patterns with spaces
+extglob-files.test:Extended glob with word splitting
+extglob-files.test:failglob
+extglob-files.test:Filenames with spaces
+extglob-files.test:Glob other punctuation chars (lexer mode)
+extglob-files.test:!(*.h|*.cc) to match everything except C++
+extglob-files.test:In Array Literal and for loop
+extglob-files.test:?() matches 0 or 1
+extglob-files.test:*() matches 0 or more
+extglob-files.test:+() matches 1 or more
+extglob-files.test:@() matches exactly one of the patterns
+extglob-files.test:More glob escaping
+extglob-files.test:Nested extended glob pattern
+extglob-files.test:no_dash_glob
 extglob-files.test:No extended glob with simple_word_eval (YSH evaluation)
 extglob-files.test:noglob
+extglob-files.test:nullglob with extended glob
+extglob-files.test:Two adjacent alternations
+extglob-match.test:[[ $x == !($str) ]]
+extglob-match.test:adjacent extglob
+extglob-match.test:case with extglob
+extglob-match.test:Extended glob in ${x//pat/replace}
+extglob-match.test:Extended glob in ${x%PATTERN}
+extglob-match.test:extended glob of single unicode char
+extglob-match.test:extglob empty pattern
+extglob-match.test:extglob empty string
+extglob-match.test:extglob inside arg word
+extglob-match.test:extglob in variable
 extglob-match.test:extglob is not detected in regex!
+extglob-match.test:? matches 0 or 1
+extglob-match.test:* matches 0 or more
+extglob-match.test:+ matches 1 or more
+extglob-match.test:@ matches exactly one
+extglob-match.test:! matches none
+extglob-match.test:match is anchored
+extglob-match.test:nested @()
+extglob-match.test:nested extglob
+extglob-match.test:nested @() with quotes and vars
+extglob-match.test:No brace expansion in ==
 extglob-match.test:regular glob of single unicode char
+extglob-match.test:repeated match is anchored
+extglob-match.test:repetition with glob
+extglob-match.test:simple repetition with *(foo) and +(Foo)
+extglob-match.test:With extglob on, !($str) on the left or right of == has different meanings
+extglob-match.test:@() with variable arms
 fatal-errors.test:${undef} with nounset
 fatal-errors.test:Unrecoverable: ${undef?message}
 for-expr.test:Accepts { } syntax too
@@ -723,11 +785,33 @@ glob-bash.test:shopt -s failglob in loop context
 glob-bash.test:shopt -s nullglob
 globignore.test:. and .. always filtered when GLOBIGNORE is set
 globignore.test:Don't glob flags on file system with GLOBIGNORE
+globignore.test:Extended glob expansion combined with GLOBIGNORE
+globignore.test:Ignore *
+globignore.test:Ignore *.o:*.h
+globignore.test:Ignore single file src/__main__.py
+globignore.test:Ignore *.txt
+globignore.test:Ignore ?.txt
+globignore.test:Quoting GLOBIGNORE
+globignore.test:resetting globignore reverts to default behaviour
+globignore.test:treat escaped patterns literally
 glob.test:0 char glob -- does NOT work
+glob.test:1 char glob
+glob.test:: escaped
 glob.test:glob after "$@" expansion
+glob.test:glob after $@ expansion
+glob.test:Glob after part joining
+glob.test:glob after var expansion
+glob.test:Glob after var manipulation
 glob.test:glob backslash escape
 glob.test:glob double quote escape
+glob.test:glob double quotes
+glob.test:Glob flags on file system
+glob.test:glob inside array
+glob.test:Glob of negated unescaped [[] and []]
+glob.test:Glob of unescaped [[] and []]
 glob.test:glob single quote escape
+glob.test:Glob unicode char
+glob.test:glob with char class expression
 glob.test:\ in unquoted substitutions does not match a backslash
 glob.test:\ in unquoted substitutions escapes globchars
 glob.test:\ in unquoted substitutions is preserved
@@ -737,8 +821,10 @@ glob.test:looks like glob at the start, but isn't
 glob.test:looks like glob plus negation at the start, but isn't
 glob.test:pattern starting with . does not return . and ..
 glob.test:quoted var expansion with glob meta characters
+glob.test:set -o noglob
 glob.test:set -o noglob (bug #698)
 glob.test:Splitting/Globbing doesn't happen on local assignment
+glob.test:store literal globs in array then expand
 here-doc.test:Here doc as command prefix
 here-doc.test:Here Doc in if condition
 here-doc.test:Here doc in middle.  And redirects in the middle.
@@ -884,6 +970,8 @@ redirect-command.test:redirect subshell
 redirect-command.test:redirect while
 redirect-multi.test:File redirect without matching any file
 redirect-multi.test:Non-file redirects don't respect glob args (we differe from bash)
+redirect-multi.test:Redirect to ''
+redirect-multi.test:Redirect to $empty (in function body)
 redirect-multi.test:ysh behavior when glob doesn't match
 redirect.test:<&
 redirect.test:1>&2- (Bash bug: fail to restore closed fd)
@@ -894,14 +982,19 @@ redirect.test:2>&1 with no command
 redirect.test:: 3>&3-
 redirect.test:: 3>&3 (OSH regression)
 redirect.test:3>&- << EOF (OSH regression: fail to restore fds)
+redirect.test:>& and <& are the same
 redirect.test:can't mention big file descriptor
 redirect.test:Descriptor redirect with spaces
+redirect.test:: >/dev/null 2> / (OSH regression: fail to pop fd frame)
 redirect.test:Double digit fd (20> file)
+redirect.test:echo foo >&100 (OSH regression: does not fail with invalid fd 100)
+redirect.test:echo foo >&N where N is first unused fd
 redirect.test:exec {fd}>&- (OSH regression: fails to close fd)
 redirect.test:exec redirect then various builtins
 redirect.test:Filename redirect with spaces
 redirect.test:Named file descriptor
 redirect.test:noclobber can still write to non-regular files like /dev/null
+redirect.test:Nonexistent file
 redirect.test:Open descriptor with exec
 redirect.test:Open file on descriptor 3 and write to it many times
 redirect.test:Open file on descriptor 4 and write to it many times
@@ -909,6 +1002,8 @@ redirect.test:Open multiple descriptors with exec
 redirect.test:Parsing of x=1> and related cases
 redirect.test:Quoted filename redirect with spaces
 redirect.test:Redirect echo to stderr, and then redirect all of stdout somewhere.
+redirect.test:Redirect to empty string
+redirect.test:Redirect to file descriptor that's not open
 redir-order.test:echo `cat OSCFLAGS` "world" > OSCFLAGS (from Alpine imap)
 regex.test:BASH_REMATCH
 regex.test:Bug: Nix idiom with closing ) next to pattern
@@ -1034,6 +1129,7 @@ var-op-patsub.test:Left Anchored Pattern replacement with #
 var-op-patsub.test:patsub with [^]]
 var-op-patsub.test:Pattern is empty $foo$bar -- regression for infinite loop
 var-op-patsub.test:Pattern replacement
+var-op-patsub.test:Replace char class
 var-op-patsub.test:Replace fixed strings
 var-op-patsub.test:Replace hard glob
 var-op-patsub.test:Replace is longest match
@@ -1068,6 +1164,7 @@ var-op-strip.test:Remove shortest glob suffix
 var-op-strip.test:strip ?
 var-op-strip.test:strip all
 var-op-strip.test:strip * (bug regression)
+var-op-strip.test:Strip char class
 var-op-strip.test:strip none
 var-op-strip.test:strip unquoted and quoted ?
 var-op-strip.test:Test that you can remove everything with const

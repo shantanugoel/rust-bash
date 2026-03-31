@@ -7,7 +7,7 @@
 use crate::commands::{CommandContext, CommandResult};
 use crate::interpreter::pattern::glob_match;
 use crate::vfs::{NodeType, VirtualFs};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Evaluate a `test` / `[` expression from a list of string arguments.
 /// Returns exit code: 0 = true, 1 = false, 2 = error.
@@ -64,7 +64,8 @@ fn eval_not(args: &[String], ctx: &CommandContext) -> Result<(bool, usize), Stri
     }
     if args[0] == "!" {
         if args.len() < 2 {
-            return Err("argument expected".to_string());
+            // Single "!" → non-empty string → true (POSIX 1-arg rule)
+            return Ok((true, 1));
         }
         let (val, consumed) = eval_not(&args[1..], ctx)?;
         Ok((!val, 1 + consumed))
@@ -114,7 +115,7 @@ fn try_unary(op: &str, operand: &str, ctx: &CommandContext) -> Option<bool> {
         "-n" => Some(!operand.is_empty()),
 
         // File tests
-        "-e" => Some(file_exists(operand, ctx)),
+        "-a" | "-e" => Some(file_exists(operand, ctx)),
         "-f" => Some(file_is_regular(operand, ctx)),
         "-d" => Some(file_is_dir(operand, ctx)),
         "-L" | "-h" => Some(file_is_symlink(operand, ctx)),
@@ -122,8 +123,13 @@ fn try_unary(op: &str, operand: &str, ctx: &CommandContext) -> Option<bool> {
         "-r" => Some(file_exists(operand, ctx)), // always readable in VFS
         "-w" => Some(file_exists(operand, ctx)), // always writable in VFS
         "-x" => Some(file_exists(operand, ctx)), // always executable in VFS
-        "-b" | "-c" | "-p" | "-S" | "-u" | "-g" | "-k" | "-t" | "-G" | "-N" | "-O" => {
+        "-O" | "-G" => Some(file_exists(operand, ctx)), // always owned by current user in VFS
+        "-b" | "-c" | "-p" | "-S" | "-u" | "-g" | "-k" | "-t" | "-N" => {
             Some(false) // unsupported file tests always false
+        }
+        "-o" => {
+            // Check if shell option is enabled
+            Some(is_shell_option_set(operand, ctx))
         }
         "-v" => {
             // Shell variable is set — check array elements if name[index] form
@@ -173,7 +179,7 @@ fn try_unary(op: &str, operand: &str, ctx: &CommandContext) -> Option<bool> {
 }
 
 /// Try to evaluate a binary test. Returns None if `op` isn't a binary operator.
-fn try_binary(left: &str, op: &str, right: &str, _ctx: &CommandContext) -> Option<bool> {
+fn try_binary(left: &str, op: &str, right: &str, ctx: &CommandContext) -> Option<bool> {
     match op {
         // String comparisons
         "=" | "==" => Some(left == right),
@@ -195,8 +201,10 @@ fn try_binary(left: &str, op: &str, right: &str, _ctx: &CommandContext) -> Optio
         "-gt" => numeric_cmp(left, right, |a, b| a > b),
         "-ge" => numeric_cmp(left, right, |a, b| a >= b),
 
-        // File comparisons (not yet implemented for VFS)
-        "-ef" | "-nt" | "-ot" => Some(false),
+        // File comparisons using VFS metadata
+        "-ef" => Some(file_same_device_and_inode(left, right, ctx)),
+        "-nt" => Some(file_newer_than(left, right, ctx)),
+        "-ot" => Some(file_newer_than(right, left, ctx)),
 
         _ => None,
     }
@@ -349,6 +357,63 @@ fn file_size_nonzero(path_str: &str, ctx: &CommandContext) -> bool {
         .unwrap_or(false)
 }
 
+/// `-ef`: true if both paths resolve to the same file (same path after resolution).
+fn file_same_device_and_inode(left: &str, right: &str, ctx: &CommandContext) -> bool {
+    let l = resolve_test_path(left, ctx);
+    let r = resolve_test_path(right, ctx);
+    // In our VFS there are no real inodes; two paths are "the same file" if they
+    // resolve to the same canonical path and the file exists.
+    if !ctx.fs.exists(Path::new(&l)) || !ctx.fs.exists(Path::new(&r)) {
+        return false;
+    }
+    // Canonicalize both paths through the VFS
+    let lc = ctx
+        .fs
+        .canonicalize(Path::new(&l))
+        .unwrap_or_else(|_| PathBuf::from(&l));
+    let rc = ctx
+        .fs
+        .canonicalize(Path::new(&r))
+        .unwrap_or_else(|_| PathBuf::from(&r));
+    lc == rc
+}
+
+/// `-nt`: true if left is newer than right (or left exists and right does not).
+fn file_newer_than(left: &str, right: &str, ctx: &CommandContext) -> bool {
+    let l = resolve_test_path(left, ctx);
+    let r = resolve_test_path(right, ctx);
+    let l_meta = ctx.fs.stat(Path::new(&l));
+    let r_meta = ctx.fs.stat(Path::new(&r));
+    match (l_meta, r_meta) {
+        (Ok(lm), Ok(rm)) => lm.mtime > rm.mtime,
+        (Ok(_), Err(_)) => true, // left exists, right doesn't
+        _ => false,
+    }
+}
+
+/// `-o optname`: true if the named shell option is currently enabled.
+fn is_shell_option_set(name: &str, ctx: &CommandContext) -> bool {
+    if let Some(opts) = &ctx.shell_opts {
+        match name {
+            "errexit" | "errtrace" => opts.errexit,
+            "nounset" => opts.nounset,
+            "pipefail" => opts.pipefail,
+            "xtrace" => opts.xtrace,
+            "verbose" => opts.verbose,
+            "noexec" => opts.noexec,
+            "noclobber" => opts.noclobber,
+            "allexport" => opts.allexport,
+            "noglob" => opts.noglob,
+            "posix" => opts.posix,
+            "vi" => opts.vi_mode,
+            "emacs" => opts.emacs_mode,
+            _ => false,
+        }
+    } else {
+        false
+    }
+}
+
 // ── Shared helpers for extended test (used by walker.rs) ──────────
 
 /// Evaluate a unary predicate on a path/string for `[[ ]]`.
@@ -358,6 +423,7 @@ pub(crate) fn eval_unary_predicate(
     fs: &dyn VirtualFs,
     cwd: &str,
     env: &std::collections::HashMap<String, String>,
+    shell_opts: Option<&crate::interpreter::ShellOpts>,
 ) -> bool {
     use brush_parser::ast::UnaryPredicate::*;
 
@@ -393,7 +459,31 @@ pub(crate) fn eval_unary_predicate(
         StringHasZeroLength => operand.is_empty(),
         StringHasNonZeroLength => !operand.is_empty(),
         ShellVariableIsSetAndAssigned => env.contains_key(operand),
-        ShellOptionEnabled => false,
+        ShellOptionEnabled => {
+            if let Some(opts) = shell_opts {
+                match operand {
+                    "errexit" | "errtrace" => opts.errexit,
+                    "nounset" => opts.nounset,
+                    "pipefail" => opts.pipefail,
+                    "xtrace" => opts.xtrace,
+                    "verbose" => opts.verbose,
+                    "noexec" => opts.noexec,
+                    "noclobber" => opts.noclobber,
+                    "allexport" => opts.allexport,
+                    "noglob" => opts.noglob,
+                    "posix" => opts.posix,
+                    "vi" => opts.vi_mode,
+                    "emacs" => opts.emacs_mode,
+                    _ => false,
+                }
+            } else {
+                false
+            }
+        }
+        // -O/-G: always true if file exists (VFS has no user concept)
+        FileExistsAndOwnedByEffectiveGroupId | FileExistsAndOwnedByEffectiveUserId => {
+            fs.exists(Path::new(&resolve(operand)))
+        }
         // Unsupported file tests
         FileExistsAndIsBlockSpecialFile
         | FileExistsAndIsCharSpecialFile
@@ -402,9 +492,7 @@ pub(crate) fn eval_unary_predicate(
         | FileExistsAndIsFifo
         | FdIsOpenTerminal
         | FileExistsAndIsSetuid
-        | FileExistsAndOwnedByEffectiveGroupId
         | FileExistsAndModifiedSinceLastRead
-        | FileExistsAndOwnedByEffectiveUserId
         | FileExistsAndIsSocket
         | ShellVariableIsSetAndNameRef => false,
     }
@@ -417,8 +505,18 @@ pub(crate) fn eval_binary_predicate(
     left: &str,
     right: &str,
     pattern_match: bool,
+    fs: &dyn VirtualFs,
+    cwd: &str,
 ) -> bool {
     use brush_parser::ast::BinaryPredicate::*;
+
+    let resolve = |s: &str| -> String {
+        if s.starts_with('/') {
+            s.to_string()
+        } else {
+            format!("{}/{}", cwd.trim_end_matches('/'), s)
+        }
+    };
 
     match pred {
         StringExactlyMatchesString => left == right,
@@ -447,10 +545,39 @@ pub(crate) fn eval_binary_predicate(
         ArithmeticGreaterThanOrEqualTo => parse_nums(left, right).is_some_and(|(a, b)| a >= b),
         // Regex matching handled separately in extended test
         StringMatchesRegex | StringContainsSubstring => false,
-        // File comparisons not implemented
-        FilesReferToSameDeviceAndInodeNumbers
-        | LeftFileIsNewerOrExistsWhenRightDoesNot
-        | LeftFileIsOlderOrDoesNotExistWhenRightDoes => false,
+        // File comparisons using VFS metadata
+        FilesReferToSameDeviceAndInodeNumbers => {
+            let l = resolve(left);
+            let r = resolve(right);
+            if !fs.exists(Path::new(&l)) || !fs.exists(Path::new(&r)) {
+                return false;
+            }
+            let lc = fs
+                .canonicalize(Path::new(&l))
+                .unwrap_or_else(|_| PathBuf::from(&l));
+            let rc = fs
+                .canonicalize(Path::new(&r))
+                .unwrap_or_else(|_| PathBuf::from(&r));
+            lc == rc
+        }
+        LeftFileIsNewerOrExistsWhenRightDoesNot => {
+            let l = resolve(left);
+            let r = resolve(right);
+            match (fs.stat(Path::new(&l)), fs.stat(Path::new(&r))) {
+                (Ok(lm), Ok(rm)) => lm.mtime > rm.mtime,
+                (Ok(_), Err(_)) => true,
+                _ => false,
+            }
+        }
+        LeftFileIsOlderOrDoesNotExistWhenRightDoes => {
+            let l = resolve(left);
+            let r = resolve(right);
+            match (fs.stat(Path::new(&l)), fs.stat(Path::new(&r))) {
+                (Ok(lm), Ok(rm)) => lm.mtime < rm.mtime,
+                (Err(_), Ok(_)) => true,
+                _ => false,
+            }
+        }
     }
 }
 

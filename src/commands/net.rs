@@ -653,6 +653,7 @@ mod tests {
             limits,
             network_policy: np,
             exec: None,
+            shell_opts: None,
         }
     }
 

@@ -106,6 +106,8 @@ pub(crate) enum PersistentFd {
     DevNull,
     /// FD is closed.
     Closed,
+    /// FD is a duplicate of a standard fd (0=stdin, 1=stdout, 2=stderr).
+    DupStdFd(i32),
 }
 
 impl Variable {

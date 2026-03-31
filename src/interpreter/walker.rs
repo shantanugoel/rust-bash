@@ -1079,7 +1079,20 @@ fn execute_simple_command(
         }
 
         // 6. Handle stdin redirection
-        let effective_stdin = get_stdin_from_redirects(&redirects, state, stdin)?;
+        let effective_stdin = match get_stdin_from_redirects(&redirects, state, stdin) {
+            Ok(s) => s,
+            Err(RustBashError::RedirectFailed(msg)) => {
+                let mut result = ExecResult {
+                    stderr: format!("rust-bash: {msg}\n"),
+                    exit_code: 1,
+                    ..ExecResult::default()
+                };
+                state.last_exit_code = 1;
+                apply_output_redirects(&redirects, &mut result, state)?;
+                return Ok(result);
+            }
+            Err(e) => return Err(e),
+        };
 
         // Track last argument for $_ (last argument of the simple command).
         state.last_argument = last_arg.clone();
@@ -1573,7 +1586,13 @@ fn execute_case(
             for pattern_word in &case_item.patterns {
                 let pattern = expand_word_to_string_mut(pattern_word, state)?;
                 let matched_pattern = if state.shopt_opts.nocasematch {
-                    crate::interpreter::pattern::glob_match_nocase(&pattern, &value)
+                    if state.shopt_opts.extglob {
+                        crate::interpreter::pattern::extglob_match_nocase(&pattern, &value)
+                    } else {
+                        crate::interpreter::pattern::glob_match_nocase(&pattern, &value)
+                    }
+                } else if state.shopt_opts.extglob {
+                    crate::interpreter::pattern::extglob_match(&pattern, &value)
                 } else {
                     crate::interpreter::pattern::glob_match(&pattern, &value)
                 };
@@ -1874,6 +1893,7 @@ fn dispatch_command(
             limits: &limits,
             network_policy: &network_policy,
             exec: Some(&exec_callback),
+            shell_opts: Some(&state.shell_opts),
         };
 
         // xpg_echo: when enabled, echo interprets backslash escapes by default
@@ -1949,7 +1969,20 @@ fn execute_exec_builtin(
     }
 
     // Has command args → execute and exit
-    let effective_stdin = get_stdin_from_redirects(redirects, state, stdin)?;
+    let effective_stdin = match get_stdin_from_redirects(redirects, state, stdin) {
+        Ok(s) => s,
+        Err(RustBashError::RedirectFailed(msg)) => {
+            let result = ExecResult {
+                stderr: format!("rust-bash: {msg}\n"),
+                exit_code: 1,
+                ..ExecResult::default()
+            };
+            state.last_exit_code = 1;
+            state.should_exit = true;
+            return Ok(result);
+        }
+        Err(e) => return Err(e),
+    };
     let mut result = dispatch_command(&args[0], &args[1..], state, &effective_stdin)?;
     apply_output_redirects(redirects, &mut result, state)?;
     state.last_exit_code = result.exit_code;
@@ -1965,7 +1998,17 @@ fn exec_persistent_redirects(
     for redir in redirects {
         match redir {
             ast::IoRedirect::File(fd, kind, target) => {
-                let filename = redirect_target_filename(target, state)?;
+                let filename = match redirect_target_filename(target, state) {
+                    Ok(f) => f,
+                    Err(RustBashError::RedirectFailed(msg)) => {
+                        return Ok(ExecResult {
+                            stderr: format!("rust-bash: {msg}\n"),
+                            exit_code: 1,
+                            ..ExecResult::default()
+                        });
+                    }
+                    Err(e) => return Err(e),
+                };
                 let path = resolve_path(&state.cwd, &filename);
                 match kind {
                     ast::IoFileRedirectKind::Write | ast::IoFileRedirectKind::Clobber => {
@@ -2041,8 +2084,12 @@ fn exec_persistent_redirects(
                             // Dup: N>&M — copy M's destination to N
                             if let Some(entry) = state.persistent_fds.get(&target_fd).cloned() {
                                 state.persistent_fds.insert(fd_num, entry);
+                            } else if target_fd == 0 || target_fd == 1 || target_fd == 2 {
+                                // Standard fd without persistent redirect — store as dup
+                                state
+                                    .persistent_fds
+                                    .insert(fd_num, PersistentFd::DupStdFd(target_fd));
                             } else {
-                                // Target is a standard FD without persistent redirect — clear
                                 state.persistent_fds.remove(&fd_num);
                             }
                         }
@@ -2234,10 +2281,17 @@ fn get_stdin_from_redirects(
                     if is_dev_null(&path) || is_dev_zero(&path) || is_dev_full(&path) {
                         return Ok(String::new());
                     }
-                    let content = state
-                        .fs
-                        .read_file(Path::new(&path))
-                        .map_err(|e| RustBashError::Execution(e.to_string()))?;
+                    // Validate empty filename
+                    if filename.is_empty() {
+                        return Err(RustBashError::RedirectFailed(
+                            ": No such file or directory".to_string(),
+                        ));
+                    }
+                    let content = state.fs.read_file(Path::new(&path)).map_err(|_| {
+                        RustBashError::RedirectFailed(format!(
+                            "{filename}: No such file or directory"
+                        ))
+                    })?;
                     return Ok(String::from_utf8_lossy(&content).to_string());
                 }
                 // Handle <&N (DuplicateInput) for reading from persistent FDs
@@ -2257,7 +2311,7 @@ fn get_stdin_from_redirects(
                             PersistentFd::DevNull | PersistentFd::Closed => {
                                 return Ok(String::new());
                             }
-                            PersistentFd::OutputFile(_) => {}
+                            PersistentFd::OutputFile(_) | PersistentFd::DupStdFd(_) => {}
                         }
                     }
                 }
@@ -2339,6 +2393,13 @@ fn apply_output_redirects(
                 redirected_fds.insert(1);
                 redirected_fds.insert(2);
                 let filename = expand_word_to_string_mut(word, state)?;
+                if filename.is_empty() {
+                    result
+                        .stderr
+                        .push_str("rust-bash: : No such file or directory\n");
+                    result.exit_code = 1;
+                    break;
+                }
                 let path = resolve_path(&state.cwd, &filename);
 
                 // noclobber: block &> on existing file (append &>> is fine)
@@ -2442,10 +2503,32 @@ fn apply_file_redirect(
     state: &mut InterpreterState,
     deferred_errors: &mut Vec<String>,
 ) -> Result<bool, RustBashError> {
+    // Helper macro to catch RedirectFailed from redirect_target_filename
+    macro_rules! try_filename {
+        ($target:expr, $state:expr, $result:expr) => {
+            match redirect_target_filename($target, $state) {
+                Ok(f) => f,
+                Err(RustBashError::RedirectFailed(msg)) => {
+                    // Clear output for the redirected fd (since no file to write to)
+                    let fd_num = fd.unwrap_or(1);
+                    if fd_num == 1 {
+                        $result.stdout.clear();
+                    } else if fd_num == 2 {
+                        $result.stderr.clear();
+                    }
+                    $result.stderr.push_str(&format!("rust-bash: {msg}\n"));
+                    $result.exit_code = 1;
+                    return Ok(false);
+                }
+                Err(e) => return Err(e),
+            }
+        };
+    }
+
     match kind {
         ast::IoFileRedirectKind::Write | ast::IoFileRedirectKind::Clobber => {
             let fd_num = fd.unwrap_or(1);
-            let filename = redirect_target_filename(target, state)?;
+            let filename = try_filename!(target, state, result);
             let path = resolve_path(&state.cwd, &filename);
 
             // noclobber: `>` on existing file is an error; `>|` (Clobber) bypasses
@@ -2469,23 +2552,33 @@ fn apply_file_redirect(
         }
         ast::IoFileRedirectKind::Append => {
             let fd_num = fd.unwrap_or(1);
-            let filename = redirect_target_filename(target, state)?;
+            let filename = try_filename!(target, state, result);
             let path = resolve_path(&state.cwd, &filename);
             apply_write_redirect(fd_num, &path, result, state, true, deferred_errors)?;
         }
         ast::IoFileRedirectKind::DuplicateOutput => {
             let fd_num = fd.unwrap_or(1);
-            apply_duplicate_output(fd_num, target, result, state)?;
+            if !apply_duplicate_output(fd_num, target, result, state)? {
+                return Ok(false);
+            }
         }
         ast::IoFileRedirectKind::DuplicateInput => {
-            // <&N — handled in get_stdin_from_redirects for FD 0
+            let fd_num = fd.unwrap_or(0);
+            if fd_num == 0 {
+                // <&N for stdin — handled in get_stdin_from_redirects
+            } else {
+                // N<&M where N != 0 — acts like N>&M (duplicate)
+                if !apply_duplicate_output(fd_num, target, result, state)? {
+                    return Ok(false);
+                }
+            }
         }
         ast::IoFileRedirectKind::Read => {
             // Handled in get_stdin_from_redirects
         }
         ast::IoFileRedirectKind::ReadAndWrite => {
             let fd_num = fd.unwrap_or(0);
-            let filename = redirect_target_filename(target, state)?;
+            let filename = try_filename!(target, state, result);
             let path = resolve_path(&state.cwd, &filename);
             if !state.fs.exists(Path::new(&path)) {
                 state
@@ -2548,6 +2641,23 @@ fn apply_write_redirect(
         }
         result.exit_code = 1;
     } else {
+        // Check if path is a directory — redirect to directory should fail gracefully
+        let p = Path::new(path);
+        if state.fs.exists(p)
+            && let Ok(meta) = state.fs.stat(p)
+            && meta.node_type == crate::vfs::NodeType::Directory
+        {
+            let basename = path.rsplit('/').next().unwrap_or(path);
+            let display = if basename.is_empty() { path } else { basename };
+            deferred_errors.push(format!("rust-bash: {display}: Is a directory\n"));
+            if fd_num == 1 {
+                result.stdout.clear();
+            } else if fd_num == 2 {
+                result.stderr.clear();
+            }
+            result.exit_code = 1;
+            return Ok(());
+        }
         let content_bytes: Vec<u8> = if fd_num == 1 {
             // Prefer binary bytes when available (e.g. gzip output)
             if let Some(bytes) = result.stdout_bytes.take() {
@@ -2582,16 +2692,17 @@ fn write_to_persistent_fd(
 }
 
 /// Handle DuplicateOutput redirect (>&N, 2>&1, N>&M-, etc.)
+/// Returns Ok(true) to continue, Ok(false) if the redirect failed.
 fn apply_duplicate_output(
     fd_num: i32,
     target: &ast::IoFileRedirectTarget,
     result: &mut ExecResult,
     state: &mut InterpreterState,
-) -> Result<(), RustBashError> {
+) -> Result<bool, RustBashError> {
     let dup_target_str = match target {
         ast::IoFileRedirectTarget::Duplicate(word) => expand_word_to_string_mut(word, state)?,
         ast::IoFileRedirectTarget::Fd(target_fd) => target_fd.to_string(),
-        _ => return Ok(()),
+        _ => return Ok(true),
     };
 
     // Handle close: >&-
@@ -2601,7 +2712,7 @@ fn apply_duplicate_output(
         } else if fd_num == 2 {
             result.stderr.clear();
         }
-        return Ok(());
+        return Ok(true);
     }
 
     // Handle FD move: N>&M-
@@ -2618,14 +2729,29 @@ fn apply_duplicate_output(
                 state.persistent_fds.insert(source_fd, PersistentFd::Closed);
             }
         }
-        return Ok(());
+        return Ok(true);
     }
 
     // Standard duplication: N>&M
     if let Ok(target_fd) = dup_target_str.parse::<i32>() {
+        // Validate the target FD exists (0=stdin, 1=stdout, 2=stderr, or a persistent fd)
+        if target_fd != 0
+            && target_fd != 1
+            && target_fd != 2
+            && !state.persistent_fds.contains_key(&target_fd)
+        {
+            if fd_num == 1 {
+                result.stdout.clear();
+            }
+            result
+                .stderr
+                .push_str(&format!("rust-bash: {fd_num}: Bad file descriptor\n"));
+            result.exit_code = 1;
+            return Ok(false);
+        }
         apply_dup_fd(fd_num, target_fd, result, state)?;
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Duplicate target_fd to fd_num in the result streams.
@@ -2667,6 +2793,17 @@ fn apply_dup_fd(
                         result.stderr.clear();
                     }
                 }
+                PersistentFd::DupStdFd(std_fd) => {
+                    // Redirect fd_num to the standard fd that target_fd points to
+                    if *std_fd == 1 && fd_num == 2 {
+                        result.stdout.push_str(&result.stderr);
+                        result.stderr.clear();
+                    } else if *std_fd == 2 && fd_num == 1 {
+                        result.stderr.push_str(&result.stdout);
+                        result.stdout.clear();
+                    }
+                    // fd_num == *std_fd is a no-op (already going there)
+                }
                 _ => {}
             }
         }
@@ -2699,7 +2836,15 @@ fn redirect_target_filename(
     state: &mut InterpreterState,
 ) -> Result<String, RustBashError> {
     match target {
-        ast::IoFileRedirectTarget::Filename(word) => expand_word_to_string_mut(word, state),
+        ast::IoFileRedirectTarget::Filename(word) => {
+            let filename = expand_word_to_string_mut(word, state)?;
+            if filename.is_empty() {
+                return Err(RustBashError::RedirectFailed(
+                    ": No such file or directory".to_string(),
+                ));
+            }
+            Ok(filename)
+        }
         ast::IoFileRedirectTarget::Fd(fd) => Ok(fd.to_string()),
         ast::IoFileRedirectTarget::Duplicate(word) => expand_word_to_string_mut(word, state),
         // Only valid when called from within execute_simple_command's closure,
@@ -2884,13 +3029,17 @@ fn eval_extended_test_expr(
     match expr {
         ast::ExtendedTestExpr::And(left, right) => {
             let l = eval_extended_test_expr(left, state)?;
-            let r = eval_extended_test_expr(right, state)?;
-            Ok(l && r)
+            if !l {
+                return Ok(false);
+            }
+            eval_extended_test_expr(right, state)
         }
         ast::ExtendedTestExpr::Or(left, right) => {
             let l = eval_extended_test_expr(left, state)?;
-            let r = eval_extended_test_expr(right, state)?;
-            Ok(l || r)
+            if l {
+                return Ok(true);
+            }
+            eval_extended_test_expr(right, state)
         }
         ast::ExtendedTestExpr::Not(inner) => {
             let val = eval_extended_test_expr(inner, state)?;
@@ -2911,7 +3060,12 @@ fn eval_extended_test_expr(
                 .map(|(k, v)| (k.clone(), v.value.as_scalar().to_string()))
                 .collect();
             Ok(crate::commands::test_cmd::eval_unary_predicate(
-                pred, &operand, &*state.fs, &state.cwd, &env,
+                pred,
+                &operand,
+                &*state.fs,
+                &state.cwd,
+                &env,
+                Some(&state.shell_opts),
             ))
         }
         ast::ExtendedTestExpr::BinaryTest(pred, left_word, right_word) => {
@@ -2939,14 +3093,15 @@ fn eval_extended_test_expr(
             let right = expand_word_to_string_mut(right_word, state)?;
 
             // Pattern matching (glob) for == and != inside [[
+            // Extglob is always active in [[ ]] pattern context
             if state.shopt_opts.nocasematch {
                 // Case-insensitive pattern matching
                 let result = match pred {
                     ast::BinaryPredicate::StringExactlyMatchesPattern => {
-                        crate::interpreter::pattern::glob_match_nocase(&right, &left)
+                        crate::interpreter::pattern::extglob_match_nocase(&right, &left)
                     }
                     ast::BinaryPredicate::StringDoesNotExactlyMatchPattern => {
-                        !crate::interpreter::pattern::glob_match_nocase(&right, &left)
+                        !crate::interpreter::pattern::extglob_match_nocase(&right, &left)
                     }
                     ast::BinaryPredicate::StringExactlyMatchesString => {
                         left.eq_ignore_ascii_case(&right)
@@ -2954,15 +3109,25 @@ fn eval_extended_test_expr(
                     ast::BinaryPredicate::StringDoesNotExactlyMatchString => {
                         !left.eq_ignore_ascii_case(&right)
                     }
-                    _ => {
-                        crate::commands::test_cmd::eval_binary_predicate(pred, &left, &right, true)
-                    }
+                    _ => crate::commands::test_cmd::eval_binary_predicate(
+                        pred, &left, &right, true, &*state.fs, &state.cwd,
+                    ),
                 };
                 Ok(result)
             } else {
-                Ok(crate::commands::test_cmd::eval_binary_predicate(
-                    pred, &left, &right, true,
-                ))
+                // Use extglob-aware matching for pattern predicates
+                let result = match pred {
+                    ast::BinaryPredicate::StringExactlyMatchesPattern => {
+                        crate::interpreter::pattern::extglob_match(&right, &left)
+                    }
+                    ast::BinaryPredicate::StringDoesNotExactlyMatchPattern => {
+                        !crate::interpreter::pattern::extglob_match(&right, &left)
+                    }
+                    _ => crate::commands::test_cmd::eval_binary_predicate(
+                        pred, &left, &right, true, &*state.fs, &state.cwd,
+                    ),
+                };
+                Ok(result)
             }
         }
     }

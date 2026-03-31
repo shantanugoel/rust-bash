@@ -1359,6 +1359,7 @@ mod tests {
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,
+            shell_opts: None,
         };
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         SedCommand.execute(&args, &ctx)
@@ -1377,6 +1378,7 @@ mod tests {
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,
+            shell_opts: None,
         };
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         SedCommand.execute(&args, &ctx)

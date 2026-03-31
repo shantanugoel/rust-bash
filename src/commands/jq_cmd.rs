@@ -504,6 +504,7 @@ mod tests {
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,
+            shell_opts: None,
         };
         JqCommand.execute(&args, &ctx)
     }

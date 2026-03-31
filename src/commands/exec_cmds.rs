@@ -909,6 +909,7 @@ mod tests {
             limits,
             network_policy,
             exec,
+            shell_opts: None,
         }
     }
 

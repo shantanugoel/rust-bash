@@ -130,7 +130,12 @@ enum CaseOutcome {
 // ---------------------------------------------------------------------------
 
 fn execute_oils_case(case: &OilsTestCase) -> Option<String> {
-    let env_map = common::base_env();
+    let mut env_map = common::base_env();
+
+    // Provide $TMP and $REPO_ROOT variables that many oils spec tests expect.
+    // $TMP points to a writable temp directory, $REPO_ROOT to the VFS root.
+    env_map.insert("TMP".into(), "/_tmp".into());
+    env_map.insert("REPO_ROOT".into(), "/".into());
 
     let mut builder = RustBashBuilder::new()
         .env(env_map)
@@ -149,6 +154,9 @@ fn execute_oils_case(case: &OilsTestCase) -> Option<String> {
             return Some(format!("[{}] Failed to build shell: {e}", case.name));
         }
     };
+
+    // Pre-create directories that oils spec tests expect to exist.
+    let _ = sh.exec("mkdir -p /_tmp _tmp /_tmp/spec-tmp _tmp/spec-tmp");
 
     match sh.exec(&case.code) {
         Ok(r) => {

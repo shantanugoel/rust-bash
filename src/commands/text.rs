@@ -4911,6 +4911,7 @@ mod tests {
             limits,
             network_policy,
             exec: None,
+            shell_opts: None,
         }
     }
 
@@ -5094,6 +5095,7 @@ mod tests {
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,
+            shell_opts: None,
         };
         let r = GrepCommand.execute(&["-r".into(), "hello".into()], &c);
         assert_eq!(r.exit_code, 0);
@@ -5121,6 +5123,7 @@ mod tests {
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,
+            shell_opts: None,
         };
         let r = GrepCommand.execute(&["-r".into(), "--include=*.txt".into(), "hello".into()], &c);
         assert_eq!(r.exit_code, 0);
@@ -5147,6 +5150,7 @@ mod tests {
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,
+            shell_opts: None,
         };
         let r = GrepCommand.execute(&["-r".into(), "--exclude=*.log".into(), "error".into()], &c);
         assert_eq!(r.exit_code, 0);
@@ -5389,6 +5393,7 @@ mod tests {
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,
+            shell_opts: None,
         };
         let r = GrepCommand.execute(&["-rin".into(), "hello".into()], &c);
         assert_eq!(r.exit_code, 0);
@@ -5581,6 +5586,7 @@ mod tests {
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,
+            shell_opts: None,
         };
         let r = GrepCommand.execute(&["-r".into(), "zzzzz".into()], &c);
         assert_eq!(r.exit_code, 1);

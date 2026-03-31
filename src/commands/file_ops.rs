@@ -1314,6 +1314,7 @@ mod tests {
             limits,
             network_policy,
             exec: None,
+            shell_opts: None,
         }
     }
 
@@ -1472,6 +1473,7 @@ mod tests {
             limits: &limits,
             network_policy: &np,
             exec: None,
+            shell_opts: None,
         };
         let r = TeeCommand.execute(&["output.txt".into()], &c);
         assert_eq!(r.exit_code, 0);
@@ -1495,6 +1497,7 @@ mod tests {
             limits: &limits,
             network_policy: &np,
             exec: None,
+            shell_opts: None,
         };
         let r = TeeCommand.execute(&["-a".into(), "file1.txt".into()], &c);
         assert_eq!(r.exit_code, 0);

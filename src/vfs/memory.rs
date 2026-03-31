@@ -862,7 +862,9 @@ impl VirtualFs for InMemoryFs {
 // Glob tree walk
 // ---------------------------------------------------------------------------
 
-use crate::interpreter::pattern::{glob_match, glob_match_nocase};
+use crate::interpreter::pattern::{
+    extglob_match, extglob_match_nocase, glob_match, glob_match_nocase,
+};
 
 /// Recursively collect filesystem paths matching a glob pattern.
 ///
@@ -932,7 +934,11 @@ fn glob_collect(
                 if name.starts_with('.') && !effective_pattern.starts_with('.') && !opts.dotglob {
                     continue;
                 }
-                let matched = if opts.nocaseglob {
+                let matched = if opts.extglob && opts.nocaseglob {
+                    extglob_match_nocase(effective_pattern, name)
+                } else if opts.extglob {
+                    extglob_match(effective_pattern, name)
+                } else if opts.nocaseglob {
                     glob_match_nocase(effective_pattern, name)
                 } else {
                     glob_match(effective_pattern, name)

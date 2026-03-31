@@ -56,6 +56,10 @@ pub enum RustBashError {
     FailGlob {
         pattern: String,
     },
+    /// A redirect failure (e.g. nonexistent input file, empty filename).
+    /// Aborts the current command with exit code 1, reports error on stderr,
+    /// but does NOT exit the script.
+    RedirectFailed(String),
     LimitExceeded {
         limit_name: &'static str,
         limit_value: usize,
@@ -77,6 +81,7 @@ impl fmt::Display for RustBashError {
             RustBashError::FailGlob { pattern } => {
                 write!(f, "no match: {pattern}")
             }
+            RustBashError::RedirectFailed(msg) => write!(f, "rust-bash: {msg}"),
             RustBashError::LimitExceeded {
                 limit_name,
                 limit_value,

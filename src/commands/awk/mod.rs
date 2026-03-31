@@ -253,6 +253,7 @@ mod tests {
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,
+            shell_opts: None,
         };
         let args = vec![program.to_string()];
         AwkCommand.execute(&args, &ctx)
@@ -272,6 +273,7 @@ mod tests {
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,
+            shell_opts: None,
         };
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         AwkCommand.execute(&args, &ctx)
@@ -295,6 +297,7 @@ mod tests {
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,
+            shell_opts: None,
         };
         let mut args: Vec<String> = vec![program.to_string()];
         for (name, _) in files {
@@ -443,6 +446,7 @@ mod tests {
             limits: &limits,
             network_policy: &NetworkPolicy::default(),
             exec: None,
+            shell_opts: None,
         };
         let args = vec!["-f".to_string(), "prog.awk".to_string()];
         let r = AwkCommand.execute(&args, &ctx);
