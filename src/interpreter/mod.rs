@@ -53,7 +53,7 @@ pub enum VariableValue {
 }
 
 impl VariableValue {
-    /// Return the scalar value, or element [0] for indexed arrays,
+    /// Return the scalar value, or element \[0\] for indexed arrays,
     /// or empty string for associative arrays (matches bash behavior).
     pub fn as_scalar(&self) -> &str {
         match self {
