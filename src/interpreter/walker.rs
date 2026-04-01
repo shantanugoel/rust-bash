@@ -1013,12 +1013,26 @@ fn execute_simple_command(
                                 if let Some(idx_word) = opt_idx_word {
                                     let idx_str = expand_word_to_string_mut(idx_word, state)?;
                                     let first = vals.first().cloned().unwrap_or_default();
-                                    parts.push(format!("[{idx_str}]={first}"));
+                                    if first.is_empty() {
+                                        parts.push(format!("[{idx_str}]=''"));
+                                    } else {
+                                        parts.push(format!("[{idx_str}]={first}"));
+                                    }
                                     for v in vals.into_iter().skip(1) {
-                                        parts.push(v);
+                                        if v.is_empty() {
+                                            parts.push("''".to_string());
+                                        } else {
+                                            parts.push(v);
+                                        }
                                     }
                                 } else {
-                                    parts.extend(vals);
+                                    for v in vals {
+                                        if v.is_empty() {
+                                            parts.push("''".to_string());
+                                        } else {
+                                            parts.push(v);
+                                        }
+                                    }
                                 }
                             }
                             args.push(format!("{name}=({})", parts.join(" ")));
@@ -1182,6 +1196,8 @@ fn execute_simple_command(
     // command, not the assignment error.
     // Re-expand each assignment in order so preceding bindings are visible
     // (e.g. FOO=foo BAR="$FOO" cmd → BAR sees FOO=foo).
+    // Array element assignments (e.g. b[0]=2) are silently ignored in env
+    // binding context — bash does not export them.
     let mut saved: Vec<(String, Option<Variable>)> = Vec::new();
     let mut prefix_stderr = String::new();
     for (raw_assign, append) in &raw_assignments {
@@ -1192,6 +1208,18 @@ fn execute_simple_command(
                 continue;
             }
         };
+        // Skip array assignments in env binding context (bash ignores them)
+        if matches!(
+            a,
+            Assignment::ArrayElement { .. }
+                | Assignment::AppendArrayElement { .. }
+                | Assignment::IndexedArray { .. }
+                | Assignment::AppendArray { .. }
+                | Assignment::AssocArray { .. }
+                | Assignment::AppendAssocArray { .. }
+        ) {
+            continue;
+        }
         saved.push((a.name().to_string(), state.env.get(a.name()).cloned()));
         let mut dummy = ExecResult::default();
         apply_assignment_shell_error(a.clone(), state, &mut dummy)?;

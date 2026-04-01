@@ -773,7 +773,7 @@ impl<'a> Parser<'a> {
                         self.advance();
                         let rhs = self.parse_assignment(state)?;
                         let lhs = if let Some(ref sub) = raw_subscript {
-                            read_array_element(state, &name, sub)
+                            read_array_element(state, &name, sub)?
                         } else {
                             read_var(state, &name)?
                         };
@@ -1131,7 +1131,7 @@ impl<'a> Parser<'a> {
                 let name = self.ident_name(tok).to_string();
                 if self.peek() == Some(TokenKind::LBracket) {
                     let raw_sub = self.extract_raw_subscript()?;
-                    let old = read_array_element(state, &name, &raw_sub);
+                    let old = read_array_element(state, &name, &raw_sub)?;
                     let val = old.wrapping_add(1);
                     write_array_element(state, &name, &raw_sub, val)?;
                     Ok(val)
@@ -1147,7 +1147,7 @@ impl<'a> Parser<'a> {
                 let name = self.ident_name(tok).to_string();
                 if self.peek() == Some(TokenKind::LBracket) {
                     let raw_sub = self.extract_raw_subscript()?;
-                    let old = read_array_element(state, &name, &raw_sub);
+                    let old = read_array_element(state, &name, &raw_sub)?;
                     let val = old.wrapping_sub(1);
                     write_array_element(state, &name, &raw_sub, val)?;
                     Ok(val)
@@ -1425,7 +1425,11 @@ fn is_assoc_array(state: &InterpreterState, name: &str) -> bool {
 /// For associative arrays, the raw subscript is used as a string key.
 /// For indexed arrays, it is evaluated as an arithmetic expression.
 /// Checks nounset if enabled.
-fn read_array_element(state: &mut InterpreterState, name: &str, raw_subscript: &str) -> i64 {
+fn read_array_element(
+    state: &mut InterpreterState,
+    name: &str,
+    raw_subscript: &str,
+) -> Result<i64, RustBashError> {
     use crate::interpreter::VariableValue;
     let resolved_name = crate::interpreter::resolve_nameref_or_self(name, state);
 
@@ -1446,7 +1450,7 @@ fn read_array_element(state: &mut InterpreterState, name: &str, raw_subscript: &
     };
 
     let val_str = match kind {
-        VarKind::Missing => return 0,
+        VarKind::Missing => return Ok(0),
         VarKind::Assoc => {
             let key = strip_assoc_quotes(raw_subscript);
             match state.env.get(&resolved_name) {
@@ -1468,7 +1472,7 @@ fn read_array_element(state: &mut InterpreterState, name: &str, raw_subscript: &
                             let max_key = map.keys().next_back().copied().unwrap_or(0);
                             let resolved = max_key as i64 + 1 + index;
                             if resolved < 0 {
-                                return 0;
+                                return Ok(0);
                             }
                             resolved as usize
                         } else {
@@ -1498,7 +1502,31 @@ fn read_array_element(state: &mut InterpreterState, name: &str, raw_subscript: &
             }
         }
     };
-    val_str.parse::<i64>().unwrap_or(0)
+    if val_str.is_empty() {
+        return Ok(0);
+    }
+    match val_str.parse::<i64>() {
+        Ok(v) => Ok(v),
+        Err(_) => {
+            // Guard against infinite recursion (e.g. a[0]="a[0]").
+            use std::cell::Cell;
+            thread_local! {
+                static DEPTH: Cell<usize> = const { Cell::new(0) };
+            }
+            DEPTH.with(|d| {
+                let cur = d.get();
+                if cur >= 10 {
+                    return Err(RustBashError::Execution(format!(
+                        "{name}[{raw_subscript}]: recursive evaluation depth exceeded"
+                    )));
+                }
+                d.set(cur + 1);
+                let result = eval_arithmetic(&val_str, state);
+                d.set(cur);
+                result
+            })
+        }
+    }
 }
 
 /// Like `read_array_element`, but returns a `Result` to propagate nounset errors.
@@ -1513,7 +1541,7 @@ fn read_array_element_checked(
             "{name}[{raw_subscript}]: unbound variable"
         )));
     }
-    Ok(read_array_element(state, name, raw_subscript))
+    read_array_element(state, name, raw_subscript)
 }
 
 /// Write a value to a specific array element.

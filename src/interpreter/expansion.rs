@@ -907,7 +907,10 @@ fn expand_parameter(
                 push_segment(words, &result, in_dq, in_dq);
             }
         }
-        ParameterExpr::VariableNames { prefix, .. } => {
+        ParameterExpr::VariableNames {
+            prefix,
+            concatenate,
+        } => {
             let mut names: Vec<String> = state
                 .env
                 .keys()
@@ -915,7 +918,24 @@ fn expand_parameter(
                 .cloned()
                 .collect();
             names.sort();
-            push_segment(words, &names.join(" "), in_dq, in_dq);
+            if *concatenate {
+                // ${!prefix*} — join with IFS[0], single word
+                let sep = match get_var(state, "IFS") {
+                    Some(s) => s.chars().next().map(|c| c.to_string()).unwrap_or_default(),
+                    None => " ".to_string(),
+                };
+                push_segment(words, &names.join(&sep), in_dq, in_dq);
+            } else if names.is_empty() {
+                at_empty = true;
+            } else {
+                // ${!prefix@} — each name becomes a separate word
+                for (i, name) in names.iter().enumerate() {
+                    if i > 0 {
+                        start_new_word(words);
+                    }
+                    push_segment(words, name, in_dq, in_dq);
+                }
+            }
         }
         ParameterExpr::MemberKeys {
             variable_name,
@@ -3133,6 +3153,27 @@ fn expand_pattern_string(pat: &str, state: &InterpreterState) -> Result<String, 
 
     while let Some(c) = chars.next() {
         match c {
+            '\\' => {
+                // Backslash escape: for quote characters (' and "), consume the
+                // backslash to prevent entering quote mode. For all other
+                // characters, pass backslash through to the glob engine.
+                // NOTE: `\\'...'` (escaped backslash before quoted string) is
+                // not handled — the second `\` would consume the quote. This is
+                // extremely rare in practice and the parser typically resolves
+                // `\\` before it reaches this function.
+                if let Some(&next) = chars.peek() {
+                    if next == '\'' || next == '"' {
+                        chars.next();
+                        // Push the character bare (not a glob metachar)
+                        result.push(next);
+                    } else {
+                        // Pass backslash through for the glob engine
+                        result.push('\\');
+                    }
+                } else {
+                    result.push('\\');
+                }
+            }
             '\'' => {
                 // Single quote: take content literally, escape glob chars
                 for ch in chars.by_ref() {

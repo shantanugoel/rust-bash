@@ -305,6 +305,7 @@ fn byte_offset_of_nth_token(s: &str, n: usize) -> usize {
 fn parse_multiline_block(lines: &[&str]) -> (String, usize) {
     let mut result = String::new();
     let mut consumed = 0;
+    let mut line_count = 0;
     for line in lines {
         if *line == "## END" {
             consumed += 1; // consume the terminator
@@ -315,12 +316,13 @@ fn parse_multiline_block(lines: &[&str]) -> (String, usize) {
             break;
         }
         consumed += 1;
-        if !result.is_empty() {
+        if line_count > 0 {
             result.push('\n');
         }
         result.push_str(line);
+        line_count += 1;
     }
-    if !result.is_empty() {
+    if line_count > 0 {
         result.push('\n');
     }
     (result, consumed)
@@ -491,5 +493,12 @@ pub fn run_parser_unit_tests() {
         assert_eq!(file.cases[0].expected_stdout, Some("1\n1\n0\n".to_string()));
     }
 
-    eprintln!("--- oils_format parser: all 21 unit tests passed");
+    // STDOUT block with empty first line
+    {
+        let input = "#### test\necho; echo 5\n## STDOUT:\n\n5\n## END\n";
+        let file = parse_oils_file(input);
+        assert_eq!(file.cases[0].expected_stdout, Some("\n5\n".to_string()));
+    }
+
+    eprintln!("--- oils_format parser: all 22 unit tests passed");
 }

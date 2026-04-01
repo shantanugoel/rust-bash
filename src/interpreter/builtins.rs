@@ -1329,7 +1329,53 @@ fn builtin_readonly(
     args: &[String],
     state: &mut InterpreterState,
 ) -> Result<ExecResult, RustBashError> {
-    if args.is_empty() || args == ["-p"] {
+    // Parse flags: -p (print), -a (indexed array), -A (associative array)
+    let mut print_mode = false;
+    let mut make_indexed_array = false;
+    let mut make_assoc_array = false;
+    let mut var_args: Vec<&String> = Vec::new();
+
+    for arg in args {
+        if let Some(flags) = arg.strip_prefix('-') {
+            if flags.is_empty() {
+                var_args.push(arg);
+                continue;
+            }
+            for c in flags.chars() {
+                match c {
+                    'p' => print_mode = true,
+                    'a' => make_indexed_array = true,
+                    'A' => make_assoc_array = true,
+                    _ => {}
+                }
+            }
+        } else {
+            var_args.push(arg);
+        }
+    }
+
+    if print_mode {
+        if var_args.is_empty() {
+            // readonly -p → print all readonly variables
+            let mut lines: Vec<String> = state
+                .env
+                .iter()
+                .filter(|(_, v)| v.readonly())
+                .map(|(k, v)| format_declare_line(k, v))
+                .collect();
+            lines.sort();
+            return Ok(ExecResult {
+                stdout: lines.join(""),
+                ..ExecResult::default()
+            });
+        }
+        // readonly -p varname → bash outputs nothing (bash bug: no per-var
+        // readonly -p). We match this behavior.
+        return Ok(ExecResult::default());
+    }
+
+    if var_args.is_empty() {
+        // readonly with no args and no -p → same as readonly -p
         let mut lines: Vec<String> = state
             .env
             .iter()
@@ -1345,10 +1391,7 @@ fn builtin_readonly(
 
     let mut exit_code = 0;
     let mut stderr = String::new();
-    for arg in args {
-        if arg.starts_with('-') {
-            continue; // skip flags
-        }
+    for arg in var_args {
         if let Err(msg) = validate_var_arg(arg, "readonly") {
             stderr.push_str(&msg);
             exit_code = 1;
@@ -1361,27 +1404,30 @@ fn builtin_readonly(
                 .map(|v| v.value.as_scalar().to_string())
                 .unwrap_or_default();
             let new_val = format!("{current}{value}");
-            set_variable(state, name, new_val)?;
+            if let Err(e) = set_variable(state, name, new_val) {
+                stderr.push_str(&format!("{e}\n"));
+                exit_code = 1;
+                continue;
+            }
             if let Some(var) = state.env.get_mut(name) {
                 var.attrs.insert(VariableAttrs::READONLY);
             }
         } else if let Some((name, value)) = arg.split_once('=') {
-            set_variable(state, name, value.to_string())?;
+            if let Err(e) = set_variable(state, name, value.to_string()) {
+                stderr.push_str(&format!("{e}\n"));
+                exit_code = 1;
+                continue;
+            }
             if let Some(var) = state.env.get_mut(name) {
                 var.attrs.insert(VariableAttrs::READONLY);
             }
         } else {
-            // Mark existing variable as readonly
+            // Mark existing variable as readonly (and set array type if requested)
+            let flag_attrs = VariableAttrs::READONLY;
+            declare_without_value(state, arg, flag_attrs, make_assoc_array, make_indexed_array)?;
+            // Ensure READONLY is always set even if variable already existed
             if let Some(var) = state.env.get_mut(arg.as_str()) {
                 var.attrs.insert(VariableAttrs::READONLY);
-            } else {
-                state.env.insert(
-                    arg.clone(),
-                    Variable {
-                        value: VariableValue::Scalar(String::new()),
-                        attrs: VariableAttrs::READONLY,
-                    },
-                );
             }
         }
     }

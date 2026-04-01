@@ -101,6 +101,7 @@ arith.test:Preincrement
 arith.test:Recursive name evaluation is a result of runtime parse/eval
 arith.test:result of ArithSub -- array[0] decay
 arith.test:result of ArithSub -- assoc[0] decay
+arith.test:s[0] with string '12 34'
 arith.test:s[0] with string 42
 arith.test:s[0] with string abc
 arith.test:Side Effect in Array Indexing
@@ -273,6 +274,7 @@ assign-extended.test:declare -p var
 assign-extended.test:declare -p var (exit status)
 assign-extended.test:dynamic array parsing is not allowed
 assign-extended.test:dynamic flag in array in assign builtin
+assign-extended.test:Env bindings shouldn't contain array assignments
 assign-extended.test:function name with /
 assign-extended.test:invalid var name
 assign-extended.test:local -a
@@ -1262,6 +1264,7 @@ tilde.test:strict tilde
 tilde.test:tilde expansion of word after redirect
 var-num.test:In function
 var-op-bash.test:${array@Q} and ${array[@]@Q}
+var-op-bash.test:${!prefix@} ${!prefix*} yields sorted array of var names
 var-op-bash.test:${!prefix@} matches var name (regression)
 var-op-bash.test:${var@a} error conditions
 var-op-bash.test:${var@a} for attributes
@@ -1322,6 +1325,7 @@ var-op-strip.test:Remove shortest glob prefix
 var-op-strip.test:Remove shortest glob suffix
 var-op-strip.test:strip ?
 var-op-strip.test:strip all
+var-op-strip.test:strip all unicode
 var-op-strip.test:strip * (bug regression)
 var-op-strip.test:Strip char class
 var-op-strip.test:strip none
@@ -1390,6 +1394,7 @@ var-sub-quote.test:$'' allowed within VarSub arguments
 var-sub-quote.test:"${empty:-}"
 var-sub-quote.test:${empty:-}
 var-sub-quote.test:"${undef-'c d'}" and "${foo%'c d'}" are parsed differently
+var-sub-quote.test:array with empty values
 var-sub-quote.test:comparison: :- operator with single quoted arg
 var-sub-quote.test:Inner double quotes
 var-sub-quote.test:Inner double quotes, outer double quotes
@@ -1413,6 +1418,8 @@ var-sub-quote.test:/ operator with single quoted arg (causes syntax error in reg
 var-sub-quote.test:# operator with single quoted arg (dash/ash and bash/mksh disagree, reported by Crestwave)
 var-sub-quote.test:part_value tree on RHS
 var-sub-quote.test:part_value tree with multiple words
+var-sub-quote.test:Strip a string with single quotes, double quoted
+var-sub-quote.test:Strip a string with single quotes, unquoted
 var-sub-quote.test:substitution of IFS character, quoted and unquoted
 var-sub-quote.test:Syntax error for single quote in double quote
 var-sub-quote.test:The string to strip can be single quoted, outer is unquoted
@@ -1457,6 +1464,7 @@ word-split.test:IFS unset behaves like $' \t\n'
 word-split.test:IFS='' with ${a[@]} and ${a[*]} (bug #627)
 word-split.test:IFS='' with $@ and $* and printf (bug #627)
 word-split.test:IFS='' with $@ and $* (bug #627)
+word-split.test:IFS='' with ${!prefix@} and ${!prefix*} (bug #627)
 word-split.test:IFS with whitespace and non-whitepace.
 word-split.test:IFS=x and '' and $@ (#3)
 word-split.test:Leading/trailing word elision with non-whitespace IFS
@@ -1464,6 +1472,7 @@ word-split.test:Leading ' ' vs leading ' _ '
 word-split.test:Multiple non-whitespace IFS chars.
 word-split.test:no splitting when IFS is empty
 word-split.test:Regression: "${v:-AxBxC}"x should not be split
+word-split.test:Regression: ${!v} should be split
 word-split.test:Regression: "${!v*}"x should not be split
 word-split.test:Tilde sub is not split, but var sub is
 word-split.test:Trailing space
