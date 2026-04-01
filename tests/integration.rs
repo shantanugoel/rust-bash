@@ -3990,6 +3990,181 @@ fn network_method_restriction_rejects_disallowed() {
     );
 }
 
+// ── End-to-end curl tests (tiny_http) ────────────────────────────
+
+#[cfg(feature = "network")]
+mod curl_e2e {
+    use rust_bash::{NetworkPolicy, RustBashBuilder};
+    use std::thread;
+
+    type EchoResult = (String, Vec<(String, String)>);
+
+    fn start_test_server(response_body: &str, status_code: u16) -> (u16, thread::JoinHandle<()>) {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let body = response_body.to_string();
+        let handle = thread::spawn(move || {
+            let request = server.recv().unwrap();
+            let response = tiny_http::Response::from_string(&body)
+                .with_status_code(tiny_http::StatusCode(status_code));
+            request.respond(response).unwrap();
+        });
+        (port, handle)
+    }
+
+    fn start_echo_server() -> (u16, thread::JoinHandle<EchoResult>) {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let handle = thread::spawn(move || {
+            let mut request = server.recv().unwrap();
+            let mut body = String::new();
+            request.as_reader().read_to_string(&mut body).unwrap();
+            let headers: Vec<(String, String)> = request
+                .headers()
+                .iter()
+                .map(|h| (h.field.as_str().to_string(), h.value.as_str().to_string()))
+                .collect();
+            let response = tiny_http::Response::from_string(&body);
+            request.respond(response).unwrap();
+            (body, headers)
+        });
+        (port, handle)
+    }
+
+    #[test]
+    fn curl_get_returns_body() {
+        let (port, handle) = start_test_server("hello from test server\n", 200);
+        let url = format!("http://127.0.0.1:{port}/");
+
+        let mut sh = RustBashBuilder::new()
+            .network_policy(NetworkPolicy {
+                enabled: true,
+                allowed_url_prefixes: vec![url.clone()],
+                ..Default::default()
+            })
+            .build()
+            .unwrap();
+
+        let r = sh.exec(&format!("curl {url}")).unwrap();
+        handle.join().unwrap();
+        assert_eq!(r.exit_code, 0);
+        assert_eq!(r.stdout, "hello from test server\n");
+    }
+
+    #[test]
+    fn curl_post_sends_data() {
+        let (port, handle) = start_echo_server();
+        let url = format!("http://127.0.0.1:{port}/submit");
+
+        let mut sh = RustBashBuilder::new()
+            .network_policy(NetworkPolicy {
+                enabled: true,
+                allowed_url_prefixes: vec![format!("http://127.0.0.1:{port}/")],
+                ..Default::default()
+            })
+            .build()
+            .unwrap();
+
+        let r = sh
+            .exec(&format!("curl -X POST -d 'payload=test' {url}"))
+            .unwrap();
+        let (req_body, _headers) = handle.join().unwrap();
+        assert_eq!(r.exit_code, 0);
+        assert!(
+            r.stdout.contains("payload=test"),
+            "expected stdout to contain 'payload=test', got: {}",
+            r.stdout,
+        );
+        assert!(
+            req_body.contains("payload=test"),
+            "expected request body to contain 'payload=test', got: {}",
+            req_body,
+        );
+    }
+
+    #[test]
+    fn curl_custom_headers_sent() {
+        // Server echoes back the X-Custom header value in the response body
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let port = server.server_addr().to_ip().unwrap().port();
+        let handle = thread::spawn(move || {
+            let request = server.recv().unwrap();
+            let custom_val = request
+                .headers()
+                .iter()
+                .find(|h| h.field.as_str().as_str().eq_ignore_ascii_case("X-Custom"))
+                .map(|h| h.value.as_str().to_string())
+                .unwrap_or_default();
+            let response = tiny_http::Response::from_string(&custom_val);
+            request.respond(response).unwrap();
+        });
+
+        let url = format!("http://127.0.0.1:{port}/");
+
+        let mut sh = RustBashBuilder::new()
+            .network_policy(NetworkPolicy {
+                enabled: true,
+                allowed_url_prefixes: vec![url.clone()],
+                ..Default::default()
+            })
+            .build()
+            .unwrap();
+
+        let r = sh
+            .exec(&format!("curl -H 'X-Custom: myvalue' {url}"))
+            .unwrap();
+        handle.join().unwrap();
+        assert_eq!(r.exit_code, 0);
+        assert!(
+            r.stdout.contains("myvalue"),
+            "expected stdout to contain 'myvalue', got: {}",
+            r.stdout,
+        );
+    }
+
+    #[test]
+    fn curl_output_file_writes_to_vfs() {
+        let (port, handle) = start_test_server("file content here", 200);
+        let url = format!("http://127.0.0.1:{port}/");
+
+        let mut sh = RustBashBuilder::new()
+            .network_policy(NetworkPolicy {
+                enabled: true,
+                allowed_url_prefixes: vec![url.clone()],
+                ..Default::default()
+            })
+            .build()
+            .unwrap();
+
+        let r = sh.exec(&format!("curl -o /output.txt {url}")).unwrap();
+        handle.join().unwrap();
+        assert_eq!(r.exit_code, 0);
+
+        let r2 = sh.exec("cat /output.txt").unwrap();
+        assert_eq!(r2.stdout, "file content here");
+        assert_eq!(r2.exit_code, 0);
+    }
+
+    #[test]
+    fn curl_fail_on_http_error() {
+        let (port, handle) = start_test_server("not found", 404);
+        let url = format!("http://127.0.0.1:{port}/notfound");
+
+        let mut sh = RustBashBuilder::new()
+            .network_policy(NetworkPolicy {
+                enabled: true,
+                allowed_url_prefixes: vec![format!("http://127.0.0.1:{port}/")],
+                ..Default::default()
+            })
+            .build()
+            .unwrap();
+
+        let r = sh.exec(&format!("curl -f {url}")).unwrap();
+        handle.join().unwrap();
+        assert_ne!(r.exit_code, 0);
+    }
+}
+
 // ── State persistence across exec() calls ────────────────────────
 
 #[test]

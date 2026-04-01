@@ -183,11 +183,13 @@ const youngest = bash.fs.readFileSync('/youngest.txt'); // "Bob,25\n"
 | `xargs` | Build and execute commands from stdin |
 | `yes` | Repeatedly output a string |
 
-### Network (optional, disabled by default)
+### Network (native backend only, disabled by default)
 
 | Command | Description |
 |---------|-------------|
 | `curl` | HTTP client (requires `network.enabled: true`) |
+
+> **Note:** `curl` is only available with the **native** backend. It is **not available in WASM** because the WASM sandbox cannot make real HTTP requests. If you need network access, use `tryLoadNative()` / `createNativeBackend`.
 
 ## Shell Builtins (40)
 
@@ -277,7 +279,7 @@ Files you seed via `files: { ... }` in the options are written **before** defaul
 
 - **No real filesystem** — all file I/O uses the in-memory VirtualFs
 - **No child processes** — commands like `xargs`, `find -exec` call back into the interpreter
-- **No networking by default** — `curl` requires explicit `network: { enabled: true, ... }`
+- **No networking by default** — `curl` requires explicit `network: { enabled: true, ... }` (native backend only; unavailable in WASM)
 - **No job control** — no `&` background, no `fg`/`bg`/`jobs`
 - **No signals** — `kill` is not implemented; `trap` handles EXIT/ERR/DEBUG only
 - **`sleep` is instant** — returns immediately (no real delay)
@@ -411,7 +413,7 @@ const bash = await Bash.create(createBackend, {
 - **No `tail -f`** — follow mode is not supported (no real-time file watching)
 - **No process management** — no `ps`, `kill`, `bg`, `fg`, `jobs`
 - **No user/group management** — `useradd`, `chown`, `chgrp` are not available
-- **Network is opt-in** — `curl` only works when network is explicitly enabled with URL allow-list
+- **Network is opt-in** — `curl` only works with the native backend when network is explicitly enabled with URL allow-list; not available in WASM
 - **Binary tools are limited** — no `xxd`, `hexdump` (use `od` instead)
 - **No YAML support** — `yq` is planned for a future milestone; use `grep`/`sed` for basic YAML extraction
 - **No `sudo`** — the sandbox runs as a single virtual user
