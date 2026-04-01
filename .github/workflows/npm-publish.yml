@@ -4,10 +4,16 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish to npm
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
-  id-token: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -23,7 +29,7 @@ jobs:
       - run: cargo test
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 25
           cache: npm
           cache-dependency-path: packages/core/package-lock.json
       - run: cd packages/core && npm ci && npm test
@@ -42,6 +48,23 @@ jobs:
         run: cargo install --locked wasm-bindgen-cli --version 0.2.114
       - name: Build WASM
         run: ./scripts/build-wasm.sh
+      - name: Copy WASM artifacts into package
+        run: |
+          mkdir -p packages/core/wasm
+          cp pkg/rust_bash.js packages/core/wasm/
+          cp pkg/rust_bash_bg.wasm packages/core/wasm/
+          cp pkg/rust_bash.d.ts packages/core/wasm/
+          cp pkg/rust_bash_bg.wasm.d.ts packages/core/wasm/
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 25
+          cache: npm
+          cache-dependency-path: packages/core/package-lock.json
+      - name: Verify package tests with bundled WASM
+        working-directory: packages/core
+        run: |
+          npm ci
+          npm test
       - name: Upload WASM artifact
         uses: actions/upload-artifact@v4
         with:
@@ -59,16 +82,12 @@ jobs:
         settings:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: ubuntu-latest
+          - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-          - os: macos-latest
+          - os: macos-26-intel
             target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-          - os: windows-latest
-            target: aarch64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -77,20 +96,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.settings.target }}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: Install cross-compilation tools
-        if: matrix.settings.target == 'aarch64-unknown-linux-gnu'
+      - name: Build native addon
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-      - name: Build napi-rs native addon
-        working-directory: packages/core/native
+          cargo build \
+            --manifest-path packages/core/native/Cargo.toml \
+            --release \
+            --target ${{ matrix.settings.target }}
+      - name: Stage packaged native addon
         run: |
-          npx @napi-rs/cli build --platform --release --target ${{ matrix.settings.target }}
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          bash ./scripts/stage-native-addon.sh ${{ matrix.settings.target }}
       - name: Upload native artifact
         uses: actions/upload-artifact@v4
         with:
@@ -102,16 +116,18 @@ jobs:
   publish:
     name: Publish to npm
     needs: [build-wasm, build-native]
+    if: github.event_name == 'push' || github.event.inputs.publish == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 25
           registry-url: https://registry.npmjs.org
-          cache: npm
-          cache-dependency-path: packages/core/package-lock.json
 
       - name: Download WASM artifact
         uses: actions/download-artifact@v4
@@ -134,6 +150,4 @@ jobs:
 
       - name: Publish
         working-directory: packages/core
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public

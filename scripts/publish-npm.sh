@@ -21,6 +21,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PKG_DIR="$REPO_ROOT/packages/core"
+HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
 
 DRY_RUN=false
 SKIP_RUST=false
@@ -88,29 +89,14 @@ if ! $SKIP_RUST; then
 
   echo ""
   echo "🦀 Step 2/4: Building native Node.js addon..."
+  rm -f "$PKG_DIR/native"/rust-bash-native.*.node
   cargo build \
     --manifest-path "$PKG_DIR/native/Cargo.toml" \
-    --release
+    --release \
+    --target "$HOST_TARGET"
 
-  # Find the built .so/.dylib/.dll and copy as .node
-  NATIVE_OUT="$PKG_DIR/native/target/release"
-  NODE_FILE=""
-  for ext in so dylib dll; do
-    candidate="$NATIVE_OUT/librust_bash_native.$ext"
-    if [[ -f "$candidate" ]]; then
-      NODE_FILE="$candidate"
-      break
-    fi
-  done
-
-  if [[ -z "$NODE_FILE" ]]; then
-    echo "Error: native addon build produced no output in $NATIVE_OUT"
-    ls -la "$NATIVE_OUT"/librust_bash_native* 2>/dev/null || true
-    exit 1
-  fi
-
-  cp "$NODE_FILE" "$PKG_DIR/native/rust-bash-native.node"
-  NODE_SIZE=$(wc -c < "$PKG_DIR/native/rust-bash-native.node")
+  NODE_FILE="$(bash "$SCRIPT_DIR/stage-native-addon.sh" "$HOST_TARGET" "$PKG_DIR/native")"
+  NODE_SIZE=$(wc -c < "$NODE_FILE")
   echo "   ✅ Native addon ready ($(( NODE_SIZE / 1024 )) KB)"
 
 else
@@ -122,7 +108,7 @@ else
     echo "Error: WASM artifacts missing in packages/core/wasm/. Run without --skip-rust."
     exit 1
   fi
-  if [[ ! -f "$PKG_DIR/native/rust-bash-native.node" ]]; then
+  if ! compgen -G "$PKG_DIR/native/rust-bash-native.*.node" > /dev/null; then
     echo "Warning: native addon missing in packages/core/native/. Package will be WASM-only."
   fi
 fi

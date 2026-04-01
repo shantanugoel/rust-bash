@@ -71,7 +71,7 @@ chrono = { version = "0.4", features = ["wasmbind"] }
 [dev-dependencies]
 assert_cmd = "2.2.0"
 datatest-stable = "0.3.3"
-insta = "1.46.3"
+insta = { version = "1.46.3", features = ["filters"] }
 predicates = "3.1.4"
 # rustyline is also in [dependencies] as optional; kept here so examples/shell.rs
 # compiles even with --no-default-features during development.

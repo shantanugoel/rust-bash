@@ -764,7 +764,13 @@ fn snapshot_set_output() {
     // Add a non-exported var too
     sh.exec("LOCAL_VAR=local_value").unwrap();
     let r = sh.exec("set").unwrap();
-    insta::assert_snapshot!("set_output", r.stdout);
+    insta::with_settings!({
+        filters => vec![
+            (r"(?m)^BASH_VERSION=.*$", "BASH_VERSION=<VERSION>"),
+        ],
+    }, {
+        insta::assert_snapshot!("set_output", r.stdout);
+    });
 }
 
 #[test]
@@ -776,7 +782,16 @@ fn snapshot_export_output() {
 
     sh.exec("export APP_NAME=myapp").unwrap();
     let r = sh.exec("export").unwrap();
-    insta::assert_snapshot!("export_output", r.stdout);
+    insta::with_settings!({
+        filters => vec![
+            (
+                r#"(?m)^declare -x BASH_VERSION=".*"$"#,
+                r#"declare -x BASH_VERSION="<VERSION>""#,
+            ),
+        ],
+    }, {
+        insta::assert_snapshot!("export_output", r.stdout);
+    });
 }
 
 // ── Phase 2: Word Splitting & Quoting ──────────────────────────────

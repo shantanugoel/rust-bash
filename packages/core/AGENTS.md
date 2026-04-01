@@ -24,6 +24,9 @@ AI-generated shell scripts.
 npm install rust-bash
 ```
 
+On Node.js, the package bundles native addons for Linux/macOS on x64 and arm64.
+Other runtimes use the same API through the bundled WASM fallback.
+
 ## Quick Start
 
 ### TypeScript
@@ -190,6 +193,9 @@ const youngest = bash.fs.readFileSync('/youngest.txt'); // "Bob,25\n"
 | `curl` | HTTP client (requires `network.enabled: true`) |
 
 > **Note:** `curl` is only available with the **native** backend. It is **not available in WASM** because the WASM sandbox cannot make real HTTP requests. If you need network access, use `tryLoadNative()` / `createNativeBackend`.
+
+> `tryLoadNative()` succeeds on the bundled Linux/macOS x64 and arm64 targets.
+> On other Node.js runtimes, it returns `false` and you should fall back to WASM.
 
 ## Shell Builtins (40)
 

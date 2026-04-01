@@ -5,7 +5,7 @@ expression: r.stdout
 ---
 declare -x APP_NAME="myapp"
 declare -x BASH="/bin/bash"
-declare -x BASH_VERSION="0.4.0"
+declare -x BASH_VERSION="<VERSION>"
 declare -x HOME="/home/user"
 declare -x HOSTNAME="rust-bash"
 declare -x LANG="en_US.UTF-8"

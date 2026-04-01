@@ -13,6 +13,7 @@ import type {
   BackendCommandContext,
   FileSystemProxy,
 } from './types.js';
+import { getCurrentNativeBinaryCandidates } from './native-binary.js';
 
 /** Interface matching the napi-rs NativeBash class. */
 interface NativeBashConstructor {
@@ -56,9 +57,16 @@ export async function tryLoadNative(): Promise<boolean> {
     // Use createRequire for ESM compatibility with native addons
     const { createRequire } = await import('node:module');
     const require = createRequire(import.meta.url);
-    const mod = require('../native/rust-bash-native.node') as NativeModule;
-    nativeModule = mod;
-    return true;
+    for (const candidate of getCurrentNativeBinaryCandidates()) {
+      try {
+        const mod = require(candidate) as NativeModule;
+        nativeModule = mod;
+        return true;
+      } catch {
+        // Try the next packaged binary candidate for this runtime.
+      }
+    }
+    return false;
   } catch {
     return false;
   }

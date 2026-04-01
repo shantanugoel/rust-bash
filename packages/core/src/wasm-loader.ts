@@ -54,6 +54,7 @@ interface WasmBashInstance {
 /** WASM module initialization result. */
 interface WasmModule {
   WasmBash: WasmBashModule;
+  default(input?: { module_or_path?: BufferSource | URL }): Promise<unknown>;
 }
 
 let wasmModule: WasmModule | null = null;
@@ -68,13 +69,22 @@ export async function initWasm(module?: WasmModule): Promise<void> {
     return;
   }
 
-  // Dynamic import of the WASM package
-  // The actual path depends on build configuration
   try {
-    // Dynamic import of the WASM package — path resolved at runtime.
-    // The wasm/ directory contains build artifacts from scripts/build-wasm.sh.
-    const wasmPath = '../../wasm/rust_bash.js';
+    const wasmPath = '../wasm/rust_bash.js';
     const mod = (await import(wasmPath)) as unknown as WasmModule;
+    const wasmBinaryUrl = new URL('../wasm/rust_bash_bg.wasm', import.meta.url);
+
+    if (
+      typeof process !== 'undefined' &&
+      typeof process.versions === 'object' &&
+      process.versions?.node
+    ) {
+      const { readFile } = await import('node:fs/promises');
+      await mod.default({ module_or_path: await readFile(wasmBinaryUrl) });
+    } else {
+      await mod.default({ module_or_path: wasmBinaryUrl });
+    }
+
     wasmModule = mod;
   } catch {
     throw new Error(

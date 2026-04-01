@@ -20,13 +20,16 @@
     "wasm/rust_bash.d.ts",
     "wasm/rust_bash_bg.wasm",
     "wasm/rust_bash_bg.wasm.d.ts",
-    "native/rust-bash-native.node",
+    "native/rust-bash-native.darwin-arm64.node",
+    "native/rust-bash-native.darwin-x64.node",
+    "native/rust-bash-native.linux-arm64-gnu.node",
+    "native/rust-bash-native.linux-x64-gnu.node",
     "README.md",
     "AGENTS.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc",
     "prepublishOnly": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest",

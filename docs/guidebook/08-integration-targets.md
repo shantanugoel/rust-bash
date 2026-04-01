@@ -337,10 +337,11 @@ npm install rust-bash
 The package ships three layers:
 
 1. **TypeScript API** (`Bash` class, `defineCommand`, tool primitives) — the public interface
-2. **Native addon** (napi-rs, planned) — near-native performance for Node.js
+2. **Native addons** (napi-rs) — bundled Linux/macOS x64 and arm64 binaries for Node.js
 3. **WASM backend** — browser and edge runtime support
 
-Backend detection is automatic on Node.js (native first, WASM fallback). Browsers use the `rust-bash/browser` entry point (WASM only).
+Backend detection is automatic on Node.js (matching bundled native binary first,
+WASM fallback). Browsers use the `rust-bash/browser` entry point (WASM only).
 
 ### Quick Start (Node.js)
 
