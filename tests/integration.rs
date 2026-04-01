@@ -2262,8 +2262,10 @@ fn arith_nested_parens() {
 #[test]
 fn arith_division_by_zero() {
     let mut sh = shell();
-    let r = sh.exec("echo $((1 / 0))");
-    assert!(r.is_err());
+    let r = sh.exec("echo $((1 / 0))").unwrap();
+    // Arithmetic errors are non-fatal in bash: the command fails with exit code 1
+    assert_eq!(r.exit_code, 1);
+    assert!(r.stderr.contains("arithmetic:"));
 }
 
 #[test]

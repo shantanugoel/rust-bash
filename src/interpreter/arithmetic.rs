@@ -111,6 +111,12 @@ fn tokenize(input: &str) -> Result<Vec<Token>, RustBashError> {
         // Numbers: decimal, hex (0x/0X), octal (0...) or base#value
         if bytes[i].is_ascii_digit() {
             let num = parse_number(bytes, &mut i)?;
+            // Reject floating-point literals (bash does not support them)
+            if i < bytes.len() && bytes[i] == b'.' {
+                return Err(RustBashError::Execution(
+                    "arithmetic: syntax error: invalid arithmetic operator".into(),
+                ));
+            }
             // Check for base#value syntax: e.g. 16#ff, 2#101
             if i < bytes.len() && bytes[i] == b'#' {
                 let base = num;
@@ -138,35 +144,12 @@ fn tokenize(input: &str) -> Result<Vec<Token>, RustBashError> {
             continue;
         }
 
-        // Single-quoted strings: 'x' (single char) is ASCII value; multi-char
-        // strings like 'spam' are treated as identifiers (used as assoc keys).
+        // Single-quoted strings: bash rejects them in arithmetic context.
+        // (Associative array keys are handled by extract_raw_subscript.)
         if bytes[i] == b'\'' {
-            i += 1;
-            let content_start = i;
-            while i < bytes.len() && bytes[i] != b'\'' {
-                i += 1;
-            }
-            let content_len = i - content_start;
-            if i < bytes.len() {
-                i += 1; // skip closing quote
-            }
-            if content_len == 1 {
-                // Single char: ASCII value
-                let ch_val = bytes[content_start] as i64;
-                tokens.push(Token {
-                    kind: TokenKind::Number(ch_val),
-                    start,
-                    len: i - start,
-                });
-            } else {
-                // Multi-char: treat as identifier (for assoc array keys)
-                tokens.push(Token {
-                    kind: TokenKind::Ident,
-                    start: content_start,
-                    len: content_len,
-                });
-            }
-            continue;
+            return Err(RustBashError::Execution(
+                "arithmetic: syntax error: operand expected".into(),
+            ));
         }
 
         // Double-quoted strings: evaluate content as sub-expression
@@ -792,7 +775,7 @@ impl<'a> Parser<'a> {
                         let lhs = if let Some(ref sub) = raw_subscript {
                             read_array_element(state, &name, sub)
                         } else {
-                            read_var(state, &name)
+                            read_var(state, &name)?
                         };
                         let val = apply_compound_op(op, lhs, rhs)?;
                         if let Some(ref sub) = raw_subscript {
@@ -866,7 +849,8 @@ impl<'a> Parser<'a> {
         while self.peek() == Some(TokenKind::PipePipe) {
             self.advance();
             if left != 0 {
-                self.parse_logical_and(state)?;
+                // RHS of || is a logical-and-level expression; skip past && chains
+                self.skip_logical_operand(true)?;
                 left = 1;
             } else {
                 let right = self.parse_logical_and(state)?;
@@ -882,7 +866,8 @@ impl<'a> Parser<'a> {
         while self.peek() == Some(TokenKind::AmpAmp) {
             self.advance();
             if left == 0 {
-                self.parse_bitwise_or(state)?;
+                // RHS of && is a bitwise-or-level expression; stop at &&
+                self.skip_logical_operand(false)?;
                 left = 0;
             } else {
                 let right = self.parse_bitwise_or(state)?;
@@ -890,6 +875,56 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(left)
+    }
+
+    /// Skip one operand expression without evaluating side effects.
+    /// When `skip_and` is true (called from `||`), skips past `&&` chains
+    /// since `&&` has higher precedence than `||`.
+    fn skip_logical_operand(&mut self, skip_and: bool) -> Result<(), RustBashError> {
+        let mut paren_depth = 0i32;
+        let mut bracket_depth = 0i32;
+        loop {
+            match self.peek() {
+                None => break,
+                Some(TokenKind::LParen) => {
+                    paren_depth += 1;
+                    self.advance();
+                }
+                Some(TokenKind::RParen) => {
+                    if paren_depth <= 0 {
+                        break;
+                    }
+                    paren_depth -= 1;
+                    self.advance();
+                }
+                Some(TokenKind::LBracket) => {
+                    bracket_depth += 1;
+                    self.advance();
+                }
+                Some(TokenKind::RBracket) => {
+                    bracket_depth -= 1;
+                    self.advance();
+                }
+                Some(TokenKind::AmpAmp) if skip_and && paren_depth == 0 && bracket_depth == 0 => {
+                    // Inside ||'s RHS: consume && and skip its operand too
+                    self.advance();
+                    self.skip_logical_operand(false)?;
+                }
+                Some(
+                    TokenKind::PipePipe
+                    | TokenKind::AmpAmp
+                    | TokenKind::Question
+                    | TokenKind::Colon
+                    | TokenKind::Comma,
+                ) if paren_depth == 0 && bracket_depth == 0 => {
+                    break;
+                }
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+        Ok(())
     }
 
     // Bitwise OR: |
@@ -1061,7 +1096,7 @@ impl<'a> Parser<'a> {
         if self.peek() == Some(TokenKind::StarStar) {
             self.advance();
             let exp = self.parse_exponentiation(state)?; // right-associative
-            Ok(wrapping_pow(base, exp))
+            wrapping_pow(base, exp)
         } else {
             Ok(base)
         }
@@ -1089,35 +1124,67 @@ impl<'a> Parser<'a> {
                 let val = self.parse_unary(state)?;
                 Ok(!val)
             }
-            // Pre-increment / pre-decrement
+            // Pre-increment / pre-decrement (supports both var and var[subscript])
             Some(TokenKind::PlusPlus) => {
                 self.advance();
                 let tok = self.expect_ident()?;
                 let name = self.ident_name(tok).to_string();
-                let val = read_var(state, &name).wrapping_add(1);
-                set_variable(state, &name, val.to_string())?;
-                Ok(val)
+                if self.peek() == Some(TokenKind::LBracket) {
+                    let raw_sub = self.extract_raw_subscript()?;
+                    let old = read_array_element(state, &name, &raw_sub);
+                    let val = old.wrapping_add(1);
+                    write_array_element(state, &name, &raw_sub, val)?;
+                    Ok(val)
+                } else {
+                    let val = read_var(state, &name)?.wrapping_add(1);
+                    set_variable(state, &name, val.to_string())?;
+                    Ok(val)
+                }
             }
             Some(TokenKind::MinusMinus) => {
                 self.advance();
                 let tok = self.expect_ident()?;
                 let name = self.ident_name(tok).to_string();
-                let val = read_var(state, &name).wrapping_sub(1);
-                set_variable(state, &name, val.to_string())?;
-                Ok(val)
+                if self.peek() == Some(TokenKind::LBracket) {
+                    let raw_sub = self.extract_raw_subscript()?;
+                    let old = read_array_element(state, &name, &raw_sub);
+                    let val = old.wrapping_sub(1);
+                    write_array_element(state, &name, &raw_sub, val)?;
+                    Ok(val)
+                } else {
+                    let val = read_var(state, &name)?.wrapping_sub(1);
+                    set_variable(state, &name, val.to_string())?;
+                    Ok(val)
+                }
             }
             _ => self.parse_postfix(state),
         }
     }
 
-    // Postfix: var++ var--
+    // Postfix: var++ var-- (also supports var[subscript]++ and var[subscript]--)
     fn parse_postfix(&mut self, state: &mut InterpreterState) -> Result<i64, RustBashError> {
         let val = self.parse_primary(state)?;
 
-        // Check for postfix ++ or -- (only valid after an identifier)
+        // Check for postfix ++ or -- after an identifier (with optional subscript)
         if self.pos >= 1 {
+            // Check if the previous token was ] (array subscript) or Ident (simple var)
             let prev = self.tokens[self.pos - 1];
-            if let TokenKind::Ident = prev.kind {
+            let is_array = matches!(prev.kind, TokenKind::RBracket);
+            let is_simple_ident = matches!(prev.kind, TokenKind::Ident);
+
+            if is_array {
+                // Find the variable name and subscript by walking back
+                if let Some(op @ (TokenKind::PlusPlus | TokenKind::MinusMinus)) = self.peek() {
+                    self.advance();
+                    // Reconstruct the var name and subscript from the parsed tokens
+                    // We need to find the Ident before the [ ... ] sequence
+                    if let Some((name, raw_sub)) = self.find_preceding_array_ref() {
+                        let delta: i64 = if op == TokenKind::PlusPlus { 1 } else { -1 };
+                        write_array_element(state, &name, &raw_sub, val.wrapping_add(delta))?;
+                        return Ok(val);
+                    }
+                }
+            } else if is_simple_ident {
                 match self.peek() {
                     Some(TokenKind::PlusPlus) => {
                         self.advance();
@@ -1138,6 +1205,49 @@ impl<'a> Parser<'a> {
         Ok(val)
     }
 
+    /// Walk backward from current position to find the array name and subscript
+    /// text for a `name[subscript]` that was just parsed.
+    fn find_preceding_array_ref(&self) -> Option<(String, String)> {
+        // We expect tokens ending: Ident LBracket <subscript tokens...> RBracket
+        // Walk backward from current pos - 1 (which is the postfix op we just consumed)
+        // The token before that was RBracket. Find matching LBracket.
+        let mut p = self.pos - 2; // pos after advance; -1 = op token, -2 = RBracket
+        let mut depth = 1;
+        while p > 0 {
+            p -= 1;
+            match self.tokens[p].kind {
+                TokenKind::RBracket => depth += 1,
+                TokenKind::LBracket => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if depth != 0 || p == 0 {
+            return None;
+        }
+        // Token before LBracket should be the identifier
+        let ident_tok = self.tokens[p - 1];
+        if !matches!(ident_tok.kind, TokenKind::Ident) {
+            return None;
+        }
+        let name = self.ident_name(ident_tok).to_string();
+        // Reconstruct subscript text
+        let bracket_start = p;
+        let bracket_end = self.pos - 2; // RBracket position
+        let sub_text = if bracket_start + 1 < bracket_end {
+            let first = &self.tokens[bracket_start + 1];
+            let last = &self.tokens[bracket_end - 1];
+            self.source[first.start..last.start + last.len].to_string()
+        } else {
+            String::from("0")
+        };
+        Some((name, sub_text))
+    }
+
     // Primary: number, variable, parenthesized expression
     fn parse_primary(&mut self, state: &mut InterpreterState) -> Result<i64, RustBashError> {
         match self.peek() {
@@ -1151,9 +1261,15 @@ impl<'a> Parser<'a> {
                 // Check for array subscript: ident[expr]
                 if self.peek() == Some(TokenKind::LBracket) {
                     let raw_sub = self.extract_raw_subscript()?;
-                    Ok(read_array_element(state, &name, &raw_sub))
+                    // Reject double subscript: a[i][j]
+                    if self.peek() == Some(TokenKind::LBracket) {
+                        return Err(RustBashError::Execution(
+                            "arithmetic: syntax error in expression".into(),
+                        ));
+                    }
+                    read_array_element_checked(state, &name, &raw_sub)
                 } else {
-                    Ok(read_var(state, &name))
+                    Ok(read_var(state, &name)?)
                 }
             }
             Some(TokenKind::LParen) => {
@@ -1223,29 +1339,34 @@ impl<'a> Parser<'a> {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-fn read_var(state: &mut InterpreterState, name: &str) -> i64 {
+fn read_var(state: &mut InterpreterState, name: &str) -> Result<i64, RustBashError> {
     // Handle special parameters
     match name {
-        "#" => return state.positional_params.len() as i64,
-        "?" => return state.last_exit_code as i64,
-        "LINENO" => return state.current_lineno as i64,
-        "SECONDS" => return state.shell_start_time.elapsed().as_secs() as i64,
+        "#" => return Ok(state.positional_params.len() as i64),
+        "?" => return Ok(state.last_exit_code as i64),
+        "LINENO" => return Ok(state.current_lineno as i64),
+        "SECONDS" => return Ok(state.shell_start_time.elapsed().as_secs() as i64),
         _ => {}
     }
     // Handle positional parameters ($0, $1, $2, ...)
     if let Ok(n) = name.parse::<usize>() {
         if n == 0 {
-            return state.shell_name.parse::<i64>().unwrap_or(0);
+            return Ok(state.shell_name.parse::<i64>().unwrap_or(0));
         }
-        return state
+        return Ok(state
             .positional_params
             .get(n - 1)
             .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(0);
+            .unwrap_or(0));
     }
-    // Recursive variable resolution: if the value is not numeric, treat it as
-    // a variable name and resolve again (up to a depth limit to prevent loops).
-    resolve_var_recursive(state, name, 0)
+    // Check nounset before resolving
+    let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
+    if state.shell_opts.nounset && !state.env.contains_key(&resolved) {
+        return Err(RustBashError::Execution(format!(
+            "{name}: unbound variable"
+        )));
+    }
+    Ok(resolve_var_recursive(state, name, 0))
 }
 
 fn resolve_var_recursive(state: &mut InterpreterState, name: &str, depth: usize) -> i64 {
@@ -1303,6 +1424,7 @@ fn is_assoc_array(state: &InterpreterState, name: &str) -> bool {
 /// Read a specific array element.
 /// For associative arrays, the raw subscript is used as a string key.
 /// For indexed arrays, it is evaluated as an arithmetic expression.
+/// Checks nounset if enabled.
 fn read_array_element(state: &mut InterpreterState, name: &str, raw_subscript: &str) -> i64 {
     use crate::interpreter::VariableValue;
     let resolved_name = crate::interpreter::resolve_nameref_or_self(name, state);
@@ -1379,6 +1501,21 @@ fn read_array_element(state: &mut InterpreterState, name: &str, raw_subscript: &
     val_str.parse::<i64>().unwrap_or(0)
 }
 
+/// Like `read_array_element`, but returns a `Result` to propagate nounset errors.
+fn read_array_element_checked(
+    state: &mut InterpreterState,
+    name: &str,
+    raw_subscript: &str,
+) -> Result<i64, RustBashError> {
+    let resolved_name = crate::interpreter::resolve_nameref_or_self(name, state);
+    if state.shell_opts.nounset && !state.env.contains_key(&resolved_name) {
+        return Err(RustBashError::Execution(format!(
+            "{name}[{raw_subscript}]: unbound variable"
+        )));
+    }
+    Ok(read_array_element(state, name, raw_subscript))
+}
+
 /// Write a value to a specific array element.
 /// For associative arrays, the raw subscript is used as a string key.
 /// For indexed arrays, it is evaluated as an arithmetic expression.
@@ -1431,9 +1568,11 @@ fn write_array_element(
     crate::interpreter::set_array_element(state, &resolved_name, index as usize, value.to_string())
 }
 
-fn wrapping_pow(mut base: i64, mut exp: i64) -> i64 {
+fn wrapping_pow(mut base: i64, mut exp: i64) -> Result<i64, RustBashError> {
     if exp < 0 {
-        return 0; // bash treats negative exponents as 0
+        return Err(RustBashError::Execution(
+            "arithmetic: exponent less than 0".into(),
+        ));
     }
     let mut result: i64 = 1;
     while exp > 0 {
@@ -1443,7 +1582,7 @@ fn wrapping_pow(mut base: i64, mut exp: i64) -> i64 {
         exp >>= 1;
         base = base.wrapping_mul(base);
     }
-    result
+    Ok(result)
 }
 
 fn apply_compound_op(op: TokenKind, lhs: i64, rhs: i64) -> Result<i64, RustBashError> {

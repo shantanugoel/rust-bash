@@ -182,6 +182,24 @@ fn execute_compound_list(
                     ..Default::default()
                 }
             }
+            Err(RustBashError::Execution(msg)) if msg.contains("arithmetic:") => {
+                // Arithmetic errors are non-fatal: print to stderr, set $?=1, continue
+                state.last_exit_code = 1;
+                ExecResult {
+                    stderr: format!("rust-bash: {msg}\n"),
+                    exit_code: 1,
+                    ..Default::default()
+                }
+            }
+            Err(RustBashError::Execution(msg)) if msg.contains("bad substitution") => {
+                // Bad substitution errors are non-fatal: print to stderr, set $?=1
+                state.last_exit_code = 1;
+                ExecResult {
+                    stderr: format!("rust-bash: {msg}\n"),
+                    exit_code: 1,
+                    ..Default::default()
+                }
+            }
             Err(e) => return Err(e),
         };
         result.stdout.push_str(&r.stdout);
@@ -915,13 +933,17 @@ fn execute_simple_command(
     let mut proc_sub_temps: Vec<String> = Vec::new();
     // Track deferred write process substitutions: (inner command list, temp path)
     let mut deferred_write_subs: Vec<(&ast::CompoundList, String)> = Vec::new();
+    // Keep raw AST assignments for deferred expansion in temp-binding path
+    let mut raw_assignments: Vec<(&ast::Assignment, bool)> = Vec::new();
+
+    // Save exit code before prefix expansion to detect command sub execution
+    let exit_before_prefix = state.last_exit_code;
 
     if let Some(prefix) = &cmd.prefix {
         for item in &prefix.0 {
             match item {
                 ast::CommandPrefixOrSuffixItem::AssignmentWord(assignment, _word) => {
-                    let a = process_assignment(assignment, assignment.append, state)?;
-                    assignments.push(a);
+                    raw_assignments.push((assignment, assignment.append));
                 }
                 ast::CommandPrefixOrSuffixItem::IoRedirect(redir) => {
                     redirects.push(redir);
@@ -1019,6 +1041,10 @@ fn execute_simple_command(
 
     // 4. No command name → persist assignments in environment
     let Some(cmd_name) = cmd_name else {
+        // Expand assignments lazily (no command to run, so no deferred expansion needed)
+        for (raw_assign, append) in &raw_assignments {
+            assignments.push(process_assignment(raw_assign, *append, state)?);
+        }
         // xtrace for bare assignments (e.g. `X=1`)
         if state.shell_opts.xtrace && !assignments.is_empty() {
             let ps4 = expand_ps4(state);
@@ -1060,6 +1086,11 @@ fn execute_simple_command(
                 let cmdsub_stderr = std::mem::take(&mut state.pending_cmdsub_stderr);
                 result.stderr = format!("{cmdsub_stderr}{}", result.stderr);
             }
+            // Preserve command sub exit code if one ran during expansion;
+            // otherwise bare assignments reset $? to 0 (like bash).
+            if result.exit_code == 0 && state.last_exit_code != exit_before_prefix {
+                result.exit_code = state.last_exit_code;
+            }
             return Ok(result);
         }
         let mut result = ExecResult::default();
@@ -1070,16 +1101,24 @@ fn execute_simple_command(
             let cmdsub_stderr = std::mem::take(&mut state.pending_cmdsub_stderr);
             result.stderr = format!("{cmdsub_stderr}{}", result.stderr);
         }
+        if result.exit_code == 0 && state.last_exit_code != exit_before_prefix {
+            result.exit_code = state.last_exit_code;
+        }
         return Ok(result);
     };
 
     // 4b. Empty command name (e.g. from `$(false)`) → no command, persist assignments
     if cmd_name.is_empty() && args.is_empty() {
+        // Expand assignments lazily
+        let mut expanded = Vec::new();
+        for (raw_assign, append) in &raw_assignments {
+            expanded.push(process_assignment(raw_assign, *append, state)?);
+        }
         let mut result = ExecResult {
             exit_code: state.last_exit_code,
             ..ExecResult::default()
         };
-        for a in assignments {
+        for a in expanded {
             apply_assignment_shell_error(a, state, &mut result)?;
         }
         if !state.pending_cmdsub_stderr.is_empty() {
@@ -1126,9 +1165,10 @@ fn execute_simple_command(
                 stdout_bytes: None,
             });
         }
-        for a in &assignments {
+        for (raw_assign, append) in &raw_assignments {
+            let a = process_assignment(raw_assign, *append, state)?;
             let mut dummy = ExecResult::default();
-            apply_assignment_shell_error(a.clone(), state, &mut dummy)?;
+            apply_assignment_shell_error(a, state, &mut dummy)?;
             if dummy.exit_code != 0 {
                 return Ok(dummy);
             }
@@ -1140,9 +1180,18 @@ fn execute_simple_command(
     // On error (e.g. readonly): print the error but still execute the command.
     // Bash skips the failing assignment but runs the command; $? is from the
     // command, not the assignment error.
+    // Re-expand each assignment in order so preceding bindings are visible
+    // (e.g. FOO=foo BAR="$FOO" cmd → BAR sees FOO=foo).
     let mut saved: Vec<(String, Option<Variable>)> = Vec::new();
     let mut prefix_stderr = String::new();
-    for a in &assignments {
+    for (raw_assign, append) in &raw_assignments {
+        let a = match process_assignment(raw_assign, *append, state) {
+            Ok(a) => a,
+            Err(e) => {
+                prefix_stderr.push_str(&format!("rust-bash: {e}\n"));
+                continue;
+            }
+        };
         saved.push((a.name().to_string(), state.env.get(a.name()).cloned()));
         let mut dummy = ExecResult::default();
         apply_assignment_shell_error(a.clone(), state, &mut dummy)?;
@@ -1514,20 +1563,35 @@ fn execute_arithmetic(
 ) -> Result<ExecResult, RustBashError> {
     let expanded =
         crate::interpreter::expansion::expand_arith_expression(&arith.expr.value, state)?;
-    let val = crate::interpreter::arithmetic::eval_arithmetic(&expanded, state)?;
-    let mut result = ExecResult {
-        exit_code: if val != 0 { 0 } else { 1 },
-        ..Default::default()
-    };
-    if state.shell_opts.xtrace {
-        let ps4 = expand_ps4(state);
-        result.stderr = format!(
-            "{ps4}(({}))\n{}",
-            arith.expr.value.trim_end(),
-            result.stderr
-        );
+    match crate::interpreter::arithmetic::eval_arithmetic(&expanded, state) {
+        Ok(val) => {
+            let mut result = ExecResult {
+                exit_code: if val != 0 { 0 } else { 1 },
+                ..Default::default()
+            };
+            if state.shell_opts.xtrace {
+                let ps4 = expand_ps4(state);
+                result.stderr = format!(
+                    "{ps4}(({}))\n{}",
+                    arith.expr.value.trim_end(),
+                    result.stderr
+                );
+            }
+            Ok(result)
+        }
+        Err(RustBashError::Execution(msg)) if msg.contains("unbound variable") => {
+            // nounset errors are fatal
+            Err(RustBashError::Execution(msg))
+        }
+        Err(e) => {
+            // Non-fatal arithmetic error: set exit code 1 and continue
+            Ok(ExecResult {
+                stderr: format!("rust-bash: {e}\n"),
+                exit_code: 1,
+                ..Default::default()
+            })
+        }
     }
-    Ok(result)
 }
 
 fn execute_arithmetic_for(

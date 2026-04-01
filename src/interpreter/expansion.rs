@@ -2892,6 +2892,13 @@ fn is_unset(state: &InterpreterState, parameter: &Parameter) -> bool {
             match state.env.get(&resolved) {
                 None => true,
                 Some(var) => {
+                    // Variables with DECLARED_ONLY (e.g. `local x`) are unset
+                    if var
+                        .attrs
+                        .contains(crate::interpreter::VariableAttrs::DECLARED_ONLY)
+                    {
+                        return true;
+                    }
                     // For indexed arrays, $name is equivalent to ${name[0]},
                     // so it's "unset" if index 0 is not present.
                     use crate::interpreter::VariableValue;

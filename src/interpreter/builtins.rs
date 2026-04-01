@@ -1493,7 +1493,9 @@ fn builtin_declare(
         return Ok(ExecResult::default());
     }
 
-    let _ = global_mode; // accepted but not yet meaningful (no dynamic scoping)
+    // When `declare` is used inside a function without `-g`, the variable
+    // is local to the function (same as `local`). With `-g`, it's global.
+    let implicit_local = state.in_function_depth > 0 && !global_mode;
 
     let has_any_flag = make_readonly
         || make_exported
@@ -1541,6 +1543,11 @@ fn builtin_declare(
 
         // Check for += (append) before = (assign)
         if let Some((name, value)) = arg.split_once("+=") {
+            if implicit_local && let Some(scope) = state.local_scopes.last_mut() {
+                scope
+                    .entry(name.to_string())
+                    .or_insert_with(|| state.env.get(name).cloned());
+            }
             declare_append_value(
                 state,
                 name,
@@ -1550,6 +1557,11 @@ fn builtin_declare(
                 make_indexed_array,
             )?;
         } else if let Some((name, value)) = arg.split_once('=') {
+            if implicit_local && let Some(scope) = state.local_scopes.last_mut() {
+                scope
+                    .entry(name.to_string())
+                    .or_insert_with(|| state.env.get(name).cloned());
+            }
             declare_with_value(
                 state,
                 name,
@@ -1560,6 +1572,11 @@ fn builtin_declare(
                 make_nameref,
             )?;
         } else {
+            if implicit_local && let Some(scope) = state.local_scopes.last_mut() {
+                scope
+                    .entry(arg.to_string())
+                    .or_insert_with(|| state.env.get(arg.as_str()).cloned());
+            }
             declare_without_value(state, arg, flag_attrs, make_assoc_array, make_indexed_array)?;
         }
     }
