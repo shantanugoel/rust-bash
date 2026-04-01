@@ -1482,7 +1482,7 @@ dependencies = [
 
 [[package]]
 name = "rust-bash"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "assert_cmd",
  "base64",
