@@ -5,7 +5,7 @@
  * don't block the Node event loop (the native backend does blocking I/O).
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { Bash } from '../src/bash.js';
 import { tryLoadNative, createNativeBackend } from '../src/native-loader.js';
 import { Worker } from 'node:worker_threads';
@@ -14,6 +14,7 @@ import { dirname, join } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WORKER_PATH = join(__dirname, 'curl-server-worker.cjs');
+const hasNativeAddon = await tryLoadNative();
 
 interface WorkerServer {
   worker: Worker;
@@ -43,14 +44,7 @@ async function stopWorkerServer(ws: WorkerServer): Promise<void> {
   await ws.worker.terminate();
 }
 
-describe('curl (native backend)', () => {
-  beforeAll(async () => {
-    const available = await tryLoadNative();
-    if (!available) {
-      return 'skip';
-    }
-  });
-
+describe.skipIf(!hasNativeAddon)('curl (native backend)', () => {
   it('curl appears in command list', async () => {
     const bash = await Bash.create(createNativeBackend);
     const names = bash.getCommandNames();
