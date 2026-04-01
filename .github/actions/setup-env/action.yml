@@ -38,14 +38,14 @@ runs:
       with:
         shared-key: ${{ inputs.rust-cache-key }}
 
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v6
       if: inputs.node == 'true' && inputs.node-registry-url == ''
       with:
         node-version: 25
         cache: npm
         cache-dependency-path: packages/core/package-lock.json
 
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v6
       if: inputs.node == 'true' && inputs.node-registry-url != ''
       with:
         node-version: 25
