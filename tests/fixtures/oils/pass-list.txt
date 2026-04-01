@@ -78,6 +78,7 @@ arith.test:Increment and decrement array elements
 arith.test:Increment undefined variables
 arith.test:Increment undefined variables with nounset
 arith.test:Integer constant parsing
+arith.test:Invalid constant
 arith.test:Invalid LValue
 arith.test:Invalid LValue that looks like array
 arith.test:Invalid LValue: two sets of brackets
@@ -89,6 +90,7 @@ arith.test:More 64-bit ops
 arith.test:Multiple digit constants with base N
 arith.test:Negative exponent
 arith.test:Negative numbers with %
+arith.test:Negative numbers with bit shift
 arith.test:Negative numbers with integer division /
 arith.test:nested ternary (bug fix)
 arith.test:Newline in the middle of expression
@@ -177,12 +179,14 @@ array-sparse.test:${a[@]#...}
 array-sparse.test:${a[@]}
 array-sparse.test:${!a[@]}
 array-sparse.test:${!a[0]}
+array-sparse.test:${a[@]:BigInt}
 array-sparse.test:${a[@]:offset:length}
 array-sparse.test:${a[@]@P}, ${a[@]@Q}, and ${a[@]@a}
 array-sparse.test:${a[@]/pat/rep}
 array-sparse.test:${sp[i]}
 array-sparse.test:a[i]=v
 array-sparse.test:a[i]=v with BigInt
+array-sparse.test:compadjust
 array-sparse.test:Negative index with a[i]=v
 array-sparse.test:((sp[i])) and ((sp[i]++))
 array-sparse.test:test "declare -p sp"
@@ -191,14 +195,18 @@ array-sparse.test:unset -v a[i]
 array-sparse.test:unset -v a[i] for max index
 array-sparse.test:[[ -v a[i] ]]
 array-sparse.test:xtrace a+=()
+array-sparse.test:(YSH) $[a1 === a2]
+array-sparse.test:(YSH) @[sp] and @sp
 array.test:"$*"
 array.test:$*
 array.test:${!a[1]} is named ref in bash
 array.test:${!a} on array
 array.test:${mystr[@]} and ${mystr[*]} are no-ops
+array.test:${mystr[@]} and ${mystr[*]} disallowed with strict_array
 array.test:a[$x$y] on LHS and RHS
 array.test:All elements quoted
 array.test:All elements unquoted
+array.test:a+=() modifies existing instance of BashArray
 array.test:Append sparse arrays
 array.test:array default
 array.test:array over multiple lines
@@ -264,6 +272,7 @@ assign-extended.test:declare -p
 assign-extended.test:declare -paA
 assign-extended.test:declare -p and value.Undef
 assign-extended.test:declare -p arr
+assign-extended.test:declare -p doesn't print binary data, but can be loaded into bash
 assign-extended.test:declare -p foo=bar doesn't make sense
 assign-extended.test:declare -pg
 assign-extended.test:declare -pg var
@@ -294,6 +303,7 @@ assign.test:Assignment doesn't do word splitting
 assign.test:assignments / array assignments not interpreted after 'echo'
 assign.test:assignment using dynamic var names doesn't split
 assign.test:'declare -A' and then dict assignment
+assign.test:"declare -a arr" and "readonly -a a" creates an empty array (OSH)
 assign.test:declare -a arr does not remove existing arrays (OSH regression)
 assign.test:declare -A dict does not remove existing arrays (OSH regression)
 assign.test:declare and glob
@@ -386,6 +396,7 @@ bugs.test:autotools as_fn_arith bug in configure
 bugs.test:Crash in {1..10} - issue #2296
 bugs.test:'echo' and printf fail on writing to full disk
 bugs.test:echo keyword
+bugs.test:fastlex: PS1 format string that's incomplete / with NUL byte
 bugs.test:First word like foo$x() and foo$[1+2] (regression)
 bugs.test:for loop 2 (issue #1446)
 bugs.test:for loop (issue #1446)
@@ -395,6 +406,7 @@ bugs.test:OSH can use ARGV name
 bugs.test:other builtins fail on writing to full disk
 bugs.test:printf integer size bug
 bugs.test:(( status bug
+bugs.test:subshell while running a script (regression)
 bugs.test:Turn an array into an integer.
 bugs.test:unset readonly -- one line
 builtin-bash.test:mapfile
@@ -455,6 +467,7 @@ builtin-cd.test:cd with 2 or more args - with strict_arg_parse
 builtin-cd.test:cd with no arguments
 builtin-cd.test:cd - without OLDPWD
 builtin-cd.test:chdir is a synonym for cd - busybox ash
+builtin-cd.test:lie about PWD; pwd before any cd
 builtin-cd.test:pwd
 builtin-cd.test:pwd after cd ..
 builtin-cd.test:pwd errors out on args with strict_arg_parse
@@ -462,6 +475,7 @@ builtin-cd.test:remove pwd dir
 builtin-cd.test:setting $PWD doesn't affect the value of 'pwd' builtin
 builtin-cd.test:Survey of getcwd() syscall
 builtin-cd.test:unset PWD; cd /tmp is allowed (regression)
+builtin-cd.test:'unset PWD; pwd' before any cd (tickles a rare corner case)
 builtin-cd.test:unset PWD; then pwd
 builtin-dirs.test:cd replaces the lowest entry on the directory stack!
 builtin-dirs.test:dirs builtin
@@ -649,10 +663,14 @@ builtin-set.test:set +a stops exporting
 builtin-set.test:set -eu (flag parsing)
 builtin-set.test:set -o allexport (long form)
 builtin-set.test:set -o lists options
+builtin-set.test:set -u error can break out of nested evals
+builtin-set.test:set -u with undefined variable exits the interpreter
 builtin-set.test:set -u -- x y z
 builtin-set.test:set with both options and argv
 builtin-set.test:variables set before set -a are not exported
 builtin-special.test:Non-special builtins CAN be redefined as functions
+builtin-special.test:set is special and fails whole script, even if using || true
+builtin-special.test:Shift is special and fails whole script
 builtin-special.test:true is not special; prefix assignments don't persist, it can be redefined
 builtin-type-bash.test:type -a -> alias; prints alias definition
 builtin-type-bash.test:type -a -> executable not in PATH
@@ -669,6 +687,7 @@ builtin-type-bash.test:type -t control flow
 builtin-type-bash.test:type -t doesn't find non-executable (like command -v)
 builtin-type-bash.test:type -t -> function
 builtin-type-bash.test:type -t -> not found
+builtin-type.test:more special builtins
 builtin-type.test:special builtins are called out
 builtin-type.test:type -> keyword builtin
 builtin-type.test:type -> not found
@@ -815,12 +834,14 @@ errexit.test:set -o errexit while it's being ignored (moot with strict_errexit)
 errexit.test:set +o errexit with 2 levels of ignored
 errexit.test:setting errexit in a subshell works but doesn't affect parent shell
 errexit.test:shopt -s strict:all || true while errexit is on
+errexit.test:simple command that's an alias - redir failure checked
 exit-status.test:Exit code when command sub evaluates to empty str, e.g. `false` (#2416)
 exit-status.test:If subshell false -- exit code is propagated in a weird way (strict_argv prevents)
 exit-status.test:If subshell true
 exit-status.test:If subshell true WITH ARGUMENT
 exit-status.test:If subshell true WITH OUTPUT is different
 exit-status.test:More test cases with empty argv
+exit-status.test:Truncating 'exit' status
 exit-status.test:Truncating 'return' status
 extglob-files.test:Extended glob as argument to ${undef:-} (dynamic globbing)
 extglob-files.test:Extended glob in same word as array
@@ -869,8 +890,9 @@ extglob-match.test:repetition with glob
 extglob-match.test:simple repetition with *(foo) and +(Foo)
 extglob-match.test:With extglob on, !($str) on the left or right of == has different meanings
 extglob-match.test:@() with variable arms
-fatal-errors.test:${undef} with nounset
 fatal-errors.test:Unrecoverable: ${undef?message}
+fatal-errors.test:Unrecoverable: divide by zero in case
+fatal-errors.test:Unrecoverable: divide by zero in redirect word
 for-expr.test:Accepts { } syntax too
 for-expr.test:Arith lexer mode
 for-expr.test:Condition that's greater than 32 bits
@@ -904,9 +926,11 @@ globignore.test:Quoting GLOBIGNORE
 globignore.test:resetting globignore reverts to default behaviour
 globignore.test:treat escaped patterns literally
 globignore.test:When GLOBIGNORE is set, glob may become empty (nullglob too)
+globignore.test:When GLOBIGNORE is set, no_dash_glob isn't respected
 globstar.test:** behaves like * if adjacent to anything other than /
 globstar.test:each occurrence of ** recurses through all depths
 globstar.test:globstar is off -> ** is treated like *
+globstar.test:in zsh, ***/ follows symlinked directories, while **/ does not
 globstar.test:within braces, globstar works when there is a comma
 glob.test:0 char glob -- does NOT work
 glob.test:1 char glob
@@ -934,6 +958,8 @@ glob.test:\ in unquoted substitutions is preserved with set -o noglob
 glob.test:looks like glob at the start, but isn't
 glob.test:looks like glob plus negation at the start, but isn't
 glob.test:no glob after ~ expansion
+glob.test:PatSub of negated unescaped [[] and []]
+glob.test:PatSub of unescaped [[] and []]
 glob.test:pattern starting with . does not return . and ..
 glob.test:quoted var expansion with glob meta characters
 glob.test:set -o noglob
@@ -991,6 +1017,7 @@ loop.test:while in pipe
 loop.test:while in pipe with subshell
 loop.test:while in while condition
 nameref.test:a[2] in nameref
+nameref.test:assign to invalid ref with strict_nameref
 nameref.test:Chain of namerefs
 nameref.test:change reference itself
 nameref.test:Dynamic scope with namerefs
@@ -1052,7 +1079,9 @@ pipeline.test:Pipeline comments
 pipeline.test:Redirect in Pipeline
 pipeline.test:shopt -s lastpipe (always on in OSH)#1
 pipeline.test:shopt -s lastpipe (always on in OSH)#2
+pipeline.test:shopt -s lastpipe and shopt -s no_last_fork interaction
 pipeline.test:! turns non-zero into zero
+pipeline.test:! turns zero into 1
 pipeline.test:While Loop ends pipeline
 pipeline.test:! with ( )
 pipeline.test:! with { }
@@ -1060,6 +1089,9 @@ pipeline.test:! with ||
 process-sub.test:Process sub from external process to stdin
 process-sub.test:process sub in background &
 process-sub.test:Process sub input
+process-sub.test:process subs and pipelines together
+process-sub.test:shopt -s process_sub_fail
+process-sub.test:status code is available
 quote.test:$''
 quote.test:$"" is a synonym for ""
 quote.test:$? split over multiple lines
@@ -1141,6 +1173,7 @@ redirect.test:Open multiple descriptors with exec
 redirect.test:Parsing of x=1> and related cases
 redirect.test:Quoted filename redirect with spaces
 redirect.test:Redirect echo to stderr, and then redirect all of stdout somewhere.
+redirect.test:&> redirects stdout and stderr
 redirect.test:Redirect to empty string
 redirect.test:Redirect to file descriptor that's not open
 redir-order.test:echo `cat OSCFLAGS` "world" > OSCFLAGS (from Alpine imap)
@@ -1162,6 +1195,7 @@ regex.test:Omitting ( )
 regex.test:pattern $f(x)  -- regression
 regex.test:pattern a=(1)
 regex.test:pattern @f(x)
+regex.test:Quotes '' "" $'' $"" in pattern
 regex.test:Regex quoted with double quotes
 regex.test:Regex quoted with \ -- preferred in bash
 regex.test:Regex quoted with single quotes
@@ -1171,6 +1205,7 @@ regex.test:regex with ?
 regex.test:Regex with |
 regex.test:Regex with == and not =~ is parse error, different lexer mode required
 regex.test:regex with unprintable characters
+regex.test:Unicode in pattern
 regex.test:Unquoted { is a regex parse error
 serialize.test:${var@Q}
 serialize.test:printf %q newline
@@ -1188,6 +1223,7 @@ sh-func.test:return "" (a lot of disagreement)
 sh-func.test:Return statement
 sh-func.test:Return without args gives previous
 sh-func.test:Scope of global variable when sourced in function (Shell Functions aren't Closures)
+sh-options-bash.test:If shopt --set xtrace is allowed, it should update SHELLOPTS, not BASHOPTS
 sh-options-bash.test:SHELLOPTS and BASHOPTS are non-empty
 sh-options-bash.test:SHELLOPTS is readonly
 sh-options-bash.test:SHELLOPTS is updated when options are changed
@@ -1219,13 +1255,20 @@ sh-options.test:-u is nounset
 sh-options.test:Unimplemented options - OSH shopt -s ignore_shopt_not_impl
 sh-options.test:Unimplemented options - print, query, set, unset
 sh-options.test:vi and emacs are mutually exclusive
+sh-usage.test:args are passed
+sh-usage.test:args that look like flags are passed after -c
+sh-usage.test:args that look like flags are passed after script
+sh-usage.test:empty -c input
 sh-usage.test:empty stdin
 sh-usage.test:exit with explicit arg
 sh-usage.test:exit with no args
+sh-usage.test:osh --eval
 sh-usage.test:Other flag parsers are not affected by - rule
 sh-usage.test:--rcfile in non-interactive shell prints warnings
+sh-usage.test:sh -c
 sh-usage.test:sh -c with multiple -- args
 sh-usage.test:sh -c with no arg after --
+sh-usage.test:shell obeys --help (regression for OSH)
 smoke.test:"$@" "$*"
 smoke.test:$@ $*
 smoke.test:and-or chains
@@ -1251,6 +1294,7 @@ strict-options.test:return at top level is an error
 strict-options.test:shopt -s strict_binding: Persistent prefix bindings not allowed on special builtins
 strict-options.test:simple_eval_builtin
 strict-options.test:strict_arith option
+strict-options.test:strict_parse_slice means you need explicit  length
 subshell.test:Subshell exit code
 temp-binding.test:FOO=bar $unset - temp binding, then empty argv from unquoted unset var (#2411)
 temp-binding.test:Temp bindings with local
@@ -1262,15 +1306,19 @@ tilde.test:No tilde expansion in word that looks like assignment but isn't
 tilde.test:other user
 tilde.test:strict tilde
 tilde.test:tilde expansion of word after redirect
+var-num.test:$0 with -c
+var-num.test:$0 with stdin
+var-num.test:$@ with filename
 var-num.test:In function
+var-num.test:Normal and braced
 var-op-bash.test:${array@Q} and ${array[@]@Q}
 var-op-bash.test:${!prefix@} ${!prefix*} yields sorted array of var names
 var-op-bash.test:${!prefix@} matches var name (regression)
 var-op-bash.test:${var@a} error conditions
 var-op-bash.test:${var@a} for attributes
-var-op-bash.test:${#var@X} is a parse error
 var-op-bash.test:${x@Q}
 var-op-bash.test:${x@u} U L - upper / lower case (bash 5.1 feature)
+var-op-bash.test:argv array and @P @Q @a
 var-op-bash.test:Case folding that depends on locale (not enabled, requires Turkish locale)
 var-op-bash.test:Case folding - Unicode characters
 var-op-bash.test:Lower Case with , and ,,
@@ -1286,6 +1334,7 @@ var-op-patsub.test:Global Pattern replacement with /
 var-op-patsub.test:\(\) in pattern (regression)
 var-op-patsub.test:Left Anchored Pattern replacement with #
 var-op-patsub.test:patsub with [^]]
+var-op-patsub.test:patsub with single quotes and hyphen in character class (regression)
 var-op-patsub.test:Pattern is empty $foo$bar -- regression for infinite loop
 var-op-patsub.test:Pattern replacement
 var-op-patsub.test:Replace char class
@@ -1373,6 +1422,7 @@ vars-special.test:$1 .. $9 are scoped, while $0 is not
 vars-special.test:$_ and ${_}
 vars-special.test:$HOSTNAME
 vars-special.test:$_ is not reset with (( and [[
+vars-special.test:$_ is not undefined on first use
 vars-special.test:$LINENO in ((
 vars-special.test:$LINENO in [[
 vars-special.test:$LINENO in case
@@ -1387,7 +1437,7 @@ vars-special.test:$_ with && and ||
 vars-special.test:$_ with loop
 vars-special.test:$_ with simple command and evaluation
 vars-special.test:$_ with word splitting
-vars-special.test:UID EUID PPID can't be changed
+vars-special.test:HOSTNAME OSTYPE can be changed
 var-sub-quote.test:-
 var-sub-quote.test::-
 var-sub-quote.test:$'' allowed within VarSub arguments
@@ -1418,6 +1468,8 @@ var-sub-quote.test:/ operator with single quoted arg (causes syntax error in reg
 var-sub-quote.test:# operator with single quoted arg (dash/ash and bash/mksh disagree, reported by Crestwave)
 var-sub-quote.test:part_value tree on RHS
 var-sub-quote.test:part_value tree with multiple words
+var-sub-quote.test:Right Brace as argument (similar to #702)
+var-sub-quote.test:single quotes work inside character classes
 var-sub-quote.test:Strip a string with single quotes, double quoted
 var-sub-quote.test:Strip a string with single quotes, unquoted
 var-sub-quote.test:substitution of IFS character, quoted and unquoted
@@ -1428,6 +1480,8 @@ var-sub-quote.test:Var substitution with \n in value
 var-sub-quote.test:Var with multiple words: no quotes
 var-sub.test:Here doc with bad "$@" delimiter
 var-sub.test:Nested ${}
+whitespace.test:\r in arith expression is allowed by some shells, but not most!
+whitespace.test:whitespace in string to integer conversion
 word-eval.test:Default values -- more cases
 word-eval.test:Evaluation of constant parts
 word-eval.test:Evaluation of each part
@@ -1439,6 +1493,7 @@ word-split.test:"$*"
 word-split.test:"$@"
 word-split.test:$*
 word-split.test:$@
+word-split.test:""$A"" - empty string on both sides - derived from spec/toysh-posix #15
 word-split.test:$* with empty IFS
 word-split.test:4 x 3 table: (default IFS, IFS='', IFS=zx) x ( $* "$*" $@ "$@" )
 word-split.test:4 x 3 table - with for loop
@@ -1452,6 +1507,7 @@ word-split.test:empty $@ and $* is elided
 word-split.test:empty argv
 word-split.test:Empty IFS bug #2141 (from pnut)
 word-split.test:Empty IFS (regression for bug)
+word-split.test:empty literals are not elided
 word-split.test:IFS='\ '
 word-split.test:IFS='\'
 word-split.test:IFS and joining arrays

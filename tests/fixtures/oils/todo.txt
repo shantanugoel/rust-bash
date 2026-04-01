@@ -1,6 +1,6 @@
-# Ordered Oils fix queue as of 2026-03-31.
+# Ordered Oils fix queue as of 2026-07-22.
 # Source of truth: current live Oils run (`cargo test --test oils_spec -- --nocapture --test-threads=1`).
-# Current totals: 1500 pass / 699 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
+# Current totals: 1515 pass / 643 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
 #
 # ── How the Oils test infra works ──
 # Runner:      tests/oils_spec.rs (datatest_stable harness, discovers .test.sh files)
@@ -25,13 +25,11 @@
 # `builtin-cd.test` and `redirect.test` stay on the queue, but expect a small VFS/symlink/fd tail to remain until M9.
 
 ## Parser, Expansion, Quoting, Assignment
-- parse-errors.test (xfail=6) remaining: long token (needs python2), `${%}` parser literal, `}` on second line, interactive parse error, array literal inside array
-- assign-extended.test (xfail=6) `declare` / `typeset` / `declare -p` semantics; env bindings with array assignments fixed
-- var-sub-quote.test (xfail=3) quoted parameter expansion fidelity; array empty values and single-quote strip patterns fixed
-- word-split.test (xfail=5) IFS, `$@`, `$*`, empty-string splitting semantics; IFS='' prefix expansion and ${!v} split fixed
-- command-sub.test (xfail=15) command-sub quoting and newline semantics; exit-code propagation fixed
-- arith.test (xfail=5) remaining: `$SH -c` tests, `#` comment in `(( ))`, quoted constant stripping, recursive arith eval; s[0] scalar subscript error fixed
-- assign.test (xfail=11) assignment semantics and error handling; env-binding preceding and `local x` nounset fixed
+- assign-extended.test (xfail=5) `declare` / `typeset` / `declare -p` semantics; env bindings with array assignments and binary-data `declare -p` fixed
+- var-sub-quote.test (xfail=1) quoted parameter expansion fidelity; array empty values, single-quote strip patterns, char-class `\]` escaping, and `${var-\}}` right-brace escaping fixed
+- word-split.test (xfail=3) IFS, `$@`, `$*`, empty-string splitting semantics; IFS='' prefix expansion, ${!v} split, empty literal elision, and `""$A""` anchoring fixed
+- arith.test (xfail=3) remaining: `#` comment in `(( ))`, quoted constant stripping; `$SH -c` tests, invalid constant, negative bit-shift, and s[0] scalar subscript error fixed
+- assign.test (xfail=10) assignment semantics and error handling; env-binding preceding, `local x` nounset, and `readonly -a` empty-array formatting fixed
 - var-op-test.test (xfail=16) parameter test operators
 - var-op-bash.test (xfail=14) bash-specific parameter operators; ${!prefix@} sorted names fixed
 - here-doc.test (xfail=14) here-doc parsing and expansion tail
@@ -128,3 +126,5 @@
 
 ## Parser-Adjacent Backlog
 - alias.test (xfail=26) keep at the end; current blocker is moving alias expansion earlier than the post-AST `split_whitespace()` hack in `src/interpreter/walker.rs`, likely between tokenization and parsing in `src/interpreter/mod.rs` and/or by changing `RustBash::exec()` parse granularity; this is not proven to require `brush_parser` changes
+- parse-errors.test (xfail=6) remaining: long token (needs python2), `${%}` parser literal, `}` on second line, interactive parse error, array literal inside array
+- command-sub.test (xfail=15) command-sub quoting and newline semantics; exit-code propagation fixed

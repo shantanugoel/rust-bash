@@ -136,6 +136,8 @@ fn execute_oils_case(case: &OilsTestCase) -> Option<String> {
     // $TMP points to a writable temp directory, $REPO_ROOT to the VFS root.
     env_map.insert("TMP".into(), "/_tmp".into());
     env_map.insert("REPO_ROOT".into(), "/".into());
+    // $SH is the shell under test — many Oils cases use `$SH -c '...'`.
+    env_map.insert("SH".into(), "bash".into());
 
     let mut builder = RustBashBuilder::new()
         .env(env_map)

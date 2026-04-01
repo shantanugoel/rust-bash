@@ -1347,6 +1347,15 @@ fn has_extglob_pattern(s: &str) -> bool {
 /// The algorithm flattens segments to character-level quotedness, then scans
 /// through splitting only on unquoted IFS characters.
 fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
+    // Track whether any segment in the word is quoted (even if empty).
+    let word_has_quoted = word.iter().any(|s| s.quoted);
+
+    // Check if the word starts/ends with an empty quoted segment (e.g. `""$A""`).
+    // These anchors produce leading/trailing empty fields.
+    let leading_empty_quoted = word.first().is_some_and(|s| s.quoted && s.text.is_empty());
+    let trailing_empty_quoted =
+        word.last().is_some_and(|s| s.quoted && s.text.is_empty()) && word.len() > 1;
+
     // Flatten segments to (char, quoted, glob_protected) triples.
     let chars: Vec<(char, bool, bool)> = word
         .iter()
@@ -1355,7 +1364,7 @@ fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
 
     if chars.is_empty() {
         // An empty word with at least one quoted segment → produce one empty word.
-        if word.iter().any(|s| s.quoted) {
+        if word_has_quoted {
             result.push(SplitWord {
                 text: String::new(),
                 may_glob: false,
@@ -1386,18 +1395,29 @@ fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
     let is_ifs_nw = |c: char| ifs_non_ws.contains(&c);
 
     let len = chars.len();
+    let result_start = result.len();
     let mut current = String::new();
     let mut current_may_glob = false;
     let mut has_content = false;
     let mut i = 0;
 
-    // Skip leading unquoted IFS whitespace.
-    while i < len {
-        let (c, quoted, _) = chars[i];
-        if !quoted && is_ifs_ws(c) {
-            i += 1;
-        } else {
-            break;
+    // Skip leading unquoted IFS whitespace (unless word starts with an empty
+    // quoted segment like `""$A` — in that case, the leading whitespace
+    // becomes a field separator after the empty anchor field).
+    if leading_empty_quoted {
+        // Emit the leading empty field anchor.
+        result.push(SplitWord {
+            text: String::new(),
+            may_glob: false,
+        });
+    } else {
+        while i < len {
+            let (c, quoted, _) = chars[i];
+            if !quoted && is_ifs_ws(c) {
+                i += 1;
+            } else {
+                break;
+            }
         }
     }
 
@@ -1454,10 +1474,31 @@ fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
 
     // Push the last field if non-empty. Trailing non-whitespace IFS delimiters
     // do NOT produce a trailing empty field (bash behavior).
-    if has_content || !current.is_empty() {
+    let had_content = has_content || !current.is_empty();
+    if had_content {
         result.push(SplitWord {
             text: current,
             may_glob: current_may_glob,
+        });
+    } else if word_has_quoted && result_start == result.len() && !trailing_empty_quoted {
+        // All unquoted content was IFS-split away, but a quoted segment
+        // (even if empty, e.g. `""`) anchors the word to produce at least
+        // one empty field. Skip when trailing anchor will handle it.
+        result.push(SplitWord {
+            text: String::new(),
+            may_glob: false,
+        });
+    }
+
+    // If the word ends with an empty quoted segment (e.g. `$A""` or `""$A""`),
+    // emit a trailing empty field — but only when IFS content actually
+    // separated the anchor from preceding text. If the scan ended with
+    // pending content (e.g. `$VAR""` with VAR="hello"), the `""` sticks
+    // to the last field and does not create a separate empty field.
+    if trailing_empty_quoted && !had_content {
+        result.push(SplitWord {
+            text: String::new(),
+            may_glob: false,
         });
     }
 }
@@ -3127,6 +3168,15 @@ fn expand_default_piece(
                 push_segment(words, s, true, true);
             }
             push_segment(words, "'", true, true);
+            return Ok(false);
+        }
+        // Inside parameter expansion, \} was used to escape the closing brace.
+        // After parsing, quote removal should strip the backslash.
+        if let WordPiece::EscapeSequence(s) = piece
+            && let Some(c) = s.strip_prefix('\\')
+            && c == "}"
+        {
+            push_segment(words, c, true, true);
             return Ok(false);
         }
         return expand_word_piece(piece, words, state, true);

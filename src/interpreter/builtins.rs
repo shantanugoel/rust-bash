@@ -1330,9 +1330,10 @@ fn builtin_readonly(
     state: &mut InterpreterState,
 ) -> Result<ExecResult, RustBashError> {
     // Parse flags: -p (print), -a (indexed array), -A (associative array)
+    // Note: in bash, `readonly -a name` (without assignment) does NOT create
+    // the variable as an array — it just marks it readonly. We parse but
+    // ignore the -a/-A flags for the no-value case.
     let mut print_mode = false;
-    let mut make_indexed_array = false;
-    let mut make_assoc_array = false;
     let mut var_args: Vec<&String> = Vec::new();
 
     for arg in args {
@@ -1344,8 +1345,7 @@ fn builtin_readonly(
             for c in flags.chars() {
                 match c {
                     'p' => print_mode = true,
-                    'a' => make_indexed_array = true,
-                    'A' => make_assoc_array = true,
+                    'a' | 'A' => { /* accepted but not used for readonly */ }
                     _ => {}
                 }
             }
@@ -1424,7 +1424,9 @@ fn builtin_readonly(
         } else {
             // Mark existing variable as readonly (and set array type if requested)
             let flag_attrs = VariableAttrs::READONLY;
-            declare_without_value(state, arg, flag_attrs, make_assoc_array, make_indexed_array)?;
+            // In bash, `readonly -a name` (without assignment) does NOT create
+            // the variable as an array — it just marks it readonly.
+            declare_without_value(state, arg, flag_attrs, false, false)?;
             // Ensure READONLY is always set even if variable already existed
             if let Some(var) = state.env.get_mut(arg.as_str()) {
                 var.attrs.insert(VariableAttrs::READONLY);

@@ -57,7 +57,7 @@ Key format elements:
 | Oils spec cases | 2,728 | 2,278 | −450 (42 files skipped) |
 | **Total test surface** | **~3,260** | **2,758** | **−502** |
 
-The Oils corpus is imported and running. Of the 2,278 Oils cases (in 100 tested files), **1,293 pass**, **906 are xfail**, and **79 are skip**. Upstream provenance: Oils commit `7789e21d81537a5b47bacbd4267edf7c659a9366`.
+The Oils corpus is imported and running. Of the 2,278 Oils cases (in 100 tested files), **1,556 pass**, **643 are xfail**, and **79 are skip**. Upstream provenance: Oils commit `7789e21d81537a5b47bacbd4267edf7c659a9366`.
 
 ---
 
@@ -286,7 +286,7 @@ test runner that powers `comparison.rs` and `spec_tests.rs`.
 ## Projected pass rates after import
 
 These were rough planning estimates. The actual measured baseline is:
-**1,293 pass / 906 xfail / 79 skip** across 100 tested files (2,278 cases). The per-category
+**1,556 pass / 643 xfail / 79 skip** across 100 tested files (2,278 cases). The per-category
 estimates below are superseded by the measured totals in the "Combined test surface" table.
 
 | Category | Files | Cases | Est. pass | Est. xfail | Est. skip |
@@ -498,9 +498,9 @@ M6**, and only indirectly helps the rest of the roadmap.
 - [x] Apache 2.0 LICENSE attribution present
 - [x] `Cargo.toml` registers the new `oils_spec` test target with `harness = false`
 - [x] File-level skip list excludes CLI-only, non-applicable, and explicit non-goal files (42 files)
-- [x] Pass-list generated and maintained (1,293 entries in `pass-list.txt`)
+- [x] Pass-list generated and maintained (1,556 entries in `pass-list.txt`)
 - [x] `cargo test --test oils_spec` runs cleanly (0 unexpected failures)
 - [x] Per-file summary printed (pass/xfail/skip/unexpected-pass/fail per file)
-- [x] Initial baseline established: 802 pass / 1,393 xfail / 79 skip across 100 tested files (now 1,293 / 906 / 79)
+- [x] Initial baseline established: 802 pass / 1,393 xfail / 79 skip across 100 tested files (now 1,556 / 643 / 79)
 - [x] Unexpected passes force promotion (same unexpected-pass discipline as comparison fixtures)
 - [x] Documentation updated (guidebook chapters 9 and 10)

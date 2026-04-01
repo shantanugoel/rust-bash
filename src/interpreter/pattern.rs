@@ -164,8 +164,8 @@ fn match_char_class(pat: &[u8], ch: u8, nocase: bool) -> Option<(bool, usize)> {
             i = end + 1; // skip past :]
             continue;
         }
-        if pat[i] == b'\\' && i + 1 < pat.len() && pat[i + 1] != b']' {
-            // Escaped character inside class
+        if pat[i] == b'\\' && i + 1 < pat.len() {
+            // Escaped character inside class (including \])
             if bytes_eq(pat[i + 1], ch, nocase) {
                 matched = true;
             }
