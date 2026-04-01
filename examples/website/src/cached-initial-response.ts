@@ -17,7 +17,7 @@ export const CACHED_INITIAL_RESPONSE: AgentEvent[] = [
     type: 'tool_call',
     command: 'ls',
     result: {
-      stdout: 'README.md  Cargo.toml  src  docs  examples\n',
+      stdout: 'Cargo.toml  README.md  docs  src\n',
       stderr: '',
       exitCode: 0,
     },

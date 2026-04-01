@@ -2,6 +2,9 @@
 
 Interactive demo of rust-bash running in the browser via WASM.
 
+The demo sandbox mounts a build-time snapshot of git-tracked repo files from
+the root allowlist: `README.md`, `Cargo.toml`, `src/`, and `docs/`.
+
 ## Architecture
 
 ```
@@ -47,7 +50,8 @@ Interactive demo of rust-bash running in the browser via WASM.
 | `src/agent.ts` | Client-side agent loop (async generator) |
 | `src/cached-initial-response.ts` | Hand-crafted first demo response |
 | `src/wasm-mock.ts` | Development mock for bash (used until WASM binary is built) |
-| `src/content.ts` | Preloaded VFS file content |
+| `src/content.ts` | Typed export for the build-injected repo snapshot |
+| `vite.config.ts` | Builds the tracked-file VFS snapshot from the git allowlist |
 | `functions/api/chat.ts` | Shared Cloudflare Pages Function logic for the LLM proxy |
 | `functions/api/chat/completions.ts` | Pages route entrypoint for the OpenAI-compatible `chat/completions` API |
 
@@ -119,13 +123,14 @@ npm run preview    # preview production build
 ### Automated (GitHub Actions)
 
 A workflow at `.github/workflows/deploy-website.yml` automatically builds the
-WASM binary and deploys to Cloudflare Pages on **any `v*` tag push**.
+WASM binary and deploys to Cloudflare Pages on **any `v*` tag push**. It can
+also be run manually from GitHub Actions with an optional commit SHA override.
 
 **One-time setup:**
 
 1. Create a Cloudflare Pages project:
    ```bash
-   npx wrangler pages project create rust-bash-website --production-branch main
+   npx wrangler pages project create rustbashweb --production-branch main
    ```
 2. Add these GitHub repository secrets (`Settings → Secrets and variables → Actions`):
    | Secret | Where to get it |
@@ -135,7 +140,7 @@ WASM binary and deploys to Cloudflare Pages on **any `v*` tag push**.
    | `GEMINI_API_KEY` | [Google AI Studio](https://aistudio.google.com/apikey) |
 3. Set the `GEMINI_API_KEY` secret on the Pages project for the default Gemini setup:
    ```bash
-   npx wrangler pages secret put GEMINI_API_KEY --project-name rust-bash-website
+   npx wrangler pages secret put GEMINI_API_KEY --project-name rustbashweb
    ```
    To switch providers later without code changes, set `LLM_API_KEY` instead and
    optionally configure `LLM_BASE_URL` and `LLM_MODEL` in the Pages dashboard.
@@ -154,7 +159,7 @@ WASM binary and deploys to Cloudflare Pages on **any `v*` tag push**.
 # Then build and deploy the website
 cd examples/website
 npm install && npm run build
-npx wrangler pages deploy dist/ --project-name rust-bash-website
+npx wrangler pages deploy dist/ --project-name rustbashweb
 ```
 
 ### Environment Variables
