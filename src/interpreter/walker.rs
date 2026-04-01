@@ -434,7 +434,9 @@ fn execute_command(
                 Err(e) => Err(e),
             }
         }
-        ast::Command::ExtendedTest(ext_test) => execute_extended_test(&ext_test.expr, state),
+        ast::Command::ExtendedTest(ext_test, _redirects) => {
+            execute_extended_test(&ext_test.expr, state)
+        }
     };
 
     match result {
@@ -1428,6 +1430,11 @@ fn execute_compound_command(
         ast::CompoundCommand::Arithmetic(arith) => execute_arithmetic(arith, state)?,
         ast::CompoundCommand::ArithmeticForClause(afc) => {
             execute_arithmetic_for(afc, state, stdin)?
+        }
+        ast::CompoundCommand::Coprocess(_) => {
+            return Err(RustBashError::Execution(
+                "coproc is not supported".to_string(),
+            ));
         }
     };
 

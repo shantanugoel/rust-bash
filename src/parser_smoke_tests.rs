@@ -8,17 +8,11 @@
 /// - `word::parse()` returns `Vec<WordPieceWithSource>`, not `Vec<WordPiece>`.
 ///   Each element has a `.piece` field containing the `WordPiece`.
 /// - The arithmetic variant is `ArithmeticExpression`, not `ArithmeticExpansion`.
-/// - `parse_tokens()` takes 3 args: `(&Vec<Token>, &ParserOptions, &SourceInfo)`.
+/// - `parse_tokens()` takes 2 args: `(&[Token], &ParserOptions)`.
 fn default_parser_options() -> brush_parser::ParserOptions {
     brush_parser::ParserOptions {
         sh_mode: false,
         ..Default::default()
-    }
-}
-
-fn source_info() -> brush_parser::SourceInfo {
-    brush_parser::SourceInfo {
-        source: String::new(),
     }
 }
 
@@ -31,8 +25,7 @@ fn tokenize_simple_command() {
 #[test]
 fn parse_simple_command() {
     let tokens = brush_parser::tokenize_str("echo hello").unwrap();
-    let program =
-        brush_parser::parse_tokens(&tokens, &default_parser_options(), &source_info()).unwrap();
+    let program = brush_parser::parse_tokens(&tokens, &default_parser_options()).unwrap();
     assert!(
         !program.complete_commands.is_empty(),
         "parsed program has no commands"
@@ -42,8 +35,7 @@ fn parse_simple_command() {
 #[test]
 fn parse_pipeline() {
     let tokens = brush_parser::tokenize_str("cat file.txt | grep pattern | wc -l").unwrap();
-    let program =
-        brush_parser::parse_tokens(&tokens, &default_parser_options(), &source_info()).unwrap();
+    let program = brush_parser::parse_tokens(&tokens, &default_parser_options()).unwrap();
     assert!(!program.complete_commands.is_empty());
 }
 
@@ -57,10 +49,9 @@ fn parse_compound_commands() {
         "(echo subshell)",
     ];
     let opts = default_parser_options();
-    let si = source_info();
     for input in &inputs {
         let tokens = brush_parser::tokenize_str(input).unwrap();
-        let program = brush_parser::parse_tokens(&tokens, &opts, &si).unwrap();
+        let program = brush_parser::parse_tokens(&tokens, &opts).unwrap();
         assert!(
             !program.complete_commands.is_empty(),
             "failed to parse: {input}"
@@ -145,14 +136,17 @@ fn word_parse_arithmetic_expression() {
 #[test]
 fn word_parse_tilde() {
     let mut opts = default_parser_options();
-    opts.tilde_expansion = true;
+    opts.tilde_expansion_at_word_start = true;
     let pieces = brush_parser::word::parse("~/bin", &opts).unwrap();
     assert!(!pieces.is_empty());
     match &pieces[0].piece {
-        brush_parser::word::WordPiece::TildePrefix(s) => {
-            assert_eq!(s, "");
+        brush_parser::word::WordPiece::TildeExpansion(expr) => {
+            assert!(
+                matches!(expr, brush_parser::word::TildeExpr::Home),
+                "expected TildeExpr::Home, got {expr:?}"
+            );
         }
-        other => panic!("expected TildePrefix, got {other:?}"),
+        other => panic!("expected TildeExpansion, got {other:?}"),
     }
 }
 

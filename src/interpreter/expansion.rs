@@ -339,8 +339,8 @@ fn expand_word_piece(
                 push_segment(words, s, true, true);
             }
         }
-        WordPiece::TildePrefix(user) => {
-            expand_tilde(user, words, state);
+        WordPiece::TildeExpansion(expr) => {
+            expand_tilde(expr, words, state);
         }
         WordPiece::ParameterExpansion(expr) => {
             at_empty = expand_parameter(expr, words, state, in_dq)?;
@@ -406,15 +406,35 @@ fn expand_word_piece_mut(
 
 // ── Tilde expansion ─────────────────────────────────────────────────
 
-fn expand_tilde(user: &str, words: &mut Vec<WordInProgress>, state: &InterpreterState) {
-    if user.is_empty() {
-        // ~ → $HOME
-        let home = get_var(state, "HOME").unwrap_or_default();
-        push_segment(words, &home, true, true);
-    } else {
-        // ~user → not supported in sandbox, just output literally
-        push_segment(words, "~", true, true);
-        push_segment(words, user, true, true);
+fn expand_tilde(
+    expr: &brush_parser::word::TildeExpr,
+    words: &mut Vec<WordInProgress>,
+    state: &InterpreterState,
+) {
+    use brush_parser::word::TildeExpr;
+    match expr {
+        TildeExpr::Home => {
+            let home = get_var(state, "HOME").unwrap_or_default();
+            push_segment(words, &home, true, true);
+        }
+        TildeExpr::WorkingDir => {
+            let pwd = get_var(state, "PWD").unwrap_or_default();
+            push_segment(words, &pwd, true, true);
+        }
+        TildeExpr::OldWorkingDir => {
+            let oldpwd = get_var(state, "OLDPWD").unwrap_or_default();
+            push_segment(words, &oldpwd, true, true);
+        }
+        TildeExpr::UserHome(user) => {
+            // ~user → not supported in sandbox, output literally
+            push_segment(words, "~", true, true);
+            push_segment(words, user, true, true);
+        }
+        TildeExpr::NthDirFromTopOfDirStack { .. }
+        | TildeExpr::NthDirFromBottomOfDirStack { .. } => {
+            // Directory stack tilde expansion not yet supported
+            push_segment(words, "~", true, true);
+        }
     }
 }
 

@@ -1,6 +1,6 @@
-# Ordered Oils fix queue as of 2026-07-22.
+# Ordered Oils fix queue as of 2026-04-01.
 # Source of truth: current live Oils run (`cargo test --test oils_spec -- --nocapture --test-threads=1`).
-# Current totals: 1515 pass / 643 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
+# Current totals: 1531 pass / 627 xfail / 79 skip, with 46 whole-file skips in `tests/oils_spec.rs`.
 #
 # ── How the Oils test infra works ──
 # Runner:      tests/oils_spec.rs (datatest_stable harness, discovers .test.sh files)
@@ -33,24 +33,24 @@
 - var-op-test.test (xfail=16) parameter test operators
 - var-op-bash.test (xfail=14) bash-specific parameter operators; ${!prefix@} sorted names fixed
 - here-doc.test (xfail=14) here-doc parsing and expansion tail
-- array-literal.test (xfail=13) array-literal parse / assignment semantics
-- var-op-patsub.test (xfail=11) pattern substitution semantics
+- array-literal.test (xfail=12) array-literal parse / assignment semantics
+- var-op-patsub.test (xfail=10) pattern substitution semantics
 - var-op-strip.test (xfail=6) prefix/suffix strip semantics; strip all unicode fixed
-- arith-context.test (xfail=8) arithmetic parser / evaluator context rules
+- arith-context.test (xfail=3) arithmetic parser / evaluator context rules
 - append.test (xfail=8) `+=` semantics for scalars and arrays
 - quote.test (xfail=6) quoting parse/runtime fidelity
 - var-op-len.test (xfail=7) `${#...}` edge cases
 - var-op-slice.test (xfail=7) slicing semantics
-- var-num.test (xfail=6) numeric special variables / expansions
+- var-num.test (xfail=2) numeric special variables / expansions
 - func-parsing.test (xfail=6) function-definition parse edge cases
 - brace-expansion.test (xfail=5) brace expansion tail
 - shell-grammar.test (xfail=4) grammar fidelity beyond current parser happy path
-- whitespace.test (xfail=5) whitespace-sensitive parsing / execution
+- whitespace.test (xfail=3) whitespace-sensitive parsing / execution
 - var-sub.test (xfail=4) remaining unquoted parameter expansion cases
 - command-sub-ksh.test (xfail=4) legacy command-sub syntax tail
 - bool-parse.test (xfail=3) boolean / conditional parse rules
-- for-expr.test (xfail=3) C-style `for ((...))` parse/runtime fidelity
-- fatal-errors.test (xfail=3) fatal parse/runtime error behavior
+- for-expr.test (xfail=2) C-style `for ((...))` parse/runtime fidelity
+- fatal-errors.test (xfail=2) fatal parse/runtime error behavior
 - sh-func.test (xfail=2) shell-function parsing / invocation tail
 - word-eval.test (xfail=1) word evaluation corner cases
 - arith-dynamic.test (xfail=1) dynamic arithmetic lookup tail
@@ -67,24 +67,24 @@
 - builtin-type-bash.test (xfail=14) `type` / PATH / alias / function precedence
 - dbracket.test (xfail=6) `[[ ... ]]` parse/runtime semantics
 - xtrace.test (xfail=5) tracing output fidelity and `PS4` behavior
-- vars-special.test (xfail=14) `BASHPID`, `LINENO`, `$_`, startup defaults, pipeline state
-- builtin-set.test (xfail=9) `set` flag handling and side effects
-- errexit.test (xfail=13) `set -e` / redirection / alias / function behavior
+- vars-special.test (xfail=12) `BASHPID`, `LINENO`, `$_`, startup defaults, pipeline state
+- builtin-set.test (xfail=7) `set` flag handling and side effects
+- errexit.test (xfail=12) `set -e` / redirection / alias / function behavior
 - builtin-echo.test (xfail=8) escape behavior and bash echo quirks
 - command_.test (xfail=11) command lookup / PATH / cache / script execution behavior
 - builtin-meta.test (xfail=10) `command -v/-V`, `builtin`, `command -p`
 - builtin-eval-source.test (xfail=7) `eval` / `source` option and PATH semantics
 - builtin-vars.test (xfail=7) `unset`, `local`, export / scope edge cases
 - builtin-bracket.test (xfail=10) `test` / `[` predicate fidelity
-- builtin-special.test (xfail=10) POSIX special builtin semantics
-- strict-options.test (xfail=9) strict mode control-flow / argv behavior
+- builtin-special.test (xfail=8) POSIX special builtin semantics
+- strict-options.test (xfail=8) strict mode control-flow / argv behavior
 - builtin-getopts.test (xfail=6) `getopts`, `OPTIND`, `OPTARG` edge cases
 - loop.test (xfail=6) `break` / `continue` / loop validation tail
-- sh-options-bash.test (xfail=5) `SHELLOPTS` / `BASHOPTS` fidelity
+- sh-options-bash.test (xfail=4) `SHELLOPTS` / `BASHOPTS` fidelity
 - builtin-meta-assign.test (xfail=5) assignment-builtin interaction tail
 - case_.test (xfail=4) `case` parsing / pattern tail
-- exit-status.test (xfail=4) shell exit-code bookkeeping
-- builtin-type.test (xfail=3) smaller `type` output / keyword cases
+- exit-status.test (xfail=3) shell exit-code bookkeeping
+- builtin-type.test (xfail=2) smaller `type` output / keyword cases
 - builtin-bash.test (xfail=3) `bash` / `sh` builtin tail
 - builtin-misc.test (xfail=2) leftover builtin behavior gaps
 - builtin-dirs.test (xfail=1) directory-stack builtin tail
@@ -92,32 +92,32 @@
 - let.test (xfail=1) `let` builtin tail
 
 ## Arrays, Indirection, Regex, Introspection
-- array-sparse.test (xfail=19) sparse-array semantics and negative-index handling
+- array-sparse.test (xfail=13) sparse-array semantics and negative-index handling
 - var-ref.test (xfail=17) indirect expansion and guarded expansion semantics
-- array.test (xfail=15) array assignment / env-binding / strict-array behavior
-- nameref.test (xfail=14) `declare -n` and reference semantics
-- regex.test (xfail=9) `[[ ... =~ ... ]]` parse/runtime regex behavior
+- array.test (xfail=12) array assignment / env-binding / strict-array behavior
+- nameref.test (xfail=13) `declare -n` and reference semantics
+- regex.test (xfail=7) `[[ ... =~ ... ]]` parse/runtime regex behavior
 - array-assign.test (xfail=10) assignment forms for arrays
-- array-assoc.test (xfail=6) associative-array tail
+- array-assoc.test (xfail=5) associative-array tail
 - introspect.test (xfail=7) introspection / serialization tail
 - array-compat.test (xfail=2) compatibility behavior for array corner cases
 
 ## Execution, Redirects, Globs, Filesystem Fidelity
-- sh-usage.test (xfail=15) `sh` / `bash` invocation and argument handling
-- bugs.test (xfail=10) mixed regression bucket; sweep after core semantics are stable
-- redirect.test (xfail=8) redirection semantics; leave the final fd/VFS tail for M9
-- builtin-cd.test (xfail=9) `cd` / `pwd` semantics; leave the final symlink/PWD fidelity tail for M9
+- sh-usage.test (xfail=8) `sh` / `bash` invocation and argument handling
+- bugs.test (xfail=7) mixed regression bucket; sweep after core semantics are stable
+- redirect.test (xfail=7) redirection semantics; leave the final fd/VFS tail for M9
+- builtin-cd.test (xfail=7) `cd` / `pwd` semantics; leave the final symlink/PWD fidelity tail for M9
 - redirect-multi.test (xfail=8) multi-redirect word expansion and ambiguity
-- glob.test (xfail=7) remaining glob semantics and locale/order edge cases
-- tilde.test (xfail=7) tilde expansion tail
-- globignore.test (xfail=5) `GLOBIGNORE` interaction semantics
-- process-sub.test (xfail=6) process substitution semantics
+- glob.test (xfail=5) remaining glob semantics and locale/order edge cases
+- tilde.test (xfail=4) tilde expansion tail
+- globignore.test (xfail=4) `GLOBIGNORE` interaction semantics
+- process-sub.test (xfail=3) process substitution semantics
 - serialize.test (xfail=5) shell state serialization / `%q` / `set` output fidelity
 - redirect-command.test (xfail=5) command + redirect interaction semantics
 - redir-order.test (xfail=4) redirect ordering semantics
 - extglob-files.test (xfail=3) extglob filesystem matching tail
 - extglob-match.test (xfail=2) extglob matcher semantics
-- globstar.test (xfail=1) zsh-specific symlink-following test (N/A for bash)
+- pipeline.test (xfail=9) pipeline execution semantics
 - glob-bash.test (xfail=1) bash-specific glob behavior tail
 
 ## Deferred Until Milestone 9

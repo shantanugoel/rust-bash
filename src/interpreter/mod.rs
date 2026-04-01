@@ -404,7 +404,9 @@ pub(crate) fn parser_options() -> brush_parser::ParserOptions {
         sh_mode: false,
         posix_mode: false,
         enable_extended_globbing: true,
-        tilde_expansion: true,
+        tilde_expansion_at_word_start: true,
+        tilde_expansion_after_colon: true,
+        ..Default::default()
     }
 }
 
@@ -420,12 +422,8 @@ pub fn parse(input: &str) -> Result<ast::Program, RustBashError> {
     }
 
     let options = parser_options();
-    let source_info = brush_parser::SourceInfo {
-        source: input.to_string(),
-    };
 
-    brush_parser::parse_tokens(&tokens, &options, &source_info)
-        .map_err(|e| RustBashError::Parse(e.to_string()))
+    brush_parser::parse_tokens(&tokens, &options).map_err(|e| RustBashError::Parse(e.to_string()))
 }
 
 /// Set a variable in the interpreter state, respecting readonly, nameref,

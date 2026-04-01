@@ -32,9 +32,14 @@ append.test:myarray[-1]+=s - Append to last element
 append.test:Strings have value semantics, not reference semantics
 append.test:Type mismatching of lhs+=rhs should not cause a crash
 append.test:typeset s${dyn}+=
+arith-context.test:$[$undefined] is a synonym for $(($undefined (#2566)
+arith-context.test:$[$var is a synonym for $(($var (#2426)
+arith-context.test:$[ is a synonym for $((
 arith-context.test:Array index on LHS of assignment
+arith-context.test:Array index on LHS with indices
 arith-context.test:Empty expression (( ))  $(( ))
 arith-context.test:Empty expression in ${a[@]: : }
+arith-context.test:Multiple right brackets inside expression
 arith-context.test:Quadruple parens should be disambiguated
 arith-context.test:Slicing of string with constants
 arith-context.test:Slicing of string with expressions
@@ -134,6 +139,7 @@ array-assoc.test:create empty assoc array, put, then get
 array-assoc.test:declare -A A=() allowed
 array-assoc.test:Empty value (doesn't use EmptyWord?)
 array-assoc.test:Implicit increment of keys
+array-assoc.test:Indexed array as key of associative array coerces to string (without shopt -s strict_array)
 array-assoc.test:length ${#a[@]}
 array-assoc.test:Literal syntax ([x]=y)
 array-assoc.test:lookup by unquoted string doesn't work in OSH because it's a variable
@@ -172,6 +178,7 @@ array-literal.test:[k1]=v1 (BashArray)
 array-literal.test:[k1]=v1 (BashAssoc)
 array-literal.test:[k1]=v1 looking like brace expansions (BashAssoc)
 array-literal.test:(strict_array) s+=()
+array-literal.test:Tilde expansions in RHS of [k]=v (BashArray)
 array-sparse.test:+=
 array-sparse.test:"${a[*]}"
 array-sparse.test:${a-}
@@ -188,6 +195,7 @@ array-sparse.test:a[i]=v
 array-sparse.test:a[i]=v with BigInt
 array-sparse.test:compadjust
 array-sparse.test:Negative index with a[i]=v
+array-sparse.test:Performance demo
 array-sparse.test:((sp[i])) and ((sp[i]++))
 array-sparse.test:test "declare -p sp"
 array-sparse.test:test length
@@ -196,6 +204,7 @@ array-sparse.test:unset -v a[i] for max index
 array-sparse.test:[[ -v a[i] ]]
 array-sparse.test:xtrace a+=()
 array-sparse.test:(YSH) $[a1 === a2]
+array-sparse.test:(YSH) $[bool(a)]
 array-sparse.test:(YSH) @[sp] and @sp
 array.test:"$*"
 array.test:$*
@@ -249,6 +258,7 @@ array.test:Retrieve index that is a variable without $
 array.test:Retrieve out of bounds index
 array.test:Retrieve sparse array indices with ${!a}
 array.test:Set element
+array.test:Set element with array ref
 array.test:Set element with var ref
 array.test:Single array with :-
 array.test:Singleton Array Copy and Assign.  OSH can't index strings with ints
@@ -393,6 +403,7 @@ bugs.test:assign readonly -- multiple lines
 bugs.test:autoconf arithmetic - relaxed eval_unsafe_arith (#1450)
 bugs.test:autoconf word split (#1449)
 bugs.test:autotools as_fn_arith bug in configure
+bugs.test:Crash after changing $[] to be alias of $(( ))
 bugs.test:Crash in {1..10} - issue #2296
 bugs.test:'echo' and printf fail on writing to full disk
 bugs.test:echo keyword
@@ -898,6 +909,7 @@ for-expr.test:Arith lexer mode
 for-expr.test:Condition that's greater than 32 bits
 for-expr.test:C-style for loop
 for-expr.test:Empty init
+for-expr.test:For loop with and without semicolon
 for-expr.test:Integers near 31, 32, 62 bits
 func-parsing.test:Break after ) is OK.
 func-parsing.test:Function with spaces, to see if ( and ) are separate tokens.
@@ -1299,13 +1311,16 @@ subshell.test:Subshell exit code
 temp-binding.test:FOO=bar $unset - temp binding, then empty argv from unquoted unset var (#2411)
 temp-binding.test:Temp bindings with local
 temp-binding.test:Temp bindings with unset
+tilde.test:a[x]=foo:~ has tilde expansion
 tilde.test:~ expansion in assignment
 tilde.test:~ expansion in readonly assignment
 tilde.test:No ~ expansion in dynamic assignment
 tilde.test:No tilde expansion in word that looks like assignment but isn't
 tilde.test:other user
 tilde.test:strict tilde
+tilde.test:tilde expansion an assignment keyword
 tilde.test:tilde expansion of word after redirect
+tilde.test:x=${undef-~:~}
 var-num.test:$0 with -c
 var-num.test:$0 with stdin
 var-num.test:$@ with filename
@@ -1423,6 +1438,7 @@ vars-special.test:$_ and ${_}
 vars-special.test:$HOSTNAME
 vars-special.test:$_ is not reset with (( and [[
 vars-special.test:$_ is not undefined on first use
+vars-special.test:$LINENO for assignment
 vars-special.test:$LINENO in ((
 vars-special.test:$LINENO in [[
 vars-special.test:$LINENO in case

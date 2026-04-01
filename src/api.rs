@@ -223,10 +223,7 @@ impl RustBash {
                     return true;
                 }
                 let options = interpreter::parser_options();
-                let source_info = brush_parser::SourceInfo {
-                    source: input.to_string(),
-                };
-                match brush_parser::parse_tokens(&tokens, &options, &source_info) {
+                match brush_parser::parse_tokens(&tokens, &options) {
                     Ok(_) => true,
                     Err(brush_parser::ParseError::ParsingAtEndOfInput) => false,
                     Err(_) => true, // genuine syntax error

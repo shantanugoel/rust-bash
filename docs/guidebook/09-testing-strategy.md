@@ -147,10 +147,10 @@ Key format elements:
 **Pass-list approach**: The Oils suite inverts the xfail model used by comparison and spec tests. Instead of marking known failures, it maintains a **pass-list** (`tests/fixtures/oils/pass-list.txt`) of known-passing case names. Everything else defaults to xfail. This is a better fit because the imported corpus has far more expected failures than passes.
 
 **Current coverage** (142 files, 2,846 cases):
-- 100 files tested, 42 files skipped
-- **1,556 pass** / **643 xfail** / **79 skip** / **0 unexpected-pass** / **0 fail**
+- 96 files tested, 46 files skipped
+- **1,531 pass** / **627 xfail** / **79 skip** / **0 unexpected-pass** / **0 fail**
 
-**File-level skip categories** (42 files):
+**File-level skip categories** (46 files):
 - Non-applicable (zsh-specific, ble.sh, nix, toysh, etc.)
 - CLI/REPL-only (interactive, completion, history, prompt)
 - Process/trap features outside the `exec()` harness (background, kill, trap)
