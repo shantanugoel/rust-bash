@@ -5,6 +5,9 @@ use std::time::Duration;
 ///
 /// Disabled by default — scripts have no network access unless the embedder
 /// explicitly enables it and configures an allow-list.
+///
+/// To allow all URLs, set `allowed_url_prefixes` to `vec!["http://".into(), "https://".into()]`.
+/// Wildcards are not supported — the policy uses prefix matching.
 #[derive(Clone, Debug)]
 pub struct NetworkPolicy {
     pub enabled: bool,

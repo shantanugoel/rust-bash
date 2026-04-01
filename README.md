@@ -424,6 +424,9 @@ let mut shell = RustBashBuilder::new()
     .unwrap();
 ```
 
+> **Tip:** To allow all URLs, set `allowed_url_prefixes` to `vec!["http://".into(), "https://".into()]`.
+> Wildcards are not supported — the policy uses prefix matching.
+
 ### Execution limits defaults
 
 | Limit | Default |

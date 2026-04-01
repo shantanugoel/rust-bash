@@ -406,6 +406,20 @@ const bash = await Bash.create(createBackend, {
 });
 ```
 
+### Network (native backend only)
+
+```typescript
+const bash = await Bash.create(createNativeBackend, {
+  network: {
+    enabled: true,
+    allowedUrlPrefixes: ['https://api.example.com/'],
+  },
+});
+```
+
+> **Tip:** To allow all URLs, set `allowedUrlPrefixes` to `['http://', 'https://']`.
+> Wildcards are not supported — the policy uses prefix matching.
+
 ## Limitations
 
 - **No interactive commands** — `vi`, `less`, `nano`, etc. are not available
