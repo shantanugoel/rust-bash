@@ -1,6 +1,6 @@
 {
   "name": "rust-bash",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "A sandboxed bash interpreter powered by Rust — TypeScript API with native Node.js addon and WASM support",
   "type": "module",
   "exports": {

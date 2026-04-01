@@ -1351,7 +1351,7 @@ dependencies = [
 
 [[package]]
 name = "rust-bash"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "base64",
  "bitflags",
@@ -1376,7 +1376,7 @@ dependencies = [
 
 [[package]]
 name = "rust-bash-native"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "napi",
  "napi-build",

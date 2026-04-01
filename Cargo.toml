@@ -1,6 +1,6 @@
 [package]
 name = "rust-bash"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 description = "A sandboxed bash interpreter for AI Agents with a virtual filesystem"
 license = "MIT"
