@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Optional full commit SHA to deploy. Leave empty to deploy the tip of the selected ref.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -17,6 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.commit_sha || github.sha }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
