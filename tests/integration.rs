@@ -5748,7 +5748,7 @@ fn test_executable_bin() {
 fn default_bash_version() {
     let mut sh = shell();
     let r = sh.exec("echo $BASH_VERSION").unwrap();
-    assert!(!r.stdout.trim().is_empty());
+    assert_eq!(r.stdout, format!("{}\n", env!("CARGO_PKG_VERSION")));
 }
 
 #[test]

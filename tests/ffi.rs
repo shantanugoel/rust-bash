@@ -247,13 +247,11 @@ fn exec_empty_command_succeeds() {
 }
 
 #[test]
-fn version_returns_non_null() {
+fn version_matches_package_version() {
     let ver = rust_bash_version();
     assert!(!ver.is_null());
     let s = unsafe { CStr::from_ptr(ver) }.to_str().unwrap();
-    assert!(!s.is_empty());
-    // Should look like a semver string
-    assert!(s.contains('.'), "version should contain '.': {s}");
+    assert_eq!(s, env!("CARGO_PKG_VERSION"));
 }
 
 // ===========================================================================
