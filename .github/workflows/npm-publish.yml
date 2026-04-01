@@ -24,14 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-env
       - run: cargo test
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 25
-          cache: npm
-          cache-dependency-path: packages/core/package-lock.json
       - run: cd packages/core && npm ci && npm test
 
   build-wasm:
@@ -40,12 +34,13 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-env
         with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+          rust-targets: wasm32-unknown-unknown
+          rust-cache-key: wasm
+      - uses: cargo-bins/cargo-binstall@main
       - name: Install wasm-bindgen-cli
-        run: cargo install --locked wasm-bindgen-cli --version 0.2.114
+        run: cargo binstall --no-confirm --locked wasm-bindgen-cli@0.2.114
       - name: Build WASM
         run: ./scripts/build-wasm.sh
       - name: Copy WASM artifacts into package
@@ -55,11 +50,6 @@ jobs:
           cp pkg/rust_bash_bg.wasm packages/core/wasm/
           cp pkg/rust_bash.d.ts packages/core/wasm/
           cp pkg/rust_bash_bg.wasm.d.ts packages/core/wasm/
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 25
-          cache: npm
-          cache-dependency-path: packages/core/package-lock.json
       - name: Verify package tests with bundled WASM
         working-directory: packages/core
         run: |
@@ -69,7 +59,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wasm-artifact
-          path: pkg/
+          path: packages/core/wasm/
           retention-days: 1
 
   build-native:
@@ -90,12 +80,11 @@ jobs:
             target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-env
         with:
-          targets: ${{ matrix.settings.target }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.settings.target }}
+          rust-targets: ${{ matrix.settings.target }}
+          rust-cache-key: ${{ matrix.settings.target }}
+          node: 'false'
       - name: Build native addon
         run: |
           cargo build \
@@ -123,11 +112,9 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-env
         with:
-          node-version: 25
-          registry-url: https://registry.npmjs.org
+          node-registry-url: https://registry.npmjs.org
 
       - name: Download WASM artifact
         uses: actions/download-artifact@v4

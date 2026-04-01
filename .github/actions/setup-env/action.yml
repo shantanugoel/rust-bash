@@ -1,0 +1,52 @@
+name: Setup Environment
+description: Checkout code and set up Rust and Node.js toolchains
+
+inputs:
+  rust-targets:
+    description: Additional Rust targets to install
+    required: false
+    default: ''
+  rust-cache-key:
+    description: Custom key for Rust cache isolation
+    required: false
+    default: ''
+  node:
+    description: Whether to set up Node.js
+    required: false
+    default: 'true'
+  node-registry-url:
+    description: Node registry URL for publishing
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+      if: inputs.rust-targets == ''
+
+    - uses: dtolnay/rust-toolchain@stable
+      if: inputs.rust-targets != ''
+      with:
+        targets: ${{ inputs.rust-targets }}
+
+    - uses: Swatinem/rust-cache@v2
+      if: inputs.rust-cache-key == ''
+
+    - uses: Swatinem/rust-cache@v2
+      if: inputs.rust-cache-key != ''
+      with:
+        shared-key: ${{ inputs.rust-cache-key }}
+
+    - uses: actions/setup-node@v4
+      if: inputs.node == 'true' && inputs.node-registry-url == ''
+      with:
+        node-version: 25
+        cache: npm
+        cache-dependency-path: packages/core/package-lock.json
+
+    - uses: actions/setup-node@v4
+      if: inputs.node == 'true' && inputs.node-registry-url != ''
+      with:
+        node-version: 25
+        registry-url: ${{ inputs.node-registry-url }}
