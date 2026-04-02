@@ -3,10 +3,11 @@
  *
  * Loading sequence:
  * T=0.0s  Page load. CRT frame visible. Black screen, cursor blinks.
- * T=1.0s  Types "Wake up, Neo..." one character at a time.
- * T=1.0s after typing finishes  Brief pause. Then reverse-deletes the text.
- * T=3.5s  Intro fades out, terminal fades in.
- * T=4.0s  Welcome screen + typing animation begins.
+ * T=0.2s  Types "Wake up, Neo..." one character at a time (~1.3s to finish).
+ * T=1.5s  Brief pause (580ms), then reverse-deletes the text (~240ms).
+ * T=2.5s  Pre-fade pause, then intro fades out (380ms) while the shell
+ *         has already been warming up in the background.
+ * Total intro duration: ~2.9s.
  */
 
 import { TerminalUI } from './terminal.js';
@@ -20,28 +21,28 @@ async function playIntro(): Promise<void> {
   const message = 'Wake up, Neo...';
 
   // Cursor blinks alone for a beat
-  await sleep(1200);
+  await sleep(220);
 
   // Type the message
   for (const char of message) {
     textEl.textContent += char;
-    await sleep(80 + Math.random() * 60);
+    await sleep(80 + Math.random() * 10);
   }
 
   // Brief pause before reverse-deleting the message
-  await sleep(1000);
+  await sleep(580);
 
   // Reverse-delete one character at a time
   for (let i = message.length; i > 0; i--) {
     textEl.textContent = message.slice(0, i - 1);
-    await sleep(35);
+    await sleep(16);
   }
 
-  await sleep(300);
+  await sleep(200);
 
   // Fade out the intro
   introEl.classList.add('fade-out');
-  await sleep(400);
+  await sleep(380);
   introEl.remove();
 }
 
@@ -56,6 +57,7 @@ async function boot() {
 
   // Start WASM loading in parallel with intro animation
   const terminalUI = new TerminalUI(terminalContainer);
+  terminalUI.prepareShell();
   const introPromise = playIntro();
 
   // Wait for intro to finish (WASM loads in background during this)
@@ -65,7 +67,7 @@ async function boot() {
   app.classList.remove('hidden');
   app.classList.add('visible');
 
-  // Boot the terminal (welcome screen + auto-type)
+  // Boot the terminal (welcome screen + shell warmup state + auto-type initial command)
   terminalUI.fit();
   await terminalUI.boot();
   terminalUI.focus();

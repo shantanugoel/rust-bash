@@ -11,7 +11,7 @@
   --yellow: #ffcc00;
   --blue: #5af;
   --dim: #555;
-  --font-mono: 'Fira Mono', 'JetBrains Mono', 'Cascadia Code', 'SF Mono', Consolas, monospace;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', 'SF Mono', Consolas, monospace;
 }
 
 @media (prefers-color-scheme: light) {
@@ -180,7 +180,7 @@ html, body {
   justify-content: center;
   background: var(--bg);
   border-radius: 10px;
-  transition: opacity 0.4s ease-out;
+  transition: opacity 0.18s ease-out;
 }
 
 #intro.fade-out {

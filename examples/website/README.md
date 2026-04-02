@@ -4,6 +4,8 @@ Interactive demo of rust-bash running in the browser via WASM.
 
 The demo sandbox mounts a build-time snapshot of git-tracked repo files from
 the root allowlist: `README.md`, `Cargo.toml`, `src/`, and `docs/`.
+Small root files are bundled inline; the larger `src/` and `docs/` contents are
+served as a deferred JSON payload and hydrated into the VFS on first use.
 
 ## Architecture
 
@@ -45,13 +47,13 @@ the root allowlist: `README.md`, `Cargo.toml`, `src/`, and `docs/`.
 
 | File | Purpose |
 |------|---------|
-| `src/main.ts` | Entry point — matrix rain transition, boot sequence |
+| `src/main.ts` | Entry point — intro transition and boot sequence |
 | `src/terminal.ts` | xterm.js integration, input handling, agent rendering |
 | `src/agent.ts` | Client-side agent loop (async generator) |
 | `src/cached-initial-response.ts` | Hand-crafted first demo response |
 | `src/wasm-mock.ts` | Development mock for bash (used until WASM binary is built) |
-| `src/content.ts` | Typed export for the build-injected repo snapshot |
-| `vite.config.ts` | Builds the tracked-file VFS snapshot from the git allowlist |
+| `src/content.ts` | Placeholder tree + deferred tracked-file payload URL |
+| `vite.config.ts` | Generates the placeholder VFS map and deferred file payload |
 | `functions/api/chat.ts` | Shared Cloudflare Pages Function logic for the LLM proxy |
 | `functions/api/chat/completions.ts` | Pages route entrypoint for the OpenAI-compatible `chat/completions` API |
 
@@ -178,12 +180,11 @@ appends `chat/completions` to it.
 
 ### Loading Sequence
 
-1. **Matrix rain** fills the screen (canvas-based, katakana + code characters)
-2. After 1.5s, matrix fades out, terminal fades in
-3. Welcome screen with ASCII art and example commands
-4. Auto-types `agent "is this the matrix?"` with typewriter effect
-5. User can press Enter to run that exact prompt instantly using the cached response
-6. User takes control immediately and can edit the prompt before pressing Enter
+1. **Wake up, Neo...** intro plays (~2.9s) while the WASM shell warms up in the background
+2. The terminal appears with the welcome screen immediately after the intro
+3. A lightweight placeholder VFS is ready at boot for navigation commands like `ls`
+4. The full tracked repo contents hydrate on first command that needs file data or on the first real `agent` query
+5. The cached `agent "is this the matrix?"` path still returns instantly when the user runs that exact command
 
 ### Agent
 
@@ -198,8 +199,7 @@ The `agent` command intercepts input before it reaches the bash interpreter:
 ### Cached Initial Response
 
 The exact command `agent "is this the matrix?"` uses a hand-crafted
-`AgentEvent[]` array baked into the bundle. The command is prefilled on load,
-but the user decides when to run it. Any time they press Enter on that exact
+`AgentEvent[]` array baked into the bundle. Any time the user runs that exact
 command, the cached response appears immediately. This ensures:
 
 - Zero API cost on first load

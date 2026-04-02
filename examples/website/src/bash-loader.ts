@@ -25,11 +25,12 @@ export interface BashInstance {
 }
 
 let wasmReady: Promise<unknown> | null = null;
+const WASM_URL = '/rust_bash_bg.wasm';
 
 function ensureInit(): Promise<unknown> {
   if (!wasmReady) {
-    // The WASM binary is in public/ — served at the root in both dev and prod.
-    wasmReady = init({ module_or_path: '/rust_bash_bg.wasm' });
+    // The HTML document preloads this URL so the fetch is typically already in-flight.
+    wasmReady = init({ module_or_path: WASM_URL });
   }
   return wasmReady;
 }

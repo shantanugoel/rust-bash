@@ -11,7 +11,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 
 import { createBash, type BashInstance } from './bash-loader.js';
-import { VFS_FILES } from './content.js';
+import { VFS_FILES_URL, VFS_PLACEHOLDER_FILES } from './content.js';
 import { runAgentLoop, type AgentEvent } from './agent.js';
 import {
   CACHED_INITIAL_RESPONSE,
@@ -30,6 +30,36 @@ const FONT_SIZE_NARROW = 12;
 const FONT_SIZE_EXTRA_NARROW = 11;
 // Minimum terminal column count before the wide ASCII art wraps on mobile
 const MIN_COLS_FOR_WIDE_WELCOME = 55;
+// Commands that produce correct output against the placeholder VFS (which has
+// the full file tree but empty content for deferred files).  `cat` is
+// intentionally excluded: although `cat README.md` would work (inline), `cat
+// src/lib.rs` would silently return empty, which is more confusing than the
+// brief one-time deferred-load delay.
+const PLACEHOLDER_SAFE_COMMANDS = new Set([
+  'cd',
+  'clear',
+  'date',
+  'echo',
+  // `find` is safe for path-based predicates (`-name`, `-type`), but predicates
+  // that inspect content or size (`-size +0`, `-newer`) can return wrong results
+  // against zero-length placeholders.  This is an acceptable edge case for a demo.
+  'find',
+  'hostname',
+  'ls',
+  'printf',
+  'pwd',
+  'realpath',
+  'seq',
+  'type',
+  'uname',
+  'which',
+  'whoami',
+]);
+// Conservative: triggers deferred loading for any line containing shell
+// metacharacters, even if they appear inside quotes (e.g. `echo "a | b"`).
+// Parsing quoting correctly would be complex and the false-positive cost is a
+// one-time deferred fetch, which is acceptable.
+const SHELL_META_CHARS = /[|&;<>()`]/;
 
 function hyperlink(label: string, url: string): string {
   return `\x1b]8;;${url}\x1b\\${label}\x1b]8;;\x1b\\`;
@@ -51,7 +81,7 @@ ${hyperlink(
 
  Try:  \x1b[36mls\x1b[0m              \x1b[36mcat README.md\x1b[0m         \x1b[36mecho '{"a":1}' | grep a\x1b[0m
        \x1b[36mgrep -r bash .\x1b[0m  \x1b[36mfind / -name "*.md"\x1b[0m   \x1b[36mseq 1 10 | awk '{s+=$1} END{print s}'\x1b[0m
-       \x1b[36magent "is this the matrix?"\x1b[0m
+       \x1b[36magent "<ask anything>"\x1b[0m
 
 `;
 
@@ -70,13 +100,16 @@ function buildWelcomeNarrow(): string {
 export class TerminalUI {
   private term: Terminal;
   private fitAddon: FitAddon;
-  private bash!: BashInstance;
+  private bash: BashInstance | null = null;
+  private bashPromise: Promise<BashInstance> | null = null;
   private lineBuffer = '';
   private history: string[] = [];
   private historyIndex = -1;
   private savedBuffer = '';
   private isProcessing = false;
   private interruptFn: (() => void) | null = null;
+  private deferredRepoFilesLoaded = false;
+  private deferredRepoFilesPromise: Promise<void> | null = null;
 
   constructor(container: HTMLElement) {
     const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -87,7 +120,7 @@ export class TerminalUI {
 
     this.term = new Terminal({
       fontFamily:
-        "'Fira Mono', 'JetBrains Mono', 'Cascadia Code', monospace",
+        "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Consolas, monospace",
       fontSize,
       theme: isDark
         ? {
@@ -130,32 +163,36 @@ export class TerminalUI {
     this.setupResize();
   }
 
-  /** Boot sequence: start WASM load → welcome screen → prefill initial command → await WASM. */
+  /** Start warming the shell before the intro finishes. */
+  prepareShell(): void {
+    if (!this.bashPromise) {
+      this.bashPromise = createBash({
+        files: VFS_PLACEHOLDER_FILES,
+        cwd: '/home/user',
+      });
+    }
+  }
+
+  /** Boot sequence: show terminal immediately, then reveal the prompt once the shell is ready. */
   async boot(): Promise<void> {
-    // Start WASM loading in the background (likely already in-flight from preloadWasm())
-    const bashPromise = createBash({
-      files: VFS_FILES,
-      cwd: '/home/user',
-    });
+    this.prepareShell();
+    const bashPromise = this.bashPromise!;
 
     // Write welcome screen immediately — doesn't need WASM
     const welcome = this.term.cols < MIN_COLS_FOR_WIDE_WELCOME ? buildWelcomeNarrow() : WELCOME_WIDE;
     this.term.write(welcome);
-    this.showPrompt();
-
-    // Auto-type the initial command — doesn't need WASM either
-    await this.typeText(INITIAL_AGENT_COMMAND, 50);
+    this.term.writeln('\x1b[2mLoading shell...\x1b[0m');
 
     // Now await WASM — likely already ready since it loaded during the intro animation
     try {
       this.bash = await bashPromise;
+      this.term.write('\x1b[1A\x1b[2K\r');
+      this.showPrompt();
+      await this.typeText(INITIAL_AGENT_COMMAND, 50);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      // Show the error inline (the prompt + typed command are already visible above).
-      // If the user presses Enter, handleInput() will catch !this.bash and show
-      // a follow-up "Shell not loaded" message — no command silently succeeds.
       this.term.writeln(
-        `\r\n\x1b[31m⚠ Failed to load WASM: ${msg}\x1b[0m\r\n` +
+        `\x1b[31m⚠ Failed to load WASM: ${msg}\x1b[0m\r\n` +
         'Make sure you have run: ./scripts/build-wasm.sh\r\n',
       );
       this.showPrompt();
@@ -173,10 +210,18 @@ export class TerminalUI {
   }
 
   /** Simulate typing and executing a command programmatically. */
-  async executeCommand(cmd: string): Promise<void> {
+  async executeCommand(
+    cmd: string,
+    options: { animate?: boolean } = {},
+  ): Promise<void> {
     this.lineBuffer = '';
-    await this.typeText(cmd, 50);
-    await sleep(200);
+    if (options.animate) {
+      await this.typeText(cmd, 32);
+      await sleep(120);
+    } else {
+      this.lineBuffer = cmd;
+      this.term.write(cmd);
+    }
     this.term.write('\r\n');
     const line = this.lineBuffer.trim();
     if (line) {
@@ -190,6 +235,62 @@ export class TerminalUI {
     this.lineBuffer = '';
     this.historyIndex = -1;
     this.savedBuffer = '';
+  }
+
+  private async ensureDeferredRepoFilesLoaded(): Promise<void> {
+    if (this.deferredRepoFilesLoaded) {
+      return;
+    }
+
+    if (!this.bash) {
+      throw new Error('Shell not loaded');
+    }
+
+    if (!this.deferredRepoFilesPromise) {
+      this.term.writeln('\x1b[2mLoading tracked project files...\x1b[0m');
+      this.deferredRepoFilesPromise = fetch(VFS_FILES_URL, { cache: 'force-cache' })
+        .then(async (response) => {
+          if (!response.ok) {
+            throw new Error(`Unable to load tracked project files (${response.status})`);
+          }
+
+          return await response.json() as Record<string, string>;
+        })
+        .then((files) => {
+          // Note: this overwrites any user edits to placeholder files made
+          // before deferred loading was triggered (unlikely in a demo).
+          for (const [path, content] of Object.entries(files)) {
+            this.bash!.writeFile(path, content);
+          }
+
+          this.deferredRepoFilesLoaded = true;
+          // Erase the "Loading tracked project files..." status line
+          this.term.write('\x1b[1A\x1b[2K\r');
+        })
+        .catch((err: unknown) => {
+          // Erase the "Loading tracked project files..." status line
+          this.term.write('\x1b[1A\x1b[2K\r');
+          this.deferredRepoFilesPromise = null;
+          throw err;
+        });
+    }
+
+    await this.deferredRepoFilesPromise;
+  }
+
+  private commandNeedsDeferredRepoFiles(line: string): boolean {
+    const trimmed = line.trim();
+    if (SHELL_META_CHARS.test(trimmed)) {
+      return true;
+    }
+
+    const tokens = trimmed.split(/\s+/);
+    const command = tokens[0]!;
+    if (command === 'ls' && tokens.slice(1).some((arg) => arg.startsWith('-'))) {
+      return true;
+    }
+
+    return !PLACEHOLDER_SAFE_COMMANDS.has(command);
   }
 
   private setupInput(): void {
@@ -322,7 +423,10 @@ export class TerminalUI {
         this.term.write(partial);
       }
     } else {
-      // Complete filenames for arguments
+      // Complete filenames for arguments.
+      // Uses the placeholder VFS, which has the full directory tree — filenames
+      // are correct even before deferred files are loaded.  We intentionally
+      // skip triggering deferred loading here to keep tab completion synchronous.
       const lastSpace = input.lastIndexOf(' ');
       const partial = input.slice(lastSpace + 1);
       const dir = partial.includes('/')
@@ -378,11 +482,28 @@ export class TerminalUI {
             'Example: agent "is this the matrix?"',
           );
         } else {
+          try {
+            await this.ensureDeferredRepoFilesLoaded();
+          } catch {
+            this.term.writeln(
+              '\x1b[33m⚠ Could not load full project files — running with partial data\x1b[0m',
+            );
+          }
           await this.handleAgentQuery(query);
         }
       } else if (line === 'clear') {
         this.term.clear();
       } else {
+        if (this.commandNeedsDeferredRepoFiles(line)) {
+          try {
+            await this.ensureDeferredRepoFilesLoaded();
+          } catch {
+            this.term.writeln(
+              '\x1b[33m⚠ Could not load full project files — running with partial data\x1b[0m',
+            );
+          }
+        }
+
         const result = await this.bash.exec(line);
         if (result.stdout) this.term.write(result.stdout);
         if (result.stderr) {
@@ -401,7 +522,7 @@ export class TerminalUI {
   private async handleAgentQuery(query: string): Promise<void> {
     this.term.writeln('');
     try {
-      for await (const event of runAgentLoop(query, this.bash)) {
+      for await (const event of runAgentLoop(query, this.bash!)) {
         this.renderAgentEvent(event);
       }
     } catch {
@@ -450,7 +571,7 @@ export class TerminalUI {
 
     for await (const event of replayCache(
       CACHED_INITIAL_RESPONSE,
-      this.bash,
+      this.bash ?? undefined,
       options,
     )) {
       // Capture the interrupt handler
