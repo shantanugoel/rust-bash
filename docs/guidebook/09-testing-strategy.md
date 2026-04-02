@@ -148,7 +148,7 @@ Key format elements:
 
 **Current coverage** (142 files, 2,846 cases):
 - 96 files tested, 46 files skipped
-- **1,531 pass** / **627 xfail** / **79 skip** / **0 unexpected-pass** / **0 fail**
+- **1,560 pass** / **598 xfail** / **79 skip** / **0 unexpected-pass** / **0 fail**
 
 **File-level skip categories** (46 files):
 - Non-applicable (zsh-specific, ble.sh, nix, toysh, etc.)

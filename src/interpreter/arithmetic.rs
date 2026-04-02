@@ -15,7 +15,7 @@ pub(crate) fn eval_arithmetic(
     expr: &str,
     state: &mut InterpreterState,
 ) -> Result<i64, RustBashError> {
-    let tokens = tokenize(expr)?;
+    let tokens = tokenize(expr, state.shopt_opts.strict_arith)?;
     if tokens.is_empty() {
         return Ok(0);
     }
@@ -94,13 +94,20 @@ impl Token {
 
 // ── Tokenizer ───────────────────────────────────────────────────────
 
-fn tokenize(input: &str) -> Result<Vec<Token>, RustBashError> {
+fn tokenize(input: &str, strict_arith: bool) -> Result<Vec<Token>, RustBashError> {
+    tokenize_with_offset(input, strict_arith, 0)
+}
+
+fn tokenize_with_offset(
+    input: &str,
+    strict_arith: bool,
+    offset: usize,
+) -> Result<Vec<Token>, RustBashError> {
     let bytes = input.as_bytes();
     let mut tokens = Vec::new();
     let mut i = 0;
 
     while i < bytes.len() {
-        // Skip whitespace
         if bytes[i].is_ascii_whitespace() {
             i += 1;
             continue;
@@ -108,19 +115,22 @@ fn tokenize(input: &str) -> Result<Vec<Token>, RustBashError> {
 
         let start = i;
 
-        // Numbers: decimal, hex (0x/0X), octal (0...) or base#value
         if bytes[i].is_ascii_digit() {
             let num = parse_number(bytes, &mut i)?;
-            // Reject floating-point literals (bash does not support them)
             if i < bytes.len() && bytes[i] == b'.' {
                 return Err(RustBashError::Execution(
                     "arithmetic: syntax error: invalid arithmetic operator".into(),
                 ));
             }
-            // Check for base#value syntax: e.g. 16#ff, 2#101
             if i < bytes.len() && bytes[i] == b'#' {
+                if strict_arith && i - start > 1 && bytes[start] == b'0' {
+                    return Err(RustBashError::Execution(format!(
+                        "arithmetic: invalid base constant `{}`",
+                        std::str::from_utf8(&bytes[start..=i]).unwrap_or("0#")
+                    )));
+                }
                 let base = num;
-                i += 1; // skip '#'
+                i += 1;
                 let val_start = i;
                 while i < bytes.len()
                     && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'@' || bytes[i] == b'_')
@@ -131,28 +141,25 @@ fn tokenize(input: &str) -> Result<Vec<Token>, RustBashError> {
                 let result = parse_base_n_value(base, val_str)?;
                 tokens.push(Token {
                     kind: TokenKind::Number(result),
-                    start,
+                    start: offset + start,
                     len: i - start,
                 });
             } else {
                 tokens.push(Token {
                     kind: TokenKind::Number(num),
-                    start,
+                    start: offset + start,
                     len: i - start,
                 });
             }
             continue;
         }
 
-        // Single-quoted strings: bash rejects them in arithmetic context.
-        // (Associative array keys are handled by extract_raw_subscript.)
         if bytes[i] == b'\'' {
             return Err(RustBashError::Execution(
                 "arithmetic: syntax error: operand expected".into(),
             ));
         }
 
-        // Double-quoted strings: evaluate content as sub-expression
         if bytes[i] == b'"' {
             i += 1;
             let inner_start = i;
@@ -165,63 +172,58 @@ fn tokenize(input: &str) -> Result<Vec<Token>, RustBashError> {
             }
             let inner = std::str::from_utf8(&bytes[inner_start..i]).unwrap_or("");
             if i < bytes.len() {
-                i += 1; // skip closing quote
+                i += 1;
             }
-            // Recursively tokenize the inner content
-            let inner_tokens = tokenize(inner)?;
-            tokens.extend(inner_tokens);
+            tokens.extend(tokenize_with_offset(
+                inner,
+                strict_arith,
+                offset + inner_start,
+            )?);
             continue;
         }
 
-        // Identifiers (variable names)
         if bytes[i] == b'_' || bytes[i].is_ascii_alphabetic() {
             while i < bytes.len() && (bytes[i] == b'_' || bytes[i].is_ascii_alphanumeric()) {
                 i += 1;
             }
             tokens.push(Token {
                 kind: TokenKind::Ident,
-                start,
+                start: offset + start,
                 len: i - start,
             });
             continue;
         }
 
-        // Skip $ prefix before variable names
         if bytes[i] == b'$' {
-            // $VAR or ${VAR} inside arithmetic — just skip the $
             i += 1;
             if i < bytes.len() && bytes[i] == b'{' {
-                // ${VAR} — skip { and find }
                 i += 1;
                 let var_start = i;
                 while i < bytes.len() && bytes[i] != b'}' {
                     i += 1;
                 }
                 if i < bytes.len() {
-                    let var_len = i - var_start;
                     tokens.push(Token {
                         kind: TokenKind::Ident,
-                        start: var_start,
-                        len: var_len,
+                        start: offset + var_start,
+                        len: i - var_start,
                     });
-                    i += 1; // skip }
+                    i += 1;
                 }
             } else if i < bytes.len() && bytes[i].is_ascii_digit() {
-                // $0, $1, ..., $9 — positional parameter, emit as Ident
                 let var_start = i;
                 while i < bytes.len() && bytes[i].is_ascii_digit() {
                     i += 1;
                 }
                 tokens.push(Token {
                     kind: TokenKind::Ident,
-                    start: var_start,
+                    start: offset + var_start,
                     len: i - var_start,
                 });
             } else if i < bytes.len() && (bytes[i] == b'#' || bytes[i] == b'?') {
-                // $# (param count), $? (last exit code)
                 tokens.push(Token {
                     kind: TokenKind::Ident,
-                    start: i,
+                    start: offset + i,
                     len: 1,
                 });
                 i += 1;
@@ -232,14 +234,13 @@ fn tokenize(input: &str) -> Result<Vec<Token>, RustBashError> {
                 }
                 tokens.push(Token {
                     kind: TokenKind::Ident,
-                    start: var_start,
+                    start: offset + var_start,
                     len: i - var_start,
                 });
             }
             continue;
         }
 
-        // Two-character and one-character operators
         let next = if i + 1 < bytes.len() {
             Some(bytes[i + 1])
         } else {
@@ -251,336 +252,177 @@ fn tokenize(input: &str) -> Result<Vec<Token>, RustBashError> {
             None
         };
 
+        let push = |tokens: &mut Vec<Token>, kind: TokenKind, len: usize| {
+            tokens.push(Token {
+                kind,
+                start: offset + start,
+                len,
+            });
+        };
+
         match (bytes[i], next, next2) {
-            // Three-character operators
             (b'*', Some(b'*'), _) => {
-                tokens.push(Token {
-                    kind: TokenKind::StarStar,
-                    start,
-                    len: 2,
-                });
+                push(&mut tokens, TokenKind::StarStar, 2);
                 i += 2;
             }
             (b'<', Some(b'<'), Some(b'=')) => {
-                tokens.push(Token {
-                    kind: TokenKind::LtLtEq,
-                    start,
-                    len: 3,
-                });
+                push(&mut tokens, TokenKind::LtLtEq, 3);
                 i += 3;
             }
             (b'>', Some(b'>'), Some(b'=')) => {
-                tokens.push(Token {
-                    kind: TokenKind::GtGtEq,
-                    start,
-                    len: 3,
-                });
+                push(&mut tokens, TokenKind::GtGtEq, 3);
                 i += 3;
             }
-            // Two-character operators
             (b'+', Some(b'+'), _) => {
-                tokens.push(Token {
-                    kind: TokenKind::PlusPlus,
-                    start,
-                    len: 2,
-                });
+                push(&mut tokens, TokenKind::PlusPlus, 2);
                 i += 2;
             }
             (b'-', Some(b'-'), _) => {
-                tokens.push(Token {
-                    kind: TokenKind::MinusMinus,
-                    start,
-                    len: 2,
-                });
+                push(&mut tokens, TokenKind::MinusMinus, 2);
                 i += 2;
             }
             (b'+', Some(b'='), _) => {
-                tokens.push(Token {
-                    kind: TokenKind::PlusEq,
-                    start,
-                    len: 2,
-                });
+                push(&mut tokens, TokenKind::PlusEq, 2);
                 i += 2;
             }
             (b'-', Some(b'='), _) => {
-                tokens.push(Token {
-                    kind: TokenKind::MinusEq,
-                    start,
-                    len: 2,
-                });
+                push(&mut tokens, TokenKind::MinusEq, 2);
                 i += 2;
             }
             (b'*', Some(b'='), _) => {
-                tokens.push(Token {
-                    kind: TokenKind::StarEq,
-                    start,
-                    len: 2,
-                });
+                push(&mut tokens, TokenKind::StarEq, 2);
                 i += 2;
             }
             (b'/', Some(b'='), _) => {
-                tokens.push(Token {
-                    kind: TokenKind::SlashEq,
-                    start,
-                    len: 2,
-                });
+                push(&mut tokens, TokenKind::SlashEq, 2);
                 i += 2;
             }
             (b'%', Some(b'='), _) => {
-                tokens.push(Token {
-                    kind: TokenKind::PercentEq,
-                    start,
-                    len: 2,
-                });
+                push(&mut tokens, TokenKind::PercentEq, 2);
                 i += 2;
             }
             (b'&', Some(b'&'), _) => {
-                tokens.push(Token {
-                    kind: TokenKind::AmpAmp,
-                    start,
-                    len: 2,
-                });
+                push(&mut tokens, TokenKind::AmpAmp, 2);
                 i += 2;
             }
             (b'&', Some(b'='), _) => {
-                tokens.push(Token {
-                    kind: TokenKind::AmpEq,
-                    start,
-                    len: 2,
-                });
+                push(&mut tokens, TokenKind::AmpEq, 2);
                 i += 2;
             }
             (b'|', Some(b'|'), _) => {
-                tokens.push(Token {
-                    kind: TokenKind::PipePipe,
-                    start,
-                    len: 2,
-                });
+                push(&mut tokens, TokenKind::PipePipe, 2);
                 i += 2;
             }
             (b'|', Some(b'='), _) => {
-                tokens.push(Token {
-                    kind: TokenKind::PipeEq,
-                    start,
-                    len: 2,
-                });
+                push(&mut tokens, TokenKind::PipeEq, 2);
                 i += 2;
             }
             (b'^', Some(b'='), _) => {
-                tokens.push(Token {
-                    kind: TokenKind::CaretEq,
-                    start,
-                    len: 2,
-                });
+                push(&mut tokens, TokenKind::CaretEq, 2);
                 i += 2;
             }
             (b'=', Some(b'='), _) => {
-                tokens.push(Token {
-                    kind: TokenKind::EqEq,
-                    start,
-                    len: 2,
-                });
+                push(&mut tokens, TokenKind::EqEq, 2);
                 i += 2;
             }
             (b'!', Some(b'='), _) => {
-                tokens.push(Token {
-                    kind: TokenKind::BangEq,
-                    start,
-                    len: 2,
-                });
+                push(&mut tokens, TokenKind::BangEq, 2);
                 i += 2;
             }
             (b'<', Some(b'='), _) => {
-                tokens.push(Token {
-                    kind: TokenKind::LtEq,
-                    start,
-                    len: 2,
-                });
+                push(&mut tokens, TokenKind::LtEq, 2);
                 i += 2;
             }
             (b'<', Some(b'<'), _) => {
-                tokens.push(Token {
-                    kind: TokenKind::LtLt,
-                    start,
-                    len: 2,
-                });
+                push(&mut tokens, TokenKind::LtLt, 2);
                 i += 2;
             }
             (b'>', Some(b'='), _) => {
-                tokens.push(Token {
-                    kind: TokenKind::GtEq,
-                    start,
-                    len: 2,
-                });
+                push(&mut tokens, TokenKind::GtEq, 2);
                 i += 2;
             }
             (b'>', Some(b'>'), _) => {
-                tokens.push(Token {
-                    kind: TokenKind::GtGt,
-                    start,
-                    len: 2,
-                });
+                push(&mut tokens, TokenKind::GtGt, 2);
                 i += 2;
             }
-            // Single-character operators
             (b'+', _, _) => {
-                tokens.push(Token {
-                    kind: TokenKind::Plus,
-                    start,
-                    len: 1,
-                });
+                push(&mut tokens, TokenKind::Plus, 1);
                 i += 1;
             }
             (b'-', _, _) => {
-                tokens.push(Token {
-                    kind: TokenKind::Minus,
-                    start,
-                    len: 1,
-                });
+                push(&mut tokens, TokenKind::Minus, 1);
                 i += 1;
             }
             (b'*', _, _) => {
-                tokens.push(Token {
-                    kind: TokenKind::Star,
-                    start,
-                    len: 1,
-                });
+                push(&mut tokens, TokenKind::Star, 1);
                 i += 1;
             }
             (b'/', _, _) => {
-                tokens.push(Token {
-                    kind: TokenKind::Slash,
-                    start,
-                    len: 1,
-                });
+                push(&mut tokens, TokenKind::Slash, 1);
                 i += 1;
             }
             (b'%', _, _) => {
-                tokens.push(Token {
-                    kind: TokenKind::Percent,
-                    start,
-                    len: 1,
-                });
+                push(&mut tokens, TokenKind::Percent, 1);
                 i += 1;
             }
             (b'&', _, _) => {
-                tokens.push(Token {
-                    kind: TokenKind::Amp,
-                    start,
-                    len: 1,
-                });
+                push(&mut tokens, TokenKind::Amp, 1);
                 i += 1;
             }
             (b'|', _, _) => {
-                tokens.push(Token {
-                    kind: TokenKind::Pipe,
-                    start,
-                    len: 1,
-                });
+                push(&mut tokens, TokenKind::Pipe, 1);
                 i += 1;
             }
             (b'^', _, _) => {
-                tokens.push(Token {
-                    kind: TokenKind::Caret,
-                    start,
-                    len: 1,
-                });
+                push(&mut tokens, TokenKind::Caret, 1);
                 i += 1;
             }
             (b'~', _, _) => {
-                tokens.push(Token {
-                    kind: TokenKind::Tilde,
-                    start,
-                    len: 1,
-                });
+                push(&mut tokens, TokenKind::Tilde, 1);
                 i += 1;
             }
             (b'!', _, _) => {
-                tokens.push(Token {
-                    kind: TokenKind::Bang,
-                    start,
-                    len: 1,
-                });
+                push(&mut tokens, TokenKind::Bang, 1);
                 i += 1;
             }
             (b'=', _, _) => {
-                tokens.push(Token {
-                    kind: TokenKind::Eq,
-                    start,
-                    len: 1,
-                });
+                push(&mut tokens, TokenKind::Eq, 1);
                 i += 1;
             }
             (b'<', _, _) => {
-                tokens.push(Token {
-                    kind: TokenKind::Lt,
-                    start,
-                    len: 1,
-                });
+                push(&mut tokens, TokenKind::Lt, 1);
                 i += 1;
             }
             (b'>', _, _) => {
-                tokens.push(Token {
-                    kind: TokenKind::Gt,
-                    start,
-                    len: 1,
-                });
+                push(&mut tokens, TokenKind::Gt, 1);
                 i += 1;
             }
             (b'?', _, _) => {
-                tokens.push(Token {
-                    kind: TokenKind::Question,
-                    start,
-                    len: 1,
-                });
+                push(&mut tokens, TokenKind::Question, 1);
                 i += 1;
             }
             (b':', _, _) => {
-                tokens.push(Token {
-                    kind: TokenKind::Colon,
-                    start,
-                    len: 1,
-                });
+                push(&mut tokens, TokenKind::Colon, 1);
                 i += 1;
             }
             (b'(', _, _) => {
-                tokens.push(Token {
-                    kind: TokenKind::LParen,
-                    start,
-                    len: 1,
-                });
+                push(&mut tokens, TokenKind::LParen, 1);
                 i += 1;
             }
             (b')', _, _) => {
-                tokens.push(Token {
-                    kind: TokenKind::RParen,
-                    start,
-                    len: 1,
-                });
+                push(&mut tokens, TokenKind::RParen, 1);
                 i += 1;
             }
             (b'[', _, _) => {
-                tokens.push(Token {
-                    kind: TokenKind::LBracket,
-                    start,
-                    len: 1,
-                });
+                push(&mut tokens, TokenKind::LBracket, 1);
                 i += 1;
             }
             (b']', _, _) => {
-                tokens.push(Token {
-                    kind: TokenKind::RBracket,
-                    start,
-                    len: 1,
-                });
+                push(&mut tokens, TokenKind::RBracket, 1);
                 i += 1;
             }
             (b',', _, _) => {
-                tokens.push(Token {
-                    kind: TokenKind::Comma,
-                    start,
-                    len: 1,
-                });
+                push(&mut tokens, TokenKind::Comma, 1);
                 i += 1;
             }
             _ => {
@@ -1235,13 +1077,12 @@ impl<'a> Parser<'a> {
             return None;
         }
         let name = self.ident_name(ident_tok).to_string();
-        // Reconstruct subscript text
-        let bracket_start = p;
-        let bracket_end = self.pos - 2; // RBracket position
-        let sub_text = if bracket_start + 1 < bracket_end {
-            let first = &self.tokens[bracket_start + 1];
-            let last = &self.tokens[bracket_end - 1];
-            self.source[first.start..last.start + last.len].to_string()
+        // Reconstruct the raw source between the brackets so quoted associative
+        // keys survive tokenization.
+        let lbracket = self.tokens[p];
+        let rbracket = self.tokens[self.pos - 2];
+        let sub_text = if lbracket.start + lbracket.len < rbracket.start {
+            self.source[lbracket.start + lbracket.len..rbracket.start].to_string()
         } else {
             String::from("0")
         };
@@ -1292,8 +1133,8 @@ impl<'a> Parser<'a> {
     /// position is advanced past the matching `]`.
     fn extract_raw_subscript(&mut self) -> Result<String, RustBashError> {
         self.expect(TokenKind::LBracket)?;
+        let lbracket = self.tokens[self.pos - 1];
         // Find the matching ] — track nesting
-        let start_pos = self.pos;
         let mut depth = 1;
         while self.pos < self.tokens.len() {
             match self.tokens[self.pos].kind {
@@ -1313,13 +1154,11 @@ impl<'a> Parser<'a> {
                 "arithmetic: expected RBracket".into(),
             ));
         }
-        // Reconstruct the raw source text between [ and ]
-        let raw = if start_pos < self.pos {
-            let first = &self.tokens[start_pos];
-            let last = &self.tokens[self.pos - 1];
-            let src_start = first.start;
-            let src_end = last.start + last.len;
-            self.source[src_start..src_end].to_string()
+        // Reconstruct the raw source between the brackets so quoted associative
+        // keys are preserved exactly.
+        let rbracket = self.tokens[self.pos];
+        let raw = if lbracket.start + lbracket.len < rbracket.start {
+            self.source[lbracket.start + lbracket.len..rbracket.start].to_string()
         } else {
             String::new()
         };
@@ -1676,6 +1515,7 @@ mod tests {
             shell_name: "rust-bash".to_string(),
             random_seed: 42,
             local_scopes: Vec::new(),
+            temp_binding_scopes: Vec::new(),
             in_function_depth: 0,
             traps: HashMap::new(),
             in_trap: false,
@@ -1685,6 +1525,8 @@ mod tests {
             command_hash: HashMap::new(),
             aliases: HashMap::new(),
             current_lineno: 0,
+            current_source: "main".to_string(),
+            current_source_text: String::new(),
             shell_start_time: crate::platform::Instant::now(),
             last_argument: String::new(),
             call_stack: Vec::new(),

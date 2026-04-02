@@ -1123,12 +1123,74 @@ fn builtin_unset(
         // In bash, bare `unset name` prefers variables. If no variable exists,
         // fall back to unsetting a function with the same name.
         if state.env.contains_key(arg.as_str()) {
-            state.env.remove(arg.as_str());
+            let is_local = state
+                .local_scopes
+                .last()
+                .is_some_and(|scope| scope.contains_key(arg.as_str()));
+            let temp_original = current_temp_binding_original(state, arg.as_str());
+
+            if !state.shopt_opts.localvar_unset && is_local {
+                if let Some(saved) = temp_original {
+                    match saved {
+                        Some(var) => {
+                            state.env.insert(arg.clone(), var);
+                        }
+                        None => {
+                            state.env.remove(arg.as_str());
+                        }
+                    }
+                } else if let Some(var) = state.env.get(arg.as_str()).cloned() {
+                    state
+                        .env
+                        .insert(arg.clone(), declared_only_shadow_variable(&var));
+                }
+            } else {
+                match temp_original {
+                    Some(Some(var)) => {
+                        state.env.insert(arg.clone(), var);
+                    }
+                    Some(None) | None => {
+                        state.env.remove(arg.as_str());
+                    }
+                }
+            }
         } else {
             state.functions.remove(arg.as_str());
         }
     }
     Ok(ExecResult::default())
+}
+
+fn current_temp_binding_original(state: &InterpreterState, name: &str) -> Option<Option<Variable>> {
+    state
+        .temp_binding_scopes
+        .iter()
+        .rev()
+        .find_map(|scope| scope.get(name).cloned())
+}
+
+fn saved_local_restore_value(state: &InterpreterState, name: &str) -> Option<Variable> {
+    match current_temp_binding_original(state, name) {
+        Some(saved) => saved,
+        None => state.env.get(name).cloned(),
+    }
+}
+
+fn declared_only_shadow_variable(var: &Variable) -> Variable {
+    let value = match &var.value {
+        VariableValue::Scalar(_) => VariableValue::Scalar(String::new()),
+        VariableValue::IndexedArray(_) => {
+            VariableValue::IndexedArray(std::collections::BTreeMap::new())
+        }
+        VariableValue::AssociativeArray(_) => {
+            VariableValue::AssociativeArray(std::collections::BTreeMap::new())
+        }
+    };
+
+    let mut attrs = var.attrs;
+    attrs.insert(VariableAttrs::DECLARED_ONLY);
+
+    Variable { value, attrs }
 }
 
 // ── set ─────────────────────────────────────────────────────────────
@@ -1591,10 +1653,11 @@ fn builtin_declare(
 
         // Check for += (append) before = (assign)
         if let Some((name, value)) = arg.split_once("+=") {
-            if implicit_local && let Some(scope) = state.local_scopes.last_mut() {
-                scope
-                    .entry(name.to_string())
-                    .or_insert_with(|| state.env.get(name).cloned());
+            if implicit_local {
+                let saved = saved_local_restore_value(state, name);
+                if let Some(scope) = state.local_scopes.last_mut() {
+                    scope.entry(name.to_string()).or_insert(saved);
+                }
             }
             declare_append_value(
                 state,
@@ -1605,10 +1668,11 @@ fn builtin_declare(
                 make_indexed_array,
             )?;
         } else if let Some((name, value)) = arg.split_once('=') {
-            if implicit_local && let Some(scope) = state.local_scopes.last_mut() {
-                scope
-                    .entry(name.to_string())
-                    .or_insert_with(|| state.env.get(name).cloned());
+            if implicit_local {
+                let saved = saved_local_restore_value(state, name);
+                if let Some(scope) = state.local_scopes.last_mut() {
+                    scope.entry(name.to_string()).or_insert(saved);
+                }
             }
             declare_with_value(
                 state,
@@ -1620,10 +1684,11 @@ fn builtin_declare(
                 make_nameref,
             )?;
         } else {
-            if implicit_local && let Some(scope) = state.local_scopes.last_mut() {
-                scope
-                    .entry(arg.to_string())
-                    .or_insert_with(|| state.env.get(arg.as_str()).cloned());
+            if implicit_local {
+                let saved = saved_local_restore_value(state, arg);
+                if let Some(scope) = state.local_scopes.last_mut() {
+                    scope.entry(arg.to_string()).or_insert(saved);
+                }
             }
             declare_without_value(state, arg, flag_attrs, make_assoc_array, make_indexed_array)?;
         }
@@ -1662,10 +1727,14 @@ fn declare_functions(
     let mut exit_code = 0;
     let mut stdout = String::new();
     for name in var_args {
-        if state.functions.contains_key(name.as_str()) {
+        if let Some(func) = state.functions.get(name.as_str()) {
             if names_only {
-                // `declare -F name` outputs just the name (no `declare -f` prefix).
-                stdout.push_str(&format!("{name}\n"));
+                if state.shopt_opts.extdebug {
+                    stdout.push_str(&format!("{name} {} {}\n", func.lineno, func.source));
+                } else {
+                    // `declare -F name` outputs just the name (no `declare -f` prefix).
+                    stdout.push_str(&format!("{name}\n"));
+                }
             }
         } else {
             exit_code = 1;
@@ -2748,7 +2817,9 @@ fn builtin_eval(
             });
         }
     };
+    let saved_source_text = std::mem::replace(&mut state.current_source_text, input.clone());
     let result = execute_program(&program, state);
+    state.current_source_text = saved_source_text;
     state.counters.call_depth -= 1;
     result
 }
@@ -2943,6 +3014,7 @@ fn get_shopt(state: &InterpreterState, name: &str) -> Option<bool> {
         "promptvars" => Some(o.promptvars),
         "shift_verbose" => Some(o.shift_verbose),
         "sourcepath" => Some(o.sourcepath),
+        "strict_arith" => Some(o.strict_arith),
         "varredir_close" => Some(o.varredir_close),
         "xpg_echo" => Some(o.xpg_echo),
         _ => None,
@@ -2998,6 +3070,7 @@ fn set_shopt(state: &mut InterpreterState, name: &str, value: bool) -> bool {
         "promptvars" => o.promptvars = value,
         "shift_verbose" => o.shift_verbose = value,
         "sourcepath" => o.sourcepath = value,
+        "strict_arith" => o.strict_arith = value,
         "varredir_close" => o.varredir_close = value,
         "xpg_echo" => o.xpg_echo = value,
         _ => return false,
@@ -3011,7 +3084,9 @@ fn builtin_shopt(
 ) -> Result<ExecResult, RustBashError> {
     // Parse flags
     let mut set_flag = false; // -s
+    let mut set_short_flag = false;
     let mut unset_flag = false; // -u
+    let mut unset_short_flag = false;
     let mut query_flag = false; // -q
     let mut print_flag = false; // -p
     let mut o_flag = false; // -o (use set -o options instead of shopt options)
@@ -3020,11 +3095,28 @@ fn builtin_shopt(
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
-        if arg.starts_with('-') && arg.len() > 1 && opt_names.is_empty() {
+        if arg == "--set" {
+            set_flag = true;
+        } else if arg == "--unset" {
+            unset_flag = true;
+        } else if arg == "--query" {
+            query_flag = true;
+        } else if arg == "--print" {
+            print_flag = true;
+        } else if arg == "--" {
+            opt_names.extend(args[i + 1..].iter().map(|s| s.as_str()));
+            break;
+        } else if arg.starts_with('-') && arg.len() > 1 && opt_names.is_empty() {
             for c in arg[1..].chars() {
                 match c {
-                    's' => set_flag = true,
-                    'u' => unset_flag = true,
+                    's' => {
+                        set_flag = true;
+                        set_short_flag = true;
+                    }
+                    'u' => {
+                        unset_flag = true;
+                        unset_short_flag = true;
+                    }
                     'q' => query_flag = true,
                     'p' => print_flag = true,
                     'o' => o_flag = true,
@@ -3073,7 +3165,10 @@ fn builtin_shopt(
                 });
             }
         }
-        return Ok(ExecResult::default());
+        return Ok(ExecResult {
+            exit_code: i32::from(set_short_flag && opt_names.contains(&"strict_arith")),
+            ..ExecResult::default()
+        });
     }
 
     // shopt -u opt ... — disable; or shopt -u with no args — list disabled
@@ -3101,7 +3196,8 @@ fn builtin_shopt(
             }
         }
         return Ok(ExecResult {
-            exit_code,
+            exit_code: exit_code
+                | i32::from(unset_short_flag && opt_names.contains(&"strict_arith")),
             ..ExecResult::default()
         });
     }
@@ -3443,7 +3539,11 @@ fn builtin_source(
             });
         }
     };
+    let saved_source = std::mem::replace(&mut state.current_source, resolved.clone());
+    let saved_source_text = std::mem::replace(&mut state.current_source_text, content.clone());
     let result = execute_program(&program, state);
+    state.current_source = saved_source;
+    state.current_source_text = saved_source_text;
     state.counters.call_depth -= 1;
     result
 }
@@ -3515,10 +3615,9 @@ fn builtin_local(
         if let Some((raw_name, value)) = arg.split_once("+=") {
             // local name+=value — append
             let name = raw_name;
+            let saved = saved_local_restore_value(state, name);
             if let Some(scope) = state.local_scopes.last_mut() {
-                scope
-                    .entry(name.to_string())
-                    .or_insert_with(|| state.env.get(name).cloned());
+                scope.entry(name.to_string()).or_insert(saved);
             }
             if value.starts_with('(') && value.ends_with(')') {
                 // Array append
@@ -3561,10 +3660,9 @@ fn builtin_local(
             }
         } else if let Some((name, value)) = arg.split_once('=') {
             // Save current value in the top local scope (if inside a function)
+            let saved = saved_local_restore_value(state, name);
             if let Some(scope) = state.local_scopes.last_mut() {
-                scope
-                    .entry(name.to_string())
-                    .or_insert_with(|| state.env.get(name).cloned());
+                scope.entry(name.to_string()).or_insert(saved);
             }
 
             if make_assoc_array {
@@ -3630,10 +3728,9 @@ fn builtin_local(
             }
         } else {
             // `local VAR` with no value — declare it as local with empty value
+            let saved = saved_local_restore_value(state, arg);
             if let Some(scope) = state.local_scopes.last_mut() {
-                scope
-                    .entry(arg.to_string())
-                    .or_insert_with(|| state.env.get(arg.as_str()).cloned());
+                scope.entry(arg.to_string()).or_insert(saved);
             }
             // Inside a function: always set to empty. Outside: only if undefined.
             if state.in_function_depth > 0 || !state.env.contains_key(arg.as_str()) {
@@ -5096,7 +5193,7 @@ fn builtin_sh(
             return Ok(ExecResult::default());
         }
         let program = parse(stdin)?;
-        return run_in_subshell(state, &program, &[], None);
+        return run_in_subshell(state, &program, &[], None, None, Some(stdin.to_string()));
     }
 
     let mut i = 0;
@@ -5115,7 +5212,14 @@ fn builtin_sh(
                     Vec::new()
                 };
                 let program = parse(cmd)?;
-                return run_in_subshell(state, &program, &positional, shell_name_override);
+                return run_in_subshell(
+                    state,
+                    &program,
+                    &positional,
+                    shell_name_override,
+                    None,
+                    Some(cmd.to_string()),
+                );
             } else {
                 return Ok(ExecResult {
                     stderr: "sh: -c: option requires an argument\n".into(),
@@ -5137,7 +5241,14 @@ fn builtin_sh(
                         .map(|s| s.to_string())
                         .collect::<Vec<_>>();
                     let program = parse(&script)?;
-                    return run_in_subshell(state, &program, &positional, None);
+                    return run_in_subshell(
+                        state,
+                        &program,
+                        &positional,
+                        None,
+                        Some(path),
+                        Some(script),
+                    );
                 }
                 Err(e) => {
                     return Ok(ExecResult {
@@ -5160,6 +5271,8 @@ fn run_in_subshell(
     program: &brush_parser::ast::Program,
     positional: &[String],
     shell_name_override: Option<&str>,
+    source_override: Option<String>,
+    source_text_override: Option<String>,
 ) -> Result<ExecResult, RustBashError> {
     use std::collections::HashMap;
     let cloned_fs = state.fs.deep_clone();
@@ -5194,6 +5307,7 @@ fn run_in_subshell(
             .unwrap_or_else(|| state.shell_name.clone()),
         random_seed: state.random_seed,
         local_scopes: Vec::new(),
+        temp_binding_scopes: Vec::new(),
         in_function_depth: 0,
         traps: state.traps.clone(),
         in_trap: false,
@@ -5203,6 +5317,9 @@ fn run_in_subshell(
         command_hash: state.command_hash.clone(),
         aliases: state.aliases.clone(),
         current_lineno: state.current_lineno,
+        current_source: source_override.unwrap_or_else(|| state.current_source.clone()),
+        current_source_text: source_text_override
+            .unwrap_or_else(|| state.current_source_text.clone()),
         shell_start_time: state.shell_start_time,
         last_argument: state.last_argument.clone(),
         call_stack: state.call_stack.clone(),
@@ -5306,6 +5423,7 @@ mod tests {
             shell_name: "rust-bash".to_string(),
             random_seed: 42,
             local_scopes: Vec::new(),
+            temp_binding_scopes: Vec::new(),
             in_function_depth: 0,
             traps: HashMap::new(),
             in_trap: false,
@@ -5315,6 +5433,8 @@ mod tests {
             command_hash: HashMap::new(),
             aliases: HashMap::new(),
             current_lineno: 0,
+            current_source: "main".to_string(),
+            current_source_text: String::new(),
             shell_start_time: Instant::now(),
             last_argument: String::new(),
             call_stack: Vec::new(),

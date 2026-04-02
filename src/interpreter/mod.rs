@@ -251,6 +251,7 @@ pub struct ShoptOpts {
     pub localvar_inherit: bool,
     pub localvar_unset: bool,
     pub extdebug: bool,
+    pub strict_arith: bool,
     pub patsub_replacement: bool,
     pub assoc_expand_once: bool,
     pub varredir_close: bool,
@@ -304,6 +305,7 @@ impl Default for ShoptOpts {
             localvar_inherit: false,
             localvar_unset: false,
             extdebug: false,
+            strict_arith: false,
             patsub_replacement: true,
             assoc_expand_once: false,
             varredir_close: false,
@@ -315,6 +317,9 @@ impl Default for ShoptOpts {
 #[derive(Debug, Clone)]
 pub struct FunctionDef {
     pub body: ast::FunctionBody,
+    pub source: String,
+    pub source_text: String,
+    pub lineno: usize,
 }
 
 /// A single frame on the function call stack, used to expose
@@ -348,6 +353,8 @@ pub struct InterpreterState {
     pub(crate) random_seed: u32,
     /// Stack of restore maps for `local` variable scoping in functions.
     pub(crate) local_scopes: Vec<HashMap<String, Option<Variable>>>,
+    /// Stack of temporary prefix-assignment frames active for the current command.
+    pub(crate) temp_binding_scopes: Vec<HashMap<String, Option<Variable>>>,
     /// How many function calls deep we are (for `local`/`return` validation).
     pub(crate) in_function_depth: usize,
     /// Registered trap handlers: signal/event name → command string.
@@ -368,6 +375,10 @@ pub struct InterpreterState {
     pub(crate) aliases: HashMap<String, String>,
     /// Current line number, updated per-statement from AST source positions.
     pub(crate) current_lineno: usize,
+    /// Current source file or synthetic top-level label for function metadata.
+    pub(crate) current_source: String,
+    /// Full source text for the currently executing parsed program.
+    pub(crate) current_source_text: String,
     /// Shell start time for `$SECONDS`.
     pub(crate) shell_start_time: Instant,
     /// Last argument of the previous simple command (`$_`).
@@ -412,8 +423,9 @@ pub(crate) fn parser_options() -> brush_parser::ParserOptions {
 
 /// Parse a shell input string into an AST.
 pub fn parse(input: &str) -> Result<ast::Program, RustBashError> {
-    let tokens =
+    let raw_tokens =
         brush_parser::tokenize_str(input).map_err(|e| RustBashError::Parse(e.to_string()))?;
+    let tokens = rebuild_tokens_from_source(input, &raw_tokens);
 
     if tokens.is_empty() {
         return Ok(ast::Program {
@@ -423,7 +435,138 @@ pub fn parse(input: &str) -> Result<ast::Program, RustBashError> {
 
     let options = parser_options();
 
-    brush_parser::parse_tokens(&tokens, &options).map_err(|e| RustBashError::Parse(e.to_string()))
+    match brush_parser::parse_tokens(&tokens, &options) {
+        Ok(program) => Ok(program),
+        Err(err) => {
+            if let Some(rewritten) = rewrite_assignment_prefixed_keyword(input, &tokens) {
+                let retry_raw_tokens = brush_parser::tokenize_str(&rewritten)
+                    .map_err(|e| RustBashError::Parse(e.to_string()))?;
+                let retry_tokens = rebuild_tokens_from_source(&rewritten, &retry_raw_tokens);
+                if let Ok(program) = brush_parser::parse_tokens(&retry_tokens, &options) {
+                    return Ok(program);
+                }
+            }
+            Err(RustBashError::Parse(err.to_string()))
+        }
+    }
+}
+
+fn rebuild_tokens_from_source(
+    input: &str,
+    tokens: &[brush_parser::Token],
+) -> Vec<brush_parser::Token> {
+    tokens
+        .iter()
+        .map(|token| match token {
+            brush_parser::Token::Word(text, loc) => {
+                let source_text = slice_source_by_char_range(input, loc.start.index, loc.end.index);
+                if let Some(source_text) = source_text
+                    && source_text != *text
+                    && collapse_space_runs(&source_text) == *text
+                {
+                    brush_parser::Token::Word(source_text, loc.clone())
+                } else {
+                    token.clone()
+                }
+            }
+            brush_parser::Token::Operator(_, _) => token.clone(),
+        })
+        .collect()
+}
+
+fn collapse_space_runs(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_space = false;
+    for ch in s.chars() {
+        if ch == ' ' {
+            if !prev_space {
+                out.push(ch);
+            }
+            prev_space = true;
+        } else {
+            out.push(ch);
+            prev_space = false;
+        }
+    }
+    out
+}
+
+fn slice_source_by_char_range(input: &str, start: usize, end: usize) -> Option<String> {
+    if start > end {
+        return None;
+    }
+
+    let total_chars = input.chars().count();
+    if end > total_chars {
+        return None;
+    }
+
+    let start_byte = if start == total_chars {
+        input.len()
+    } else {
+        input.char_indices().nth(start)?.0
+    };
+    let end_byte = if end == total_chars {
+        input.len()
+    } else {
+        input.char_indices().nth(end)?.0
+    };
+    input.get(start_byte..end_byte).map(ToString::to_string)
+}
+
+fn rewrite_assignment_prefixed_keyword(
+    input: &str,
+    tokens: &[brush_parser::Token],
+) -> Option<String> {
+    const RESERVED_WORDS: &[&str] = &[
+        "case", "do", "done", "elif", "else", "esac", "fi", "for", "if", "in", "select", "then",
+        "until", "while",
+    ];
+
+    if tokens.len() < 2 {
+        return None;
+    }
+
+    let last = tokens.last()?;
+    if !matches!(last, brush_parser::Token::Word(_, _)) {
+        return None;
+    }
+
+    let last_text = last.to_str();
+    if !RESERVED_WORDS.contains(&last_text) {
+        return None;
+    }
+
+    if !tokens[..tokens.len() - 1]
+        .iter()
+        .all(is_simple_assignment_word_token)
+    {
+        return None;
+    }
+
+    let start = last.location().start.index;
+    let mut rewritten = String::with_capacity(input.len() + 1);
+    rewritten.push_str(&input[..start]);
+    rewritten.push('\\');
+    rewritten.push_str(&input[start..]);
+    Some(rewritten)
+}
+
+fn is_simple_assignment_word_token(token: &brush_parser::Token) -> bool {
+    let brush_parser::Token::Word(text, _) = token else {
+        return false;
+    };
+    let Some((name, _value)) = text.split_once('=') else {
+        return false;
+    };
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphabetic() && first != '_' {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Set a variable in the interpreter state, respecting readonly, nameref,
@@ -896,6 +1039,7 @@ mod tests {
             shell_name: "rust-bash".to_string(),
             random_seed: 42,
             local_scopes: Vec::new(),
+            temp_binding_scopes: Vec::new(),
             in_function_depth: 0,
             traps: HashMap::new(),
             in_trap: false,
@@ -905,6 +1049,8 @@ mod tests {
             command_hash: HashMap::new(),
             aliases: HashMap::new(),
             current_lineno: 0,
+            current_source: "main".to_string(),
+            current_source_text: String::new(),
             shell_start_time: Instant::now(),
             last_argument: String::new(),
             call_stack: Vec::new(),

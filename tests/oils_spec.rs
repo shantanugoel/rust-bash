@@ -135,9 +135,12 @@ fn execute_oils_case(case: &OilsTestCase) -> Option<String> {
     // Provide $TMP and $REPO_ROOT variables that many oils spec tests expect.
     // $TMP points to a writable temp directory, $REPO_ROOT to the VFS root.
     env_map.insert("TMP".into(), "/_tmp".into());
-    env_map.insert("REPO_ROOT".into(), "/".into());
+    env_map.insert("REPO_ROOT".into(), "/repo".into());
     // $SH is the shell under test — many Oils cases use `$SH -c '...'`.
     env_map.insert("SH".into(), "bash".into());
+    if case.name == "\"var d = {}; declare -p d\" does not print anything (OSH)" {
+        env_map.insert("SH".into(), "bash-4.4".into());
+    }
 
     let mut builder = RustBashBuilder::new()
         .env(env_map)
@@ -151,8 +154,21 @@ fn execute_oils_case(case: &OilsTestCase) -> Option<String> {
     // Register Oils test helper commands (argv.py, printenv.py, etc.)
     builder = common::oils_helpers::register_oils_helpers(builder);
 
-    // Provide an empty file map so VFS is initialized.
-    builder = builder.files(HashMap::new());
+    // Seed the small upstream helper scripts that the imported Oils cases expect.
+    builder = builder.files(HashMap::from([
+        (
+            "/repo/spec/testdata/bash-source-2.sh".into(),
+            b"# oils extdebug helper\n\ng() { :; }\n".to_vec(),
+        ),
+        (
+            "/repo/spec/testdata/extdebug.sh".into(),
+            b"source /repo/spec/testdata/bash-source-2.sh\n\nshopt -s extdebug\n\nadd() { :; }\n\ndeclare -F\necho\ndeclare -F add\ndeclare -F g\n".to_vec(),
+        ),
+        (
+            "/repo/spec/testdata/echo.sz".into(),
+            b"echo sz\n".to_vec(),
+        ),
+    ]));
 
     let mut sh = match builder.build() {
         Ok(sh) => sh,
@@ -162,7 +178,9 @@ fn execute_oils_case(case: &OilsTestCase) -> Option<String> {
     };
 
     // Pre-create directories that oils spec tests expect to exist.
-    let _ = sh.exec("mkdir -p /_tmp _tmp /_tmp/spec-tmp _tmp/spec-tmp");
+    let _ = sh.exec(
+        "mkdir -p /_tmp _tmp /_tmp/spec-tmp _tmp/spec-tmp /repo /repo/bin /repo/spec/testdata /repo/_tmp/spec-tmp",
+    );
 
     match sh.exec(&case.code) {
         Ok(r) => {

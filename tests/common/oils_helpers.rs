@@ -103,12 +103,46 @@ impl VirtualCommand for PrintenvPyCommand {
                 ctx.env.get(name.as_str()).cloned()
             };
             match val {
+                Some(v) if v.is_empty() => {}
                 Some(v) => out.push_str(&format!("{v}\n")),
                 None => out.push_str("None\n"),
             }
         }
         CommandResult {
             stdout: out,
+            ..Default::default()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// foo=bar
+// ---------------------------------------------------------------------------
+
+/// Oils helper command for testing escaped `=` in command names.
+pub struct FooEqualsBarCommand;
+
+static FOO_EQUALS_BAR_META: CommandMeta = CommandMeta {
+    name: "foo=bar",
+    synopsis: "foo=bar",
+    description: "Print HI (Oils test helper).",
+    options: &[],
+    supports_help_flag: false,
+    flags: &[],
+};
+
+impl VirtualCommand for FooEqualsBarCommand {
+    fn name(&self) -> &str {
+        "foo=bar"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&FOO_EQUALS_BAR_META)
+    }
+
+    fn execute(&self, _args: &[String], _ctx: &CommandContext) -> CommandResult {
+        CommandResult {
+            stdout: "HI\n".to_string(),
             ..Default::default()
         }
     }
@@ -274,6 +308,7 @@ pub fn register_oils_helpers(
     use std::sync::Arc;
     builder = builder
         .command(Arc::new(ArgvPyCommand))
+        .command(Arc::new(FooEqualsBarCommand))
         .command(Arc::new(PrintenvPyCommand))
         .command(Arc::new(StdoutStderrPyCommand))
         .command(Arc::new(PythonCommand::python2()))

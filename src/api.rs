@@ -23,6 +23,7 @@ impl RustBash {
     pub fn exec(&mut self, input: &str) -> Result<ExecResult, RustBashError> {
         self.state.counters.reset();
         self.state.should_exit = false;
+        self.state.current_source_text = input.to_string();
 
         let program = match interpreter::parse(input) {
             Ok(p) => p,
@@ -404,6 +405,7 @@ impl RustBashBuilder {
             shell_name: "rust-bash".to_string(),
             random_seed: 0,
             local_scopes: Vec::new(),
+            temp_binding_scopes: Vec::new(),
             in_function_depth: 0,
             traps: HashMap::new(),
             in_trap: false,
@@ -413,6 +415,8 @@ impl RustBashBuilder {
             command_hash: HashMap::new(),
             aliases: HashMap::new(),
             current_lineno: 0,
+            current_source: "main".to_string(),
+            current_source_text: String::new(),
             shell_start_time: Instant::now(),
             last_argument: String::new(),
             call_stack: Vec::new(),

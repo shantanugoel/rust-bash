@@ -427,6 +427,9 @@ fn execute_command(
                         name,
                         FunctionDef {
                             body: func_def.body.clone(),
+                            source: state.current_source.clone(),
+                            source_text: state.current_source_text.clone(),
+                            lineno: state.current_lineno,
                         },
                     );
                     Ok(ExecResult::default())
@@ -918,6 +921,38 @@ fn apply_assignment_shell_error(
     }
 }
 
+fn suffix_assignment_words_are_special(cmd_word: &ast::Word, cmd_name: &str) -> bool {
+    if cmd_word.value.contains('$') || cmd_word.value.contains('`') {
+        return false;
+    }
+
+    matches!(
+        cmd_name,
+        "declare" | "export" | "local" | "readonly" | "typeset"
+    )
+}
+
+fn expand_alias_command(cmd_name: &str, state: &InterpreterState) -> (String, Vec<String>) {
+    if !state.shopt_opts.expand_aliases {
+        return (cmd_name.to_string(), Vec::new());
+    }
+
+    let Some(expansion) = state.aliases.get(cmd_name) else {
+        return (cmd_name.to_string(), Vec::new());
+    };
+
+    let mut parts: Vec<String> = expansion
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
+    if parts.is_empty() {
+        return (cmd_name.to_string(), Vec::new());
+    }
+
+    let new_cmd = parts.remove(0);
+    (new_cmd, parts)
+}
+
 fn execute_simple_command(
     cmd: &ast::SimpleCommand,
     state: &mut InterpreterState,
@@ -965,14 +1000,25 @@ fn execute_simple_command(
     }
 
     // 2. Expand command name
-    let cmd_name = cmd
+    let raw_cmd_name = cmd
         .word_or_name
         .as_ref()
         .map(|w| expand_word_to_string_mut(w, state))
         .transpose()?;
+    let alias_expansion = raw_cmd_name
+        .as_ref()
+        .map(|name| expand_alias_command(name, state));
+    let special_suffix_assignments = cmd
+        .word_or_name
+        .as_ref()
+        .zip(alias_expansion.as_ref())
+        .is_some_and(|(word, (expanded, _))| suffix_assignment_words_are_special(word, expanded));
 
     // 3. Expand arguments and collect redirections from suffix
-    let mut args: Vec<String> = Vec::new();
+    let mut args: Vec<String> = alias_expansion
+        .as_ref()
+        .map(|(_, alias_args)| alias_args.clone())
+        .unwrap_or_default();
     if let Some(suffix) = &cmd.suffix {
         for item in &suffix.0 {
             match item {
@@ -991,7 +1037,11 @@ fn execute_simple_command(
                 ast::CommandPrefixOrSuffixItem::IoRedirect(redir) => {
                     redirects.push(redir);
                 }
-                ast::CommandPrefixOrSuffixItem::AssignmentWord(assignment, _word) => {
+                ast::CommandPrefixOrSuffixItem::AssignmentWord(assignment, word) => {
+                    if !special_suffix_assignments {
+                        args.extend(expand_word_mut(word, state)?);
+                        continue;
+                    }
                     let name = match &assignment.name {
                         ast::AssignmentName::VariableName(n) => n.clone(),
                         ast::AssignmentName::ArrayElementName(n, idx) => {
@@ -1056,7 +1106,7 @@ fn execute_simple_command(
     }
 
     // 4. No command name → persist assignments in environment
-    let Some(cmd_name) = cmd_name else {
+    let Some(cmd_name) = alias_expansion.as_ref().map(|(name, _)| name.clone()) else {
         // Expand assignments lazily (no command to run, so no deferred expansion needed)
         for (raw_assign, append) in &raw_assignments {
             assignments.push(process_assignment(raw_assign, *append, state)?);
@@ -1097,6 +1147,9 @@ fn execute_simple_command(
             };
             for a in assignments {
                 apply_assignment_shell_error(a, state, &mut result)?;
+                if result.exit_code != 0 {
+                    break;
+                }
             }
             if !state.pending_cmdsub_stderr.is_empty() {
                 let cmdsub_stderr = std::mem::take(&mut state.pending_cmdsub_stderr);
@@ -1112,6 +1165,9 @@ fn execute_simple_command(
         let mut result = ExecResult::default();
         for a in assignments {
             apply_assignment_shell_error(a, state, &mut result)?;
+            if result.exit_code != 0 {
+                break;
+            }
         }
         if !state.pending_cmdsub_stderr.is_empty() {
             let cmdsub_stderr = std::mem::take(&mut state.pending_cmdsub_stderr);
@@ -1136,6 +1192,9 @@ fn execute_simple_command(
         };
         for a in expanded {
             apply_assignment_shell_error(a, state, &mut result)?;
+            if result.exit_code != 0 {
+                break;
+            }
         }
         if !state.pending_cmdsub_stderr.is_empty() {
             let cmdsub_stderr = std::mem::take(&mut state.pending_cmdsub_stderr);
@@ -1144,29 +1203,7 @@ fn execute_simple_command(
         return Ok(result);
     }
 
-    // 4c. Alias expansion: if expand_aliases is on and the command name is an alias,
-    // substitute the alias value. Multi-word aliases produce a new command + extra args.
-    let (cmd_name, args) = if state.shopt_opts.expand_aliases {
-        if let Some(expansion) = state.aliases.get(&cmd_name).cloned() {
-            let mut parts: Vec<String> = expansion
-                .split_whitespace()
-                .map(|s| s.to_string())
-                .collect();
-            if parts.is_empty() {
-                (cmd_name, args)
-            } else {
-                let new_cmd = parts.remove(0);
-                parts.extend(args);
-                (new_cmd, parts)
-            }
-        } else {
-            (cmd_name, args)
-        }
-    } else {
-        (cmd_name, args)
-    };
-
-    // 4d. Handle `exec` builtin specially — it needs access to redirects.
+    // 4c. Handle `exec` builtin specially — it needs access to redirects.
     //     Prefix assignments before `exec` are permanent (no subshell).
     if cmd_name == "exec" {
         // Intercept --help before exec dispatch
@@ -1201,6 +1238,7 @@ fn execute_simple_command(
     // Array element assignments (e.g. b[0]=2) are silently ignored in env
     // binding context — bash does not export them.
     let mut saved: Vec<(String, Option<Variable>)> = Vec::new();
+    let mut temp_binding_scope: HashMap<String, Option<Variable>> = HashMap::new();
     let mut prefix_stderr = String::new();
     for (raw_assign, append) in &raw_assignments {
         let a = match process_assignment(raw_assign, *append, state) {
@@ -1222,7 +1260,11 @@ fn execute_simple_command(
         ) {
             continue;
         }
-        saved.push((a.name().to_string(), state.env.get(a.name()).cloned()));
+        let previous = state.env.get(a.name()).cloned();
+        saved.push((a.name().to_string(), previous.clone()));
+        temp_binding_scope
+            .entry(a.name().to_string())
+            .or_insert(previous);
         let mut dummy = ExecResult::default();
         apply_assignment_shell_error(a.clone(), state, &mut dummy)?;
         if dummy.exit_code != 0 {
@@ -1233,6 +1275,10 @@ fn execute_simple_command(
         if let Some(var) = state.env.get_mut(a.name()) {
             var.attrs.insert(VariableAttrs::EXPORTED);
         }
+    }
+    let has_temp_binding_scope = !temp_binding_scope.is_empty();
+    if has_temp_binding_scope {
+        state.temp_binding_scopes.push(temp_binding_scope);
     }
 
     // 5b–8c are wrapped in an immediately-invoked closure so cleanup (8d) and
@@ -1250,6 +1296,7 @@ fn execute_simple_command(
     } else {
         None
     };
+    let expansion_stderr = std::mem::take(&mut state.pending_cmdsub_stderr);
 
     let mut inner_result = (|| -> Result<ExecResult, RustBashError> {
         // 5b. Pre-allocate ALL redirect process substitution temp files in one pass.
@@ -1308,13 +1355,7 @@ fn execute_simple_command(
         // 7. Dispatch command
         let mut result = dispatch_command(&cmd_name, &args, state, &effective_stdin)?;
 
-        // 7a. Drain command-substitution stderr accumulated during expansion
-        if !state.pending_cmdsub_stderr.is_empty() {
-            let cmdsub_stderr = std::mem::take(&mut state.pending_cmdsub_stderr);
-            result.stderr = format!("{cmdsub_stderr}{}", result.stderr);
-        }
-
-        // 7b. Emit xtrace to stderr
+        // 7a. Emit xtrace to stderr
         if let Some(ref ps4) = pre_ps4 {
             let mut trace = format_xtrace_command(ps4, &cmd_name, &args);
             // Assignment builtins (readonly, declare, export, typeset)
@@ -1380,6 +1421,10 @@ fn execute_simple_command(
             result.stderr.push_str(&inner_result.stderr);
         }
 
+        if !expansion_stderr.is_empty() {
+            result.stderr = format!("{expansion_stderr}{}", result.stderr);
+        }
+
         Ok(result)
     })();
 
@@ -1388,6 +1433,9 @@ fn execute_simple_command(
         let _ = state.fs.remove_file(Path::new(temp_path));
     }
     state.proc_sub_prealloc.clear();
+    if has_temp_binding_scope {
+        state.temp_binding_scopes.pop();
+    }
 
     // 9. Restore pre-command assignments
     for (name, old_value) in saved {
@@ -1596,9 +1644,17 @@ fn execute_arithmetic(
     arith: &ast::ArithmeticCommand,
     state: &mut InterpreterState,
 ) -> Result<ExecResult, RustBashError> {
+    if arithmetic_command_has_invalid_hash(arith, state) {
+        return Ok(ExecResult {
+            stderr: "rust-bash: arithmetic: unexpected character `#`\n".to_string(),
+            exit_code: 1,
+            ..Default::default()
+        });
+    }
+
     let expanded =
         crate::interpreter::expansion::expand_arith_expression(&arith.expr.value, state)?;
-    match crate::interpreter::arithmetic::eval_arithmetic(&expanded, state) {
+    match eval_command_arithmetic_expr(&expanded, state) {
         Ok(val) => {
             let mut result = ExecResult {
                 exit_code: if val != 0 { 0 } else { 1 },
@@ -1629,6 +1685,176 @@ fn execute_arithmetic(
     }
 }
 
+fn arithmetic_command_has_invalid_hash(
+    arith: &ast::ArithmeticCommand,
+    state: &InterpreterState,
+) -> bool {
+    let source = &state.current_source_text;
+    if source.is_empty() {
+        return false;
+    }
+
+    let Some(raw_command) = char_range_slice(source, arith.loc.start.index, arith.loc.end.index)
+    else {
+        return false;
+    };
+
+    raw_arithmetic_command_contains_invalid_hash(raw_command)
+}
+
+fn char_range_slice(source: &str, start: usize, end: usize) -> Option<&str> {
+    if start > end {
+        return None;
+    }
+
+    let total_chars = source.chars().count();
+    if end > total_chars {
+        return None;
+    }
+
+    let start_byte = if start == total_chars {
+        source.len()
+    } else {
+        source.char_indices().nth(start)?.0
+    };
+    let end_byte = if end == total_chars {
+        source.len()
+    } else {
+        source.char_indices().nth(end)?.0
+    };
+    source.get(start_byte..end_byte)
+}
+
+fn raw_arithmetic_command_contains_invalid_hash(raw_command: &str) -> bool {
+    let Some(start) = raw_command.find("((") else {
+        return false;
+    };
+    let Some(end) = raw_command.rfind("))") else {
+        return false;
+    };
+    if end <= start + 2 {
+        return false;
+    }
+
+    let inner = &raw_command[start + 2..end];
+    let chars: Vec<char> = inner.chars().collect();
+    let mut i = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+
+    while i < chars.len() {
+        let ch = chars[i];
+        if in_single {
+            if ch == '\'' {
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_double {
+            if ch == '\\' {
+                i += 2;
+                continue;
+            }
+            if ch == '"' {
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        match ch {
+            '\'' => in_single = true,
+            '"' => in_double = true,
+            '\\' => {
+                i += 2;
+                continue;
+            }
+            '#' => {
+                if !is_base_literal_hash(&chars, i) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    false
+}
+
+fn is_base_literal_hash(chars: &[char], hash_index: usize) -> bool {
+    if hash_index == 0 || hash_index + 1 >= chars.len() {
+        return false;
+    }
+
+    let next = chars[hash_index + 1];
+    if !(next.is_ascii_alphanumeric() || matches!(next, '@' | '_')) {
+        return false;
+    }
+
+    let mut digit_start = hash_index;
+    while digit_start > 0 && chars[digit_start - 1].is_ascii_digit() {
+        digit_start -= 1;
+    }
+    if digit_start == hash_index {
+        return false;
+    }
+
+    if digit_start > 0 {
+        let prev = chars[digit_start - 1];
+        if prev.is_ascii_alphanumeric() || prev == '_' {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn eval_command_arithmetic_expr(
+    expr: &str,
+    state: &mut InterpreterState,
+) -> Result<i64, RustBashError> {
+    let normalized = normalize_command_arithmetic_expr(expr);
+    crate::interpreter::arithmetic::eval_arithmetic(&normalized, state)
+}
+
+fn normalize_command_arithmetic_expr(expr: &str) -> String {
+    if !expr.contains('\'') {
+        return expr.to_string();
+    }
+
+    let mut normalized = String::with_capacity(expr.len());
+    let mut chars = expr.chars();
+    let mut in_double = false;
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => {
+                in_double = !in_double;
+                normalized.push(ch);
+            }
+            '\\' if in_double => {
+                normalized.push(ch);
+                if let Some(next) = chars.next() {
+                    normalized.push(next);
+                }
+            }
+            '\'' if !in_double => {
+                for inner in chars.by_ref() {
+                    if inner == '\'' {
+                        break;
+                    }
+                    normalized.push(inner);
+                }
+            }
+            _ => normalized.push(ch),
+        }
+    }
+
+    normalized
+}
+
 fn execute_arithmetic_for(
     afc: &ast::ArithmeticForClauseCommand,
     state: &mut InterpreterState,
@@ -1639,7 +1865,7 @@ fn execute_arithmetic_for(
     // Evaluate initializer
     if let Some(init) = &afc.initializer {
         let expanded = crate::interpreter::expansion::expand_arith_expression(&init.value, state)?;
-        crate::interpreter::arithmetic::eval_arithmetic(&expanded, state)?;
+        eval_command_arithmetic_expr(&expanded, state)?;
     }
 
     let mut result = ExecResult::default();
@@ -1664,7 +1890,7 @@ fn execute_arithmetic_for(
         if let Some(cond) = &afc.condition {
             let expanded =
                 crate::interpreter::expansion::expand_arith_expression(&cond.value, state)?;
-            let val = crate::interpreter::arithmetic::eval_arithmetic(&expanded, state)?;
+            let val = eval_command_arithmetic_expr(&expanded, state)?;
             if val == 0 {
                 break;
             }
@@ -1700,7 +1926,7 @@ fn execute_arithmetic_for(
         if let Some(upd) = &afc.updater {
             let expanded =
                 crate::interpreter::expansion::expand_arith_expression(&upd.value, state)?;
-            crate::interpreter::arithmetic::eval_arithmetic(&expanded, state)?;
+            eval_command_arithmetic_expr(&expanded, state)?;
         }
     }
     state.loop_depth -= 1;
@@ -1815,6 +2041,7 @@ fn execute_subshell(
         shell_name: state.shell_name.clone(),
         random_seed: state.random_seed,
         local_scopes: Vec::new(),
+        temp_binding_scopes: Vec::new(),
         in_function_depth: 0,
         traps: state.traps.clone(),
         in_trap: false,
@@ -1824,6 +2051,8 @@ fn execute_subshell(
         command_hash: state.command_hash.clone(),
         aliases: state.aliases.clone(),
         current_lineno: state.current_lineno,
+        current_source: state.current_source.clone(),
+        current_source_text: state.current_source_text.clone(),
         shell_start_time: state.shell_start_time,
         last_argument: state.last_argument.clone(),
         call_stack: state.call_stack.clone(),
@@ -1954,6 +2183,8 @@ fn make_exec_callback(
     let shell_start_time = state.shell_start_time;
     let last_argument = state.last_argument.clone();
     let call_stack = state.call_stack.clone();
+    let current_source = state.current_source.clone();
+    let current_source_text = state.current_source_text.clone();
     let machtype = state.machtype.clone();
     let hosttype = state.hosttype.clone();
 
@@ -1987,6 +2218,7 @@ fn make_exec_callback(
             shell_name: shell_name.clone(),
             random_seed,
             local_scopes: Vec::new(),
+            temp_binding_scopes: Vec::new(),
             in_function_depth: 0,
             traps: HashMap::new(),
             in_trap: false,
@@ -1996,6 +2228,8 @@ fn make_exec_callback(
             command_hash: HashMap::new(),
             aliases: HashMap::new(),
             current_lineno: 0,
+            current_source: current_source.clone(),
+            current_source_text: current_source_text.clone(),
             shell_start_time,
             last_argument: last_argument.clone(),
             call_stack: call_stack.clone(),
@@ -2050,7 +2284,7 @@ fn execute_function_call(
     // BASH_LINENO records the line where the call was made (current LINENO).
     state.call_stack.push(CallFrame {
         func_name: name.to_string(),
-        source: String::new(),
+        source: func_def.source.clone(),
         lineno: state.current_lineno,
     });
 
@@ -2059,7 +2293,12 @@ fn execute_function_call(
     state.in_function_depth += 1;
 
     // Execute the function body (CompoundCommand inside FunctionBody)
+    let saved_source = std::mem::replace(&mut state.current_source, func_def.source.clone());
+    let saved_source_text =
+        std::mem::replace(&mut state.current_source_text, func_def.source_text.clone());
     let result = execute_compound_command(&func_def.body.0, func_def.body.1.as_ref(), state, "");
+    state.current_source = saved_source;
+    state.current_source_text = saved_source_text;
 
     // Determine exit code: if Return was signaled, use its code
     let exit_code = match state.control_flow.take() {
@@ -3214,6 +3453,7 @@ fn make_proc_sub_state(state: &mut InterpreterState) -> InterpreterState {
         shell_name: state.shell_name.clone(),
         random_seed: state.random_seed,
         local_scopes: Vec::new(),
+        temp_binding_scopes: Vec::new(),
         in_function_depth: 0,
         traps: HashMap::new(),
         in_trap: false,
@@ -3223,6 +3463,8 @@ fn make_proc_sub_state(state: &mut InterpreterState) -> InterpreterState {
         command_hash: state.command_hash.clone(),
         aliases: state.aliases.clone(),
         current_lineno: state.current_lineno,
+        current_source: state.current_source.clone(),
+        current_source_text: state.current_source_text.clone(),
         shell_start_time: state.shell_start_time,
         last_argument: state.last_argument.clone(),
         call_stack: state.call_stack.clone(),

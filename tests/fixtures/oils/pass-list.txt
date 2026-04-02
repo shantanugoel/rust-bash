@@ -46,6 +46,7 @@ arith-context.test:Slicing of string with expressions
 arith-context.test:Slicing of string with variables
 arith-context.test:Triple parens should be disambiguated
 arith-dynamic.test:Double quotes
+arith-dynamic.test:Single quotes
 arith-dynamic.test:Substitutions
 arith-dynamic.test:Variable references
 arith.test:$ is optional
@@ -66,7 +67,9 @@ arith.test:Bitwise ops
 arith.test:BracedVarSub within ArithSub
 arith.test:comma operator
 arith.test:Comma operator (borrowed from C)
+arith.test:Comment not allowed in the middle of multiline arithmetic
 arith.test:Comparison Ops
+arith.test:Constant with quotes like '1'
 arith.test:Constants in base 36
 arith.test:Constants in bases 2 to 64
 arith.test:Double subscript
@@ -82,6 +85,7 @@ arith.test:Hex constant with capital X
 arith.test:Increment and decrement array elements
 arith.test:Increment undefined variables
 arith.test:Increment undefined variables with nounset
+arith.test:Integer constant validation
 arith.test:Integer constant parsing
 arith.test:Invalid constant
 arith.test:Invalid LValue
@@ -276,6 +280,8 @@ assign-extended.test:ble.sh: eval -- "$(declare -p var arr)"
 assign-extended.test:declare
 assign-extended.test:declare -a
 assign-extended.test:declare -f exit code indicates function existence
+assign-extended.test:declare -F with shopt -s extdebug and main file
+assign-extended.test:declare -F with shopt -s extdebug prints more info
 assign-extended.test:declare -F prints function names
 assign-extended.test:declare -g (bash-specific; bash-completion uses it)
 assign-extended.test:declare -p
@@ -298,6 +304,8 @@ assign-extended.test:function name with /
 assign-extended.test:invalid var name
 assign-extended.test:local -a
 assign-extended.test:Multiple assignments / array assignments on a line
+assign-extended.test:myvar=typeset (another form of dynamic assignment)
+assign-extended.test:syntax error in array assignment
 assign-extended.test:typeset -ar makes it readonly
 assign-extended.test:typeset -f
 assign-extended.test:typeset -p
@@ -306,11 +314,14 @@ assign-extended.test:typeset +r removes read-only attribute (TODO: documented in
 assign-extended.test:typeset +x
 assign-extended.test:typeset -x makes it exported
 assign-extended.test:unset and shell funcs
+assign-extended.test:eval -- "$(declare -p arr)" (restore arrays w/ unset elements)
 assign.test:aliased assignment doesn't split
+assign.test:"var d = {}; declare -p d" does not print anything (OSH)
 assign.test:assign and glob
 assign.test:Assignment doesn't do glob expansion
 assign.test:Assignment doesn't do word splitting
 assign.test:assignments / array assignments not interpreted after 'echo'
+assign.test:assignment using dynamic keyword (splits in most shells, not in zsh/osh)
 assign.test:assignment using dynamic var names doesn't split
 assign.test:'declare -A' and then dict assignment
 assign.test:"declare -a arr" and "readonly -a a" creates an empty array (OSH)
@@ -321,11 +332,13 @@ assign.test:declare in an if statement
 assign.test:dynamic local variables (and splitting)
 assign.test:Env binding can use preceding bindings, but not subsequent ones
 assign.test:Env binding in readonly/declare is NOT exported!  (pitfall)
+assign.test:Empty env binding
 assign.test:Env binding not allowed before compound command
 assign.test:Env value doesn't persist
 assign.test:Env value with equals
 assign.test:Env value with escaped <
 assign.test:Env value with two quotes
+assign.test:Escaped = in command name
 assign.test:export a=1 no_value c=2
 assign.test:FOO=foo echo [foo]
 assign.test:FOO=foo fun
@@ -340,9 +353,15 @@ assign.test:readonly a=(1 2) no_value c=(3 4) makes 'no_value' readonly
 assign.test:"readonly -a arr" and "readonly -A dict" should not not remove existing arrays
 assign.test:readonly array should not be modified by a+=(1)
 assign.test:readonly x= gives empty string (regression)
+assign.test:redirect after assignment builtin (eval redirects after evaluating arguments)
 assign.test:redirect after bare assignment
+assign.test:redirect after command sub (like case above but without assignment builtin)
 assign.test:redirect after declare -p
+assign.test:Reveal existence of "temp frame" (All shells disagree here!!!)
 assign.test:static assignment doesn't split
+assign.test:Test above without 'local' (which is not POSIX)
+assign.test:Trying to run keyword 'for'
+assign.test:Using ${x-default} after unsetting a temp binding shadowing a global
 assign.test:Using ${x-default} after unsetting local shadowing a global
 bool-parse.test:Allowed: [[ = ]] and [[ == ]]
 bool-parse.test:[ -f = ] and [ -f == ]
@@ -568,8 +587,12 @@ builtin-meta-assign.test:builtin declare,local
 builtin-meta-assign.test:builtin typeset, export,readonly
 builtin-meta-assign.test:command export,readonly
 builtin-meta-assign.test:command local
+builtin-meta-assign.test:Dynamic $c readonly - bash and dash change behavior, mksh bug
+builtin-meta-assign.test:export, builtin export
 builtin-meta-assign.test:dynamic builtin command ASSIGN, command builtin ASSIGN
 builtin-meta-assign.test:static builtin command ASSIGN, command builtin ASSIGN
+builtin-meta-assign.test:\builtin declare - ble.sh relies on it
+builtin-meta-assign.test:\command readonly - similar issue
 builtin-meta.test:builtin command echo hi
 builtin-meta.test:command command seq 3
 builtin-meta.test:command command -v seq
@@ -1007,6 +1030,7 @@ if_.test:Long style
 introspect.test:${FUNCNAME} with prefix/suffix operators
 introspect.test:operators on FUNCNAME
 let.test:let
+let.test:let with ()
 loop.test:$b break, $c continue, $r return, $e exit
 loop.test:break
 loop.test:\break \continue \return \exit
@@ -1397,6 +1421,7 @@ var-op-strip.test:strip unquoted and quoted ?
 var-op-strip.test:strip unquoted and quoted [a]
 var-op-strip.test:Test that you can remove everything with const
 var-op-test.test:$@ ("") and - and +
+var-op-test.test:$@ ("" "") and - and +
 var-op-test.test:"$*" ("" "") and - and + (IFS=)
 var-op-test.test:${s+foo} and ${s:+foo} when set -u
 var-op-test.test:"${undefined[@]+foo}" and "${undefined[@]:+foo}", with set -u
@@ -1490,6 +1515,7 @@ var-sub-quote.test:Strip a string with single quotes, double quoted
 var-sub-quote.test:Strip a string with single quotes, unquoted
 var-sub-quote.test:substitution of IFS character, quoted and unquoted
 var-sub-quote.test:Syntax error for single quote in double quote
+var-sub-quote.test:The string to strip is space sensitive
 var-sub-quote.test:The string to strip can be single quoted, outer is unquoted
 var-sub-quote.test:Var substitution with newlines (#2492)
 var-sub-quote.test:Var substitution with \n in value
@@ -1534,10 +1560,13 @@ word-split.test:IFS is scoped
 word-split.test:IFS=o (regression for bug)
 word-split.test:IFS unset behaves like $' \t\n'
 word-split.test:IFS='' with ${a[@]} and ${a[*]} (bug #627)
+word-split.test:IFS='' with ${!a[@]} and ${!a[*]} (bug #627)
 word-split.test:IFS='' with $@ and $* and printf (bug #627)
 word-split.test:IFS='' with $@ and $* (bug #627)
 word-split.test:IFS='' with ${!prefix@} and ${!prefix*} (bug #627)
 word-split.test:IFS with whitespace and non-whitepace.
+word-split.test:IFS=x and '' and $@ - same bug as spec/toysh-posix case #12
+word-split.test:IFS=x and '' and $@ (#2)
 word-split.test:IFS=x and '' and $@ (#3)
 word-split.test:Leading/trailing word elision with non-whitespace IFS
 word-split.test:Leading ' ' vs leading ' _ '

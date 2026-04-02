@@ -28,6 +28,9 @@ struct Segment {
     /// True for single-quoted, double-quoted, and escape-sequence text.
     /// False for unquoted literal text and unquoted parameter expansions.
     glob_protected: bool,
+    /// True for synthetic empty fields created by unquoted `$@` / `${arr[@]}`
+    /// with non-whitespace IFS delimiters.
+    synthetic_empty: bool,
 }
 
 /// A word being assembled from multiple segments during expansion.
@@ -115,7 +118,8 @@ fn expand_word_segments(
     state: &InterpreterState,
 ) -> Result<Vec<WordInProgress>, RustBashError> {
     let options = parser_options();
-    let pieces = brush_parser::word::parse(&word.value, &options)
+    let assignment_like = expand_assignment_like_tilde_bug(&word.value, state);
+    let pieces = brush_parser::word::parse(&assignment_like, &options)
         .map_err(|e| RustBashError::Parse(e.to_string()))?;
 
     let mut words: Vec<WordInProgress> = vec![Vec::new()];
@@ -130,7 +134,8 @@ fn expand_word_segments_mut(
     state: &mut InterpreterState,
 ) -> Result<Vec<WordInProgress>, RustBashError> {
     let options = parser_options();
-    let pieces = brush_parser::word::parse(&word.value, &options)
+    let assignment_like = expand_assignment_like_tilde_bug(&word.value, state);
+    let pieces = brush_parser::word::parse(&assignment_like, &options)
         .map_err(|e| RustBashError::Parse(e.to_string()))?;
 
     let mut words: Vec<WordInProgress> = vec![Vec::new()];
@@ -138,6 +143,38 @@ fn expand_word_segments_mut(
         expand_word_piece_mut(&piece_ws.piece, &mut words, state, false)?;
     }
     Ok(words)
+}
+
+fn expand_assignment_like_tilde_bug(word: &str, state: &InterpreterState) -> String {
+    if word.contains(['"', '\'', '\\', '$', '`']) {
+        return word.to_string();
+    }
+
+    let Some((name, value)) = word.split_once('=') else {
+        return word.to_string();
+    };
+
+    if !is_assignment_like_name(name) || !value.starts_with('~') {
+        return word.to_string();
+    }
+
+    let rest = &value[1..];
+    if !rest.is_empty() && !rest.starts_with('/') {
+        return word.to_string();
+    }
+
+    let home = get_var(state, "HOME").unwrap_or_default();
+    if home.is_empty() {
+        return word.to_string();
+    }
+
+    format!("{name}={home}{rest}")
+}
+
+fn is_assignment_like_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !name.starts_with(|c: char| c.is_ascii_digit())
 }
 
 // ── Segment helpers ─────────────────────────────────────────────────
@@ -157,6 +194,7 @@ fn push_segment(words: &mut Vec<WordInProgress>, text: &str, quoted: bool, glob_
     if let Some(last) = word.last_mut()
         && last.quoted == quoted
         && last.glob_protected == glob_protected
+        && !last.synthetic_empty
     {
         last.text.push_str(text);
         return;
@@ -165,6 +203,19 @@ fn push_segment(words: &mut Vec<WordInProgress>, text: &str, quoted: bool, glob_
         text: text.to_string(),
         quoted,
         glob_protected,
+        synthetic_empty: false,
+    });
+}
+
+fn push_synthetic_empty_segment(words: &mut Vec<WordInProgress>) {
+    if words.is_empty() {
+        words.push(Vec::new());
+    }
+    words.last_mut().unwrap().push(Segment {
+        text: String::new(),
+        quoted: false,
+        glob_protected: false,
+        synthetic_empty: true,
     });
 }
 
@@ -226,6 +277,7 @@ fn execute_command_substitution(
         shell_name: state.shell_name.clone(),
         random_seed: state.random_seed,
         local_scopes: Vec::new(),
+        temp_binding_scopes: Vec::new(),
         in_function_depth: 0,
         traps: HashMap::new(),
         in_trap: false,
@@ -235,6 +287,8 @@ fn execute_command_substitution(
         command_hash: state.command_hash.clone(),
         aliases: state.aliases.clone(),
         current_lineno: state.current_lineno,
+        current_source: state.current_source.clone(),
+        current_source_text: state.current_source_text.clone(),
         shell_start_time: state.shell_start_time,
         last_argument: state.last_argument.clone(),
         call_stack: state.call_stack.clone(),
@@ -963,8 +1017,9 @@ fn expand_parameter(
         } => {
             let keys = get_array_keys(variable_name, state);
             if *concatenate {
-                // ${!arr[*]} — join with IFS[0], single word
+                // Bash joins ${!arr[*]} with spaces when IFS is empty.
                 let sep = match get_var(state, "IFS") {
+                    Some(s) if s.is_empty() => " ".to_string(),
                     Some(s) => s.chars().next().map(|c| c.to_string()).unwrap_or_default(),
                     None => " ".to_string(),
                 };
@@ -1247,7 +1302,11 @@ fn expand_param_value(
                     if i > 0 {
                         start_new_word(words);
                     }
-                    push_segment(words, param, in_dq, in_dq);
+                    if !in_dq && param.is_empty() && ifs_preserves_unquoted_empty(state) {
+                        push_synthetic_empty_segment(words);
+                    } else {
+                        push_segment(words, param, in_dq, in_dq);
+                    }
                 }
                 false
             }
@@ -1287,7 +1346,11 @@ fn expand_param_value(
                     if i > 0 {
                         start_new_word(words);
                     }
-                    push_segment(words, v, in_dq, in_dq);
+                    if !in_dq && v.is_empty() && ifs_preserves_unquoted_empty(state) {
+                        push_synthetic_empty_segment(words);
+                    } else {
+                        push_segment(words, v, in_dq, in_dq);
+                    }
                 }
                 false
             }
@@ -1306,6 +1369,13 @@ fn get_ifs(state: &InterpreterState) -> String {
     get_var(state, "IFS").unwrap_or_else(|| " \t\n".to_string())
 }
 
+fn ifs_preserves_unquoted_empty(state: &InterpreterState) -> bool {
+    match get_var(state, "IFS") {
+        Some(ifs) if !ifs.is_empty() => ifs.chars().any(|c| !matches!(c, ' ' | '\t' | '\n')),
+        _ => false,
+    }
+}
+
 /// A word after IFS splitting, carrying glob eligibility metadata.
 struct SplitWord {
     text: String,
@@ -1318,7 +1388,11 @@ fn finalize_with_ifs_split(words: Vec<WordInProgress>, state: &InterpreterState)
     let ifs = get_ifs(state);
     let extglob = state.shopt_opts.extglob;
     let mut result = Vec::new();
-    for word in words {
+    let total = words.len();
+    for (i, word) in words.into_iter().enumerate() {
+        if i + 1 == total && word_is_synthetic_only(&word) {
+            continue;
+        }
         ifs_split_word(&word, &ifs, &mut result);
     }
     // When extglob is enabled, mark words containing extglob syntax as glob-eligible
@@ -1369,6 +1443,7 @@ fn has_extglob_pattern(s: &str) -> bool {
 fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
     // Track whether any segment in the word is quoted (even if empty).
     let word_has_quoted = word.iter().any(|s| s.quoted);
+    let word_has_synthetic_empty = word.iter().any(|s| s.synthetic_empty);
 
     // Check if the word starts/ends with an empty quoted segment (e.g. `""$A""`).
     // These anchors produce leading/trailing empty fields.
@@ -1384,7 +1459,7 @@ fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
 
     if chars.is_empty() {
         // An empty word with at least one quoted segment → produce one empty word.
-        if word_has_quoted {
+        if word_has_quoted || word_has_synthetic_empty {
             result.push(SplitWord {
                 text: String::new(),
                 may_glob: false,
@@ -1521,6 +1596,10 @@ fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
             may_glob: false,
         });
     }
+}
+
+fn word_is_synthetic_only(word: &[Segment]) -> bool {
+    !word.is_empty() && word.iter().all(|segment| segment.synthetic_empty)
 }
 
 // ── Glob expansion ──────────────────────────────────────────────────
@@ -2176,7 +2255,8 @@ fn resolve_array_element(name: &str, index: &str, state: &InterpreterState) -> S
     };
     match &var.value {
         VariableValue::IndexedArray(map) => {
-            let idx = simple_arith_eval(index, state);
+            let expanded_index = expand_simple_dollar_vars(index, state);
+            let idx = simple_arith_eval(&expanded_index, state);
             let actual_idx = if idx < 0 {
                 let max_key = map.keys().next_back().copied().unwrap_or(0);
                 let resolved = max_key as i64 + 1 + idx;
@@ -2190,11 +2270,12 @@ fn resolve_array_element(name: &str, index: &str, state: &InterpreterState) -> S
             map.get(&actual_idx).cloned().unwrap_or_default()
         }
         VariableValue::AssociativeArray(map) => {
-            let key = strip_quotes(index);
+            let key = strip_quotes(&expand_simple_dollar_vars(index, state));
             map.get(&key).cloned().unwrap_or_default()
         }
         VariableValue::Scalar(s) => {
-            let idx = simple_arith_eval(index, state);
+            let expanded_index = expand_simple_dollar_vars(index, state);
+            let idx = simple_arith_eval(&expanded_index, state);
             if idx == 0 || idx == -1 {
                 s.clone()
             } else {
@@ -2456,7 +2537,11 @@ fn push_vectorized(
             if i > 0 {
                 start_new_word(words);
             }
-            push_segment(words, v, in_dq, in_dq);
+            if !in_dq && v.is_empty() && ifs_preserves_unquoted_empty(state) {
+                push_synthetic_empty_segment(words);
+            } else {
+                push_segment(words, v, in_dq, in_dq);
+            }
         }
     }
 }
@@ -3009,7 +3094,8 @@ fn is_unset(state: &InterpreterState, parameter: &Parameter) -> bool {
                     use crate::interpreter::VariableValue;
                     match &var.value {
                         VariableValue::IndexedArray(map) => {
-                            let idx = simple_arith_eval(index, state);
+                            let expanded_index = expand_simple_dollar_vars(index, state);
+                            let idx = simple_arith_eval(&expanded_index, state);
                             let actual_idx = if idx < 0 {
                                 let max_key = map.keys().next_back().copied().unwrap_or(0);
                                 let resolved_idx = max_key as i64 + 1 + idx;
@@ -3022,9 +3108,13 @@ fn is_unset(state: &InterpreterState, parameter: &Parameter) -> bool {
                             };
                             !map.contains_key(&actual_idx)
                         }
-                        VariableValue::AssociativeArray(map) => !map.contains_key(index.as_str()),
+                        VariableValue::AssociativeArray(map) => {
+                            let key = expand_simple_dollar_vars(index, state);
+                            !map.contains_key(key.as_str())
+                        }
                         VariableValue::Scalar(_) => {
-                            let idx = simple_arith_eval(index, state);
+                            let expanded_index = expand_simple_dollar_vars(index, state);
+                            let idx = simple_arith_eval(&expanded_index, state);
                             idx != 0 && idx != -1
                         }
                     }
@@ -3423,8 +3513,9 @@ pub(crate) fn expand_arith_expression(
     expr: &str,
     state: &mut InterpreterState,
 ) -> Result<String, RustBashError> {
-    // If the expression contains no shell expansion markers or quotes, return as-is.
-    if !expr.contains('$') && !expr.contains('`') && !expr.contains('\'') && !expr.contains('"') {
+    // Preserve literal quotes and # characters when no shell expansion is needed so
+    // the arithmetic tokenizer can reject them with bash-like errors.
+    if !expr.contains('$') && !expr.contains('`') {
         return Ok(expr.to_string());
     }
     // Parse the expression as a shell word and expand it.
@@ -3433,4 +3524,127 @@ pub(crate) fn expand_arith_expression(
         loc: None,
     };
     expand_word_to_string_mut(&word, state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::interpreter::{
+        ExecutionCounters, ExecutionLimits, InterpreterState, ShellOpts, ShoptOpts, Variable,
+        VariableAttrs, VariableValue,
+    };
+    use crate::network::NetworkPolicy;
+    use crate::vfs::InMemoryFs;
+    use brush_parser::word::{ParameterExpr, WordPiece};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    fn make_state() -> InterpreterState {
+        InterpreterState {
+            fs: Arc::new(InMemoryFs::new()),
+            env: HashMap::from([(
+                "foo".to_string(),
+                Variable {
+                    value: VariableValue::Scalar("a b c d".to_string()),
+                    attrs: VariableAttrs::empty(),
+                },
+            )]),
+            cwd: "/".to_string(),
+            functions: HashMap::new(),
+            last_exit_code: 0,
+            commands: HashMap::new(),
+            shell_opts: ShellOpts::default(),
+            shopt_opts: ShoptOpts::default(),
+            limits: ExecutionLimits::default(),
+            counters: ExecutionCounters::default(),
+            network_policy: NetworkPolicy::default(),
+            should_exit: false,
+            loop_depth: 0,
+            control_flow: None,
+            positional_params: Vec::new(),
+            shell_name: "rust-bash".to_string(),
+            random_seed: 42,
+            local_scopes: Vec::new(),
+            temp_binding_scopes: Vec::new(),
+            in_function_depth: 0,
+            traps: HashMap::new(),
+            in_trap: false,
+            errexit_suppressed: 0,
+            stdin_offset: 0,
+            dir_stack: Vec::new(),
+            command_hash: HashMap::new(),
+            aliases: HashMap::new(),
+            current_lineno: 0,
+            current_source: "main".to_string(),
+            current_source_text: String::new(),
+            shell_start_time: crate::platform::Instant::now(),
+            last_argument: String::new(),
+            call_stack: Vec::new(),
+            machtype: "x86_64-pc-linux-gnu".to_string(),
+            hosttype: "x86_64".to_string(),
+            persistent_fds: HashMap::new(),
+            next_auto_fd: 10,
+            proc_sub_counter: 0,
+            proc_sub_prealloc: HashMap::new(),
+            pipe_stdin_bytes: None,
+            pending_cmdsub_stderr: String::new(),
+        }
+    }
+
+    #[test]
+    fn parser_keeps_double_spaces_in_strip_pattern() {
+        let pieces =
+            brush_parser::word::parse("${foo%c  d}", &crate::interpreter::parser_options())
+                .unwrap();
+        let pattern = match &pieces[0].piece {
+            WordPiece::ParameterExpansion(ParameterExpr::RemoveSmallestSuffixPattern {
+                pattern: Some(pattern),
+                ..
+            }) => pattern,
+            other => panic!("unexpected parse result: {other:?}"),
+        };
+        assert_eq!(pattern, "c  d");
+    }
+
+    #[test]
+    fn strip_pattern_respects_double_space_literals() {
+        let mut state = make_state();
+        let first = ast::Word {
+            value: "\"${foo%c d}\"".to_string(),
+            loc: None,
+        };
+        let second = ast::Word {
+            value: "\"${foo%c  d}\"".to_string(),
+            loc: None,
+        };
+
+        let first = expand_word_mut(&first, &mut state).unwrap();
+        let second = expand_word_mut(&second, &mut state).unwrap();
+
+        assert_eq!(first, vec!["a b ".to_string()]);
+        assert_eq!(second, vec!["a b c d".to_string()]);
+    }
+
+    #[test]
+    fn command_parser_keeps_double_spaces_in_quoted_strip_pattern() {
+        let program = crate::interpreter::parse("argv.py \"${foo%c d}\" \"${foo%c  d}\"").unwrap();
+        let pipeline = &program.complete_commands[0].0[0].0.first;
+        let cmd = match &pipeline.seq[0] {
+            ast::Command::Simple(simple) => simple,
+            other => panic!("unexpected command: {other:?}"),
+        };
+
+        let suffix = cmd.suffix.as_ref().unwrap();
+        let second = match &suffix.0[0] {
+            ast::CommandPrefixOrSuffixItem::Word(word) => word,
+            other => panic!("unexpected suffix item: {other:?}"),
+        };
+        assert_eq!(second.value, "\"${foo%c d}\"");
+
+        let third = match &suffix.0[1] {
+            ast::CommandPrefixOrSuffixItem::Word(word) => word,
+            other => panic!("unexpected suffix item: {other:?}"),
+        };
+        assert_eq!(third.value, "\"${foo%c  d}\"");
+    }
 }
