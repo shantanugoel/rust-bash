@@ -1659,14 +1659,21 @@ fn builtin_declare(
                     scope.entry(name.to_string()).or_insert(saved);
                 }
             }
-            declare_append_value(
+            match declare_append_value(
                 state,
                 name,
                 value,
                 flag_attrs,
                 make_assoc_array,
                 make_indexed_array,
-            )?;
+            ) {
+                Ok(()) => {}
+                Err(RustBashError::Execution(msg)) => {
+                    result_stderr.push_str(&format!("rust-bash: {msg}\n"));
+                    exit_code = 1;
+                }
+                Err(other) => return Err(other),
+            }
         } else if let Some((name, value)) = arg.split_once('=') {
             if implicit_local {
                 let saved = saved_local_restore_value(state, name);
@@ -1674,7 +1681,7 @@ fn builtin_declare(
                     scope.entry(name.to_string()).or_insert(saved);
                 }
             }
-            declare_with_value(
+            match declare_with_value(
                 state,
                 name,
                 value,
@@ -1682,7 +1689,14 @@ fn builtin_declare(
                 make_assoc_array,
                 make_indexed_array,
                 make_nameref,
-            )?;
+            ) {
+                Ok(()) => {}
+                Err(RustBashError::Execution(msg)) => {
+                    result_stderr.push_str(&format!("rust-bash: {msg}\n"));
+                    exit_code = 1;
+                }
+                Err(other) => return Err(other),
+            }
         } else {
             if implicit_local {
                 let saved = saved_local_restore_value(state, arg);
@@ -1690,7 +1704,20 @@ fn builtin_declare(
                     scope.entry(arg.to_string()).or_insert(saved);
                 }
             }
-            declare_without_value(state, arg, flag_attrs, make_assoc_array, make_indexed_array)?;
+            match declare_without_value(
+                state,
+                arg,
+                flag_attrs,
+                make_assoc_array,
+                make_indexed_array,
+            ) {
+                Ok(()) => {}
+                Err(RustBashError::Execution(msg)) => {
+                    result_stderr.push_str(&format!("rust-bash: {msg}\n"));
+                    exit_code = 1;
+                }
+                Err(other) => return Err(other),
+            }
         }
     }
 
@@ -1922,7 +1949,18 @@ fn format_declare_line(name: &str, var: &Variable) -> String {
                 format!("declare {flag_str}{name}\n")
             } else {
                 let mut entries: Vec<(&String, &String)> = map.iter().collect();
-                entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+                if var.attrs.contains(VariableAttrs::ASSOC_REVERSE_PRINT) {
+                    entries.sort_by(|(a, _), (b, _)| {
+                        match (a.as_str() == "0", b.as_str() == "0") {
+                            (true, true) => std::cmp::Ordering::Equal,
+                            (true, false) => std::cmp::Ordering::Less,
+                            (false, true) => std::cmp::Ordering::Greater,
+                            (false, false) => b.cmp(a),
+                        }
+                    });
+                } else {
+                    entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+                }
                 let elems: Vec<String> = entries
                     .iter()
                     .map(|(k, v)| format!("[{k}]=\"{v}\""))
@@ -1947,6 +1985,17 @@ fn declare_append_value(
     make_assoc_array: bool,
     _make_indexed_array: bool,
 ) -> Result<(), RustBashError> {
+    if make_assoc_array
+        && state
+            .env
+            .get(name)
+            .is_some_and(|var| matches!(var.value, VariableValue::IndexedArray(_)))
+    {
+        return Err(RustBashError::Execution(format!(
+            "{name}: cannot convert indexed array to associative array"
+        )));
+    }
+
     // Handle array append: name+=(val1 val2 ...)
     if let Some(inner) = value.strip_prefix('(').and_then(|s| s.strip_suffix(')')) {
         // Check if the target is an assoc array
@@ -1958,7 +2007,6 @@ fn declare_append_value(
         let non_readonly_attrs = flag_attrs - VariableAttrs::READONLY;
 
         if is_assoc {
-            // Create assoc array if it doesn't exist
             if !state.env.contains_key(name) {
                 state.env.insert(
                     name.to_string(),
@@ -1967,6 +2015,15 @@ fn declare_append_value(
                         attrs: non_readonly_attrs,
                     },
                 );
+            }
+            if let Some(var) = state.env.get_mut(name)
+                && let VariableValue::Scalar(s) = &var.value
+            {
+                let mut map = std::collections::BTreeMap::new();
+                if !s.is_empty() {
+                    map.insert("0".to_string(), s.clone());
+                }
+                var.value = VariableValue::AssociativeArray(map);
             }
             parse_and_set_assoc_array_append(state, name, inner)?;
             if flag_attrs.contains(VariableAttrs::READONLY)
@@ -2053,6 +2110,27 @@ fn declare_with_value(
     make_indexed_array: bool,
     make_nameref: bool,
 ) -> Result<(), RustBashError> {
+    if make_assoc_array
+        && state
+            .env
+            .get(name)
+            .is_some_and(|var| matches!(var.value, VariableValue::IndexedArray(_)))
+    {
+        return Err(RustBashError::Execution(format!(
+            "{name}: cannot convert indexed array to associative array"
+        )));
+    }
+    if make_indexed_array
+        && state
+            .env
+            .get(name)
+            .is_some_and(|var| matches!(var.value, VariableValue::AssociativeArray(_)))
+    {
+        return Err(RustBashError::Execution(format!(
+            "{name}: cannot convert associative array to indexed array"
+        )));
+    }
+
     if make_nameref {
         // Nameref: set the variable directly (don't follow existing nameref).
         let var = state
@@ -2235,6 +2313,11 @@ fn parse_and_set_assoc_array(
     // Reset the array to empty.
     if let Some(var) = state.env.get_mut(name) {
         var.value = VariableValue::AssociativeArray(std::collections::BTreeMap::new());
+        if assoc_body_uses_unquoted_keys(&words) {
+            var.attrs.insert(VariableAttrs::ASSOC_REVERSE_PRINT);
+        } else {
+            var.attrs.remove(VariableAttrs::ASSOC_REVERSE_PRINT);
+        }
     }
     for word in &words {
         if let Some(rest) = word.strip_prefix('[') {
@@ -2261,6 +2344,11 @@ fn parse_and_set_assoc_array_append(
     body: &str,
 ) -> Result<(), RustBashError> {
     let words = shell_split_array_body(body);
+    if assoc_body_uses_unquoted_keys(&words)
+        && let Some(var) = state.env.get_mut(name)
+    {
+        var.attrs.insert(VariableAttrs::ASSOC_REVERSE_PRINT);
+    }
     for word in &words {
         if let Some(rest) = word.strip_prefix('[') {
             if let Some(eq_pos) = rest.find("]=") {
@@ -2274,6 +2362,27 @@ fn parse_and_set_assoc_array_append(
         }
     }
     Ok(())
+}
+
+fn assoc_body_uses_unquoted_keys(words: &[String]) -> bool {
+    words.iter().any(|word| {
+        let Some(rest) = word.strip_prefix('[') else {
+            return false;
+        };
+        let key = if let Some(eq_pos) = rest.find("]=") {
+            &rest[..eq_pos]
+        } else if let Some(key_str) = rest.strip_suffix(']') {
+            key_str
+        } else {
+            return false;
+        };
+        !is_simple_quoted_assoc_key(key)
+    })
+}
+
+fn is_simple_quoted_assoc_key(key: &str) -> bool {
+    (key.starts_with('\'') && key.ends_with('\'') && key.len() >= 2)
+        || (key.starts_with('"') && key.ends_with('"') && key.len() >= 2)
 }
 
 /// Simple shell word splitting for array bodies, respecting double/single quotes.
@@ -5331,9 +5440,15 @@ fn run_in_subshell(
         proc_sub_prealloc: HashMap::new(),
         pipe_stdin_bytes: None,
         pending_cmdsub_stderr: String::new(),
+        fatal_expansion_error: false,
     };
 
-    let result = execute_program(program, &mut sub_state);
+    let result = execute_program(program, &mut sub_state).map(|mut result| {
+        if sub_state.fatal_expansion_error {
+            result.exit_code = 127;
+        }
+        result
+    });
 
     // Fold shared counters back into parent
     state.counters.command_count = sub_state.counters.command_count;
@@ -5446,6 +5561,7 @@ mod tests {
             proc_sub_prealloc: HashMap::new(),
             pipe_stdin_bytes: None,
             pending_cmdsub_stderr: String::new(),
+            fatal_expansion_error: false,
         }
     }
 

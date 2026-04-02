@@ -117,5 +117,5 @@ stdout = ""
 stderr = """
 /bin/bash: line 1: MISSING: variable not set
 """
-exit_code = 127
+exit_code = 1
 stderr_ignore = true

@@ -31,6 +31,7 @@ append.test:myarray[1]+=s - Append to element
 append.test:myarray[-1]+=s - Append to last element
 append.test:Strings have value semantics, not reference semantics
 append.test:Type mismatching of lhs+=rhs should not cause a crash
+append.test:typeset s+=(my array)
 append.test:typeset s${dyn}+=
 arith-context.test:$[$undefined] is a synonym for $(($undefined (#2566)
 arith-context.test:$[$var is a synonym for $(($var (#2426)
@@ -176,18 +177,31 @@ array-compat.test:++ on a whole array increments the first element (disallowed w
 array-compat.test:strict_array: ${array} is not valid in OSH, is ${array[0]} in ksh/bash
 array-compat.test:strict_array: $array is not valid in OSH, is ${array[0]} in ksh/bash
 array-compat.test:User arrays decay
-array-literal.test:index increments without [k]= (BashArray)
-array-literal.test:[k]=$v and [k]="$@" (BashAssoc)
+array-literal.test:(strict_array) assoc=(key value ...) is not allowed
+array-literal.test:(strict_array) declare -A s+=()
+array-literal.test:(strict_array) s+=()
+array-literal.test:BashArray cannot be changed to BashAssoc and vice versa
+array-literal.test:Evaluation order (1)
+array-literal.test:Evaluation order (2)
+array-literal.test:Evaluation order (3)
+array-literal.test:Tilde expansions in RHS of [k]=v (BashArray)
+array-literal.test:Tilde expansions in RHS of [k]=v (BashAssoc)
 array-literal.test:[k1]=v1 (BashArray)
 array-literal.test:[k1]=v1 (BashAssoc)
+array-literal.test:[k1]=v1 looking like brace expansions (BashArray)
 array-literal.test:[k1]=v1 looking like brace expansions (BashAssoc)
-array-literal.test:(strict_array) s+=()
-array-literal.test:Tilde expansions in RHS of [k]=v (BashArray)
+array-literal.test:[k]=$v and [k]="$@" (BashArray)
+array-literal.test:[k]=$v and [k]="$@" (BashAssoc)
+array-literal.test:append to element (BashArray)
+array-literal.test:append to element (BashAssoc)
+array-literal.test:index increments without [k]= (BashArray)
+array-literal.test:non-index forms of element (BashAssoc)
 array-sparse.test:+=
 array-sparse.test:"${a[*]}"
 array-sparse.test:${a-}
 array-sparse.test:${a[@]#...}
 array-sparse.test:${a[@]}
+array-sparse.test:${a[@]-unset}, ${a[@]:-empty}, etc.
 array-sparse.test:${!a[@]}
 array-sparse.test:${!a[0]}
 array-sparse.test:${a[@]:BigInt}
@@ -670,17 +684,24 @@ builtin-read.test:read from redirected directory is non-fatal error
 builtin-read.test:read line from here doc
 builtin-read.test:read -n 0
 builtin-read.test:read -n doesn't strip whitespace (bug fix)
+builtin-read.test:read -n (with $REPLY)
 builtin-read.test:read -n from directory
 builtin-read.test:read -n from pipe
+builtin-read.test:read -n vs. -N
 builtin-read.test:read -N ignores delimiters
 builtin-read.test:read -n with invalid arg
 builtin-read.test:read -p (not fully tested)
+builtin-read.test:read -r ignores backslashes
+builtin-read.test:read -r with \n
+builtin-read.test:read -r with other backslash escapes
 builtin-read.test:read -rd
 builtin-read.test:read -s from pipe, not a terminal
 builtin-read.test:read -t 0.5
 builtin-read.test:read -t -0.5 is invalid
 builtin-read.test:read usage
 builtin-read.test:read -u syntax error
+builtin-read.test:read -d when there's no delimiter
+builtin-read.test:read will unset extranous vars
 builtin-read.test:read with IFS=''
 builtin-read.test:read with IFS=$'\n'
 builtin-read.test:read with smooshed args
@@ -1001,28 +1022,42 @@ glob.test:set -o noglob
 glob.test:set -o noglob (bug #698)
 glob.test:Splitting/Globbing doesn't happen on local assignment
 glob.test:store literal globs in array then expand
-here-doc.test:Here doc as command prefix
+here-doc.test:< redirect and here doc -- last one wins
+here-doc.test:Compound command here doc
+here-doc.test:Function def and execution with here doc
 here-doc.test:Here Doc in if condition
+here-doc.test:Here doc and < redirect -- last one wins
+here-doc.test:Here doc and backslash double quote
+here-doc.test:Here doc as command prefix
+here-doc.test:Here doc escapes
+here-doc.test:Here doc from another input file descriptor
 here-doc.test:Here doc in middle.  And redirects in the middle.
 here-doc.test:Here doc in while condition and here doc in body
 here-doc.test:Here doc in while condition and here doc in body on multiple lines
 here-doc.test:Here doc in while loop split up more
 here-doc.test:Here doc line continuation
-here-doc.test:here doc stripping tabs
+here-doc.test:Here doc with bad comsub delimiter
+here-doc.test:Here doc with bad var delimiter
 here-doc.test:Here doc with builtin 'read'
-here-doc.test:Here doc within subshell with boolean
 here-doc.test:Here doc with line continuation, then pipe.  Syntax error.
 here-doc.test:Here doc with multiline double quoted string
 here-doc.test:Here doc with pipe continued on last line
 here-doc.test:Here doc with pipe on first line
 here-doc.test:Here doc with quote expansion in terminator
 here-doc.test:Here doc with var sub, command sub, arith sub
+here-doc.test:Here doc within subshell with boolean
 here-doc.test:Here redirect with explicit descriptor
 here-doc.test:Here string
 here-doc.test:Here string with $
 here-doc.test:Mixing << and <<-
+here-doc.test:Multiple here docs in pipeline
+here-doc.test:Multiple here docs in pipeline on multiple lines
+here-doc.test:Multiple here docs with different descriptors
 here-doc.test:Nested here docs which are indented
 here-doc.test:Redirect after here doc
+here-doc.test:Two compound commands with two here docs
+here-doc.test:Two here docs -- first is ignored; second ones wins!
+here-doc.test:here doc stripping tabs
 if_.test:elif
 if_.test:else
 if_.test:If
@@ -1350,38 +1385,62 @@ var-num.test:$0 with stdin
 var-num.test:$@ with filename
 var-num.test:In function
 var-num.test:Normal and braced
-var-op-bash.test:${array@Q} and ${array[@]@Q}
+var-op-bash.test:${!A@a} and ${!A[@]@a}
 var-op-bash.test:${!prefix@} ${!prefix*} yields sorted array of var names
 var-op-bash.test:${!prefix@} matches var name (regression)
+var-op-bash.test:${!r@a} with r='a[0]' (attribute for indirect expansion of an array element)
+var-op-bash.test:${#var@X} is a parse error
+var-op-bash.test:${a[0]@a} and ${a@a}
+var-op-bash.test:${array@Q} and ${array[@]@Q}
 var-op-bash.test:${var@a} error conditions
 var-op-bash.test:${var@a} for attributes
 var-op-bash.test:${x@Q}
 var-op-bash.test:${x@u} U L - upper / lower case (bash 5.1 feature)
-var-op-bash.test:argv array and @P @Q @a
-var-op-bash.test:Case folding that depends on locale (not enabled, requires Turkish locale)
+var-op-bash.test:-o nounset with var ops
+var-op-bash.test:Array expansion with nullary var op @P
+var-op-bash.test:Array expansion with nullary var op @Q
+var-op-bash.test:Array expansion with nullary var op @a
 var-op-bash.test:Case folding - Unicode characters
+var-op-bash.test:Case folding - multi code point
+var-op-bash.test:Case folding that depends on locale (not enabled, requires Turkish locale)
+var-op-bash.test:Lower Case glob
 var-op-bash.test:Lower Case with , and ,,
+var-op-bash.test:Lower Case with constant string (VERY WEIRD)
 var-op-bash.test:Upper Case with ^ and ^^
+var-op-bash.test:argv array and @P @Q @a
+var-op-bash.test:assoc array and @P @Q @a
+var-op-bash.test:undef and @P @Q @a
+var-op-bash.test:undef vs. empty string in var ops
 var-op-len.test:Length of undefined variable
 var-op-len.test:String length
-var-op-patsub.test:${v/a} is the same as ${v/a/}  -- no replacement string
 var-op-patsub.test:${v//} is empty search and replacement
+var-op-patsub.test:${v/a} is the same as ${v/a/}  -- no replacement string
 var-op-patsub.test:${v/} is empty search and replacement
+var-op-patsub.test:${x//~homedir/}
 var-op-patsub.test:${x/^} regression
-var-op-patsub.test:[a-z] Invalid range end is syntax error
+var-op-patsub.test:Chromium from http://www.oilshell.org/blog/2016/11/07.html
+var-op-patsub.test:Confusing unquoted slash matches bash (and ash)
 var-op-patsub.test:Global Pattern replacement with /
-var-op-patsub.test:\(\) in pattern (regression)
 var-op-patsub.test:Left Anchored Pattern replacement with #
-var-op-patsub.test:patsub with [^]]
-var-op-patsub.test:patsub with single quotes and hyphen in character class (regression)
 var-op-patsub.test:Pattern is empty $foo$bar -- regression for infinite loop
 var-op-patsub.test:Pattern replacement
+var-op-patsub.test:Pattern replacement on unset variable
+var-op-patsub.test:Replace backslash
 var-op-patsub.test:Replace char class
 var-op-patsub.test:Replace fixed strings
 var-op-patsub.test:Replace hard glob
 var-op-patsub.test:Replace is longest match
+var-op-patsub.test:Replace right ]
 var-op-patsub.test:Replacement with special chars (bug fix)
 var-op-patsub.test:Right Anchored Pattern replacement with %
+var-op-patsub.test:Substitute glob characters in pattern, quoted and unquoted
+var-op-patsub.test:Substitute one unicode character (UTF-8)
+var-op-patsub.test:Synthesized ${x///} bug (similar to above)
+var-op-patsub.test:When LC_ALL=C, pattern ? doesn't match multibyte character
+var-op-patsub.test:[a-z] Invalid range end is syntax error
+var-op-patsub.test:\(\) in pattern (regression)
+var-op-patsub.test:patsub with [^]]
+var-op-patsub.test:patsub with single quotes and hyphen in character class (regression)
 var-op-slice.test:${array[@]::} has implicit length of zero - for ble.sh
 var-op-slice.test:Negative second arg is position, not length!
 var-op-slice.test:Negative start index
@@ -1420,29 +1479,45 @@ var-op-strip.test:strip none
 var-op-strip.test:strip unquoted and quoted ?
 var-op-strip.test:strip unquoted and quoted [a]
 var-op-strip.test:Test that you can remove everything with const
-var-op-test.test:$@ ("") and - and +
-var-op-test.test:$@ ("" "") and - and +
 var-op-test.test:"$*" ("" "") and - and + (IFS=)
-var-op-test.test:${s+foo} and ${s:+foo} when set -u
+var-op-test.test:"${array[@]} with set -u (bash is outlier)
 var-op-test.test:"${undefined[@]+foo}" and "${undefined[@]:+foo}", with set -u
-var-op-test.test:${var=x} dynamic scope
-var-op-test.test:${v:+foo} Alternative value when empty
+var-op-test.test:"${x+foo}" quoted (regression)
+var-op-test.test:"\e" as arg
+var-op-test.test:"\z" as arg
+var-op-test.test:$* ("" "") and - and + (IFS=)
+var-op-test.test:$@ ("" "") and - and +
+var-op-test.test:$@ ("") and - and +
+var-op-test.test:$@ (empty) and - and +
+var-op-test.test:${s+foo} and ${s:+foo} when set -u
 var-op-test.test:${v+foo} Alternative value when unset
 var-op-test.test:${v-foo} and ${v:-foo} when set -u
-var-op-test.test:"${x+foo}" quoted (regression)
+var-op-test.test:${v:+foo} Alternative value when empty
+var-op-test.test:${var=x} dynamic scope
 var-op-test.test:Assign default value when empty
 var-op-test.test:Assign default value when unset
 var-op-test.test:Assign default with array
 var-op-test.test:Default value when empty
 var-op-test.test:Default value when unset
-var-op-test.test:"\e" as arg
+var-op-test.test:Error when empty
+var-op-test.test:Error when unset#1
 var-op-test.test:Error when unset#2
-var-op-test.test:op-test for ${a} and ${a[0]}
+var-op-test.test:Lazy Evaluation of Alternative
+var-op-test.test:Nix idiom ${!hooksSlice+"${!hooksSlice}"} - was workaround for obsolete bash 4.3 bug
 var-op-test.test:Quoted with array as default value
 var-op-test.test:Unquoted with array as default value
-var-op-test.test:"\z" as arg
+var-op-test.test:array ${arr[0]=x}
+var-op-test.test:array and - and +
+var-op-test.test:assoc array ${arr["k"]=x}
+var-op-test.test:assoc array and - and +
+var-op-test.test:op-test for ${!array} with array="a" and array="a[0]"
+var-op-test.test:op-test for ${!array} with array="a[@]" or array="a[*]"
+var-op-test.test:op-test for ${a[@]} and ${a[*]}
+var-op-test.test:op-test for ${a} and ${a[0]}
+var-op-test.test:op-test for unquoted ${a[*]:-empty} with IFS=
 var-ref.test:${!OPTIND} (used by bash completion
 var-ref.test:${!ref-default}
+var-ref.test:${!undef:-}
 var-ref.test:array ref
 var-ref.test:array ref with strict_array
 var-ref.test:comparison to ${!array[@]} keys (similar SYNTAX)
@@ -1451,6 +1526,7 @@ var-ref.test:var ref ${!a}
 var-ref.test:var ref doesn't need cycle detection
 var-ref.test:var ref OF array var -- silent a[0] decay
 var-ref.test:Var ref, then assignment with ${ := }
+var-ref.test:Var ref, then error with ${ ? }
 var-ref.test:var ref to $1 and $2 with 1 and 2
 var-ref.test:var ref to $@ with @
 var-ref.test:var ref TO array var

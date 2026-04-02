@@ -428,6 +428,7 @@ impl RustBashBuilder {
             proc_sub_prealloc: HashMap::new(),
             pipe_stdin_bytes: None,
             pending_cmdsub_stderr: String::new(),
+            fatal_expansion_error: false,
         };
 
         // Set SHELLOPTS and BASHOPTS as readonly variables
@@ -907,7 +908,7 @@ mod tests {
     fn expand_error_if_unset() {
         let mut shell = shell();
         let result = shell.exec("echo ${UNSET:?missing var}").unwrap();
-        assert_eq!(result.exit_code, 127);
+        assert_eq!(result.exit_code, 1);
         assert!(result.stderr.contains("missing var"));
         assert!(result.stdout.is_empty());
     }

@@ -25,11 +25,6 @@
 # `builtin-cd.test` and `redirect.test` stay on the queue, but expect a small VFS/symlink/fd tail to remain until M9.
 
 ## Parser, Expansion, Quoting, Assignment
-- var-op-test.test (xfail=15) parameter test operators
-- var-op-bash.test (xfail=14) bash-specific parameter operators; ${!prefix@} sorted names fixed
-- here-doc.test (xfail=14) here-doc parsing and expansion tail
-- array-literal.test (xfail=12) array-literal parse / assignment semantics
-- var-op-patsub.test (xfail=10) pattern substitution semantics
 - var-op-strip.test (xfail=6) prefix/suffix strip semantics; strip all unicode fixed
 - arith-context.test (xfail=3) arithmetic parser / evaluator context rules
 - append.test (xfail=8) `+=` semantics for scalars and arrays

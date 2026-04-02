@@ -1538,6 +1538,7 @@ mod tests {
             proc_sub_prealloc: HashMap::new(),
             pipe_stdin_bytes: None,
             pending_cmdsub_stderr: String::new(),
+            fatal_expansion_error: false,
         }
     }
 

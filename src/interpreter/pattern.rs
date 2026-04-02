@@ -8,17 +8,17 @@
 
 /// Match a shell glob pattern against a string (no extglob).
 pub(crate) fn glob_match(pattern: &str, text: &str) -> bool {
-    glob_match_inner(pattern.as_bytes(), text.as_bytes(), false, false)
+    glob_match_inner(pattern.as_bytes(), text.as_bytes(), false, false, false)
 }
 
 /// Case-insensitive variant of `glob_match` (no extglob).
 pub(crate) fn glob_match_nocase(pattern: &str, text: &str) -> bool {
-    glob_match_inner(pattern.as_bytes(), text.as_bytes(), true, false)
+    glob_match_inner(pattern.as_bytes(), text.as_bytes(), true, false, false)
 }
 
 /// Path-aware glob match: `*` does not match `/` (for GLOBIGNORE, file globbing).
 pub(crate) fn glob_match_path(pattern: &str, text: &str) -> bool {
-    glob_match_inner(pattern.as_bytes(), text.as_bytes(), false, true)
+    glob_match_inner(pattern.as_bytes(), text.as_bytes(), false, true, false)
 }
 
 /// Match a shell glob pattern with extglob support.
@@ -26,7 +26,7 @@ pub(crate) fn extglob_match(pattern: &str, text: &str) -> bool {
     if has_extglob_syntax(pattern.as_bytes()) {
         return ext_match(pattern.as_bytes(), 0, text.as_bytes(), 0, false, 0);
     }
-    glob_match_inner(pattern.as_bytes(), text.as_bytes(), false, false)
+    glob_match_inner(pattern.as_bytes(), text.as_bytes(), false, false, false)
 }
 
 /// Case-insensitive extglob match.
@@ -34,7 +34,7 @@ pub(crate) fn extglob_match_nocase(pattern: &str, text: &str) -> bool {
     if has_extglob_syntax(pattern.as_bytes()) {
         return ext_match(pattern.as_bytes(), 0, text.as_bytes(), 0, true, 0);
     }
-    glob_match_inner(pattern.as_bytes(), text.as_bytes(), true, false)
+    glob_match_inner(pattern.as_bytes(), text.as_bytes(), true, false, false)
 }
 
 /// Return the byte length of the UTF-8 character starting at `first_byte`.
@@ -50,7 +50,13 @@ fn utf8_char_len(first_byte: u8) -> usize {
     }
 }
 
-fn glob_match_inner(pat: &[u8], txt: &[u8], nocase: bool, path_mode: bool) -> bool {
+fn glob_match_inner(
+    pat: &[u8],
+    txt: &[u8],
+    nocase: bool,
+    path_mode: bool,
+    byte_mode: bool,
+) -> bool {
     let mut pi = 0;
     let mut ti = 0;
     let mut star_pi = usize::MAX;
@@ -71,7 +77,7 @@ fn glob_match_inner(pat: &[u8], txt: &[u8], nocase: bool, path_mode: bool) -> bo
             } else {
                 // `?` matches one character, advance by its full UTF-8 byte length
                 pi += 1;
-                ti += utf8_char_len(txt[ti]);
+                ti += if byte_mode { 1 } else { utf8_char_len(txt[ti]) };
                 continue;
             }
         } else if pi < pat.len() && pat[pi] == b'[' {
@@ -101,7 +107,11 @@ fn glob_match_inner(pat: &[u8], txt: &[u8], nocase: bool, path_mode: bool) -> bo
             }
             pi = star_pi + 1;
             // Advance star_ti by one full UTF-8 character
-            star_ti += utf8_char_len(txt[star_ti]);
+            star_ti += if byte_mode {
+                1
+            } else {
+                utf8_char_len(txt[star_ti])
+            };
             ti = star_ti;
             continue;
         }
@@ -115,6 +125,24 @@ fn glob_match_inner(pat: &[u8], txt: &[u8], nocase: bool, path_mode: bool) -> bo
     }
 
     pi == pat.len()
+}
+
+fn do_match_with_mode(pattern: &str, text: &str, extglob: bool, byte_mode: bool) -> bool {
+    if extglob && has_extglob_syntax(pattern.as_bytes()) {
+        do_match(pattern, text, extglob)
+    } else {
+        glob_match_inner(pattern.as_bytes(), text.as_bytes(), false, false, byte_mode)
+    }
+}
+
+fn do_match_bytes_with_mode(pattern: &str, text: &[u8], extglob: bool, byte_mode: bool) -> bool {
+    if extglob && has_extglob_syntax(pattern.as_bytes()) {
+        std::str::from_utf8(text)
+            .ok()
+            .is_some_and(|s| do_match(pattern, s, extglob))
+    } else {
+        glob_match_inner(pattern.as_bytes(), text, false, false, byte_mode)
+    }
 }
 
 /// Compare two bytes, optionally case-insensitive (ASCII only).
@@ -134,9 +162,34 @@ fn match_char_class(pat: &[u8], ch: u8, nocase: bool) -> Option<(bool, usize)> {
         return None;
     }
     let mut i = 1;
-    let negated = if i < pat.len() && (pat[i] == b'!' || pat[i] == b'^') {
+    let negated = if i < pat.len() && pat[i] == b'!' {
         i += 1;
         true
+    } else if i < pat.len() && pat[i] == b'^' {
+        let treat_as_negated = if pat.get(i + 1) == Some(&b']') {
+            let mut j = i + 2;
+            let mut has_extra_member = false;
+            while j < pat.len() {
+                if pat[j] == b']' {
+                    break;
+                }
+                has_extra_member = true;
+                if pat[j] == b'\\' && j + 1 < pat.len() {
+                    j += 2;
+                } else {
+                    j += 1;
+                }
+            }
+            has_extra_member
+        } else {
+            true
+        };
+        if treat_as_negated {
+            i += 1;
+            true
+        } else {
+            false
+        }
     } else {
         false
     };
@@ -550,6 +603,25 @@ pub(crate) fn longest_suffix_match(text: &str, pattern: &str) -> Option<usize> {
 }
 
 pub(crate) fn longest_suffix_match_ext(text: &str, pattern: &str, extglob: bool) -> Option<usize> {
+    longest_suffix_match_ext_with_mode(text, pattern, extglob, false)
+}
+
+pub(crate) fn longest_suffix_match_ext_with_mode(
+    text: &str,
+    pattern: &str,
+    extglob: bool,
+    byte_mode: bool,
+) -> Option<usize> {
+    if byte_mode {
+        let bytes = text.as_bytes();
+        for i in 0..=bytes.len() {
+            if do_match_bytes_with_mode(pattern, &bytes[i..], extglob, true) {
+                return Some(i);
+            }
+        }
+        return None;
+    }
+
     for i in 0..=text.len() {
         if !text.is_char_boundary(i) {
             continue;
@@ -588,6 +660,25 @@ pub(crate) fn longest_prefix_match(text: &str, pattern: &str) -> Option<usize> {
 }
 
 pub(crate) fn longest_prefix_match_ext(text: &str, pattern: &str, extglob: bool) -> Option<usize> {
+    longest_prefix_match_ext_with_mode(text, pattern, extglob, false)
+}
+
+pub(crate) fn longest_prefix_match_ext_with_mode(
+    text: &str,
+    pattern: &str,
+    extglob: bool,
+    byte_mode: bool,
+) -> Option<usize> {
+    if byte_mode {
+        let bytes = text.as_bytes();
+        for i in (0..=bytes.len()).rev() {
+            if do_match_bytes_with_mode(pattern, &bytes[..i], extglob, true) {
+                return Some(i);
+            }
+        }
+        return None;
+    }
+
     for i in (0..=text.len()).rev() {
         if !text.is_char_boundary(i) {
             continue;
@@ -603,10 +694,27 @@ pub(crate) fn longest_prefix_match_ext(text: &str, pattern: &str, extglob: bool)
 /// Returns `(start, end)` of the match, or None.
 #[cfg(test)]
 pub(crate) fn first_match(text: &str, pattern: &str) -> Option<(usize, usize)> {
-    first_match_ext(text, pattern, false)
+    first_match_ext_with_mode(text, pattern, false, false)
 }
 
-pub(crate) fn first_match_ext(text: &str, pattern: &str, extglob: bool) -> Option<(usize, usize)> {
+pub(crate) fn first_match_ext_with_mode(
+    text: &str,
+    pattern: &str,
+    extglob: bool,
+    byte_mode: bool,
+) -> Option<(usize, usize)> {
+    if byte_mode {
+        let bytes = text.as_bytes();
+        for start in 0..=bytes.len() {
+            for end in (start..=bytes.len()).rev() {
+                if do_match_bytes_with_mode(pattern, &bytes[start..end], extglob, true) {
+                    return Some((start, end));
+                }
+            }
+        }
+        return None;
+    }
+
     for start in 0..=text.len() {
         if !text.is_char_boundary(start) {
             continue;
@@ -615,7 +723,7 @@ pub(crate) fn first_match_ext(text: &str, pattern: &str, extglob: bool) -> Optio
             if !text.is_char_boundary(end) {
                 continue;
             }
-            if do_match(pattern, &text[start..end], extglob) {
+            if do_match_with_mode(pattern, &text[start..end], extglob, false) {
                 return Some((start, end));
             }
         }
@@ -626,21 +734,48 @@ pub(crate) fn first_match_ext(text: &str, pattern: &str, extglob: bool) -> Optio
 /// Replace all occurrences of `pattern` in `text` with `replacement`.
 #[cfg(test)]
 pub(crate) fn replace_all(text: &str, pattern: &str, replacement: &str) -> String {
-    replace_all_ext(text, pattern, replacement, false)
+    replace_all_ext_with_mode(text, pattern, replacement, false, false)
 }
 
-pub(crate) fn replace_all_ext(
+pub(crate) fn replace_all_ext_with_mode(
     text: &str,
     pattern: &str,
     replacement: &str,
     extglob: bool,
+    byte_mode: bool,
 ) -> String {
+    if byte_mode {
+        let mut result = Vec::new();
+        let bytes = text.as_bytes();
+        let replacement_bytes = replacement.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            let mut found = false;
+            for end in (i + 1..=bytes.len()).rev() {
+                if do_match_bytes_with_mode(pattern, &bytes[i..end], extglob, true) {
+                    result.extend_from_slice(replacement_bytes);
+                    i = end;
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                result.push(bytes[i]);
+                i += 1;
+            }
+        }
+        return String::from_utf8_lossy(&result).into_owned();
+    }
+
     let mut result = String::new();
     let mut i = 0;
     while i < text.len() {
         let mut found = false;
         for end in (i + 1..=text.len()).rev() {
-            if do_match(pattern, &text[i..end], extglob) {
+            if !byte_mode && !text.is_char_boundary(end) {
+                continue;
+            }
+            if do_match_with_mode(pattern, &text[i..end], extglob, byte_mode) {
                 result.push_str(replacement);
                 i = end;
                 found = true;

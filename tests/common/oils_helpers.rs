@@ -189,6 +189,58 @@ impl VirtualCommand for StdoutStderrPyCommand {
 }
 
 // ---------------------------------------------------------------------------
+// read_from_fd.py
+// ---------------------------------------------------------------------------
+
+/// Oils test helper: print the contents read from stdin or synthetic extra FDs.
+pub struct ReadFromFdPyCommand;
+
+static READ_FROM_FD_META: CommandMeta = CommandMeta {
+    name: "read_from_fd.py",
+    synopsis: "read_from_fd.py FD [FD ...]",
+    description: "Print input captured for the requested file descriptors.",
+    options: &[],
+    supports_help_flag: false,
+    flags: &[],
+};
+
+impl VirtualCommand for ReadFromFdPyCommand {
+    fn name(&self) -> &str {
+        "read_from_fd.py"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&READ_FROM_FD_META)
+    }
+
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
+        let mut stdout = String::new();
+        for arg in args {
+            let Ok(fd) = arg.parse::<i32>() else {
+                return CommandResult {
+                    stderr: format!("read_from_fd.py: invalid fd {arg}\n"),
+                    exit_code: 2,
+                    ..Default::default()
+                };
+            };
+            let content = if fd == 0 {
+                ctx.stdin.to_string()
+            } else {
+                ctx.env
+                    .get(&format!("__RUST_BASH_FD_{fd}"))
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            stdout.push_str(&format!("{fd}: {}\n", content.trim_end_matches('\n')));
+        }
+        CommandResult {
+            stdout,
+            ..Default::default()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // python2 / python3 (minimal print-only interpreter)
 // ---------------------------------------------------------------------------
 
@@ -235,8 +287,13 @@ impl VirtualCommand for PythonCommand {
         }
         let code = &args[1];
         let mut stdout = String::new();
+        let mut vars = std::collections::HashMap::<String, String>::new();
         for line in code.lines() {
             let trimmed = line.trim();
+            if let Some((name, value)) = parse_python_assignment(trimmed) {
+                vars.insert(name.to_string(), value);
+                continue;
+            }
             // Match print("...") or print '...' or print("..." % (...))
             // NOTE: Only supports simple single-argument print(); nested parens
             // like print("a" + str(1)) would mismatch the outer `)`.
@@ -244,27 +301,12 @@ impl VirtualCommand for PythonCommand {
                 .strip_prefix("print(")
                 .and_then(|s| s.strip_suffix(')'))
             {
-                let s = if (inner.starts_with('"') && inner.ends_with('"'))
-                    || (inner.starts_with('\'') && inner.ends_with('\''))
-                {
-                    &inner[1..inner.len() - 1]
-                } else {
-                    inner
-                };
-                let processed = process_python_escapes(s);
+                let processed = eval_python_print_expr(inner.trim(), &vars);
                 stdout.push_str(&processed);
                 stdout.push('\n');
             } else if let Some(rest) = trimmed.strip_prefix("print ") {
                 // Python 2 style: print 'string'
-                let s = rest.trim();
-                let s = if (s.starts_with('"') && s.ends_with('"'))
-                    || (s.starts_with('\'') && s.ends_with('\''))
-                {
-                    &s[1..s.len() - 1]
-                } else {
-                    s
-                };
-                let processed = process_python_escapes(s);
+                let processed = eval_python_print_expr(rest.trim(), &vars);
                 stdout.push_str(&processed);
                 stdout.push('\n');
             }
@@ -288,6 +330,60 @@ fn process_python_escapes(s: &str) -> String {
                 Some('\\') => result.push('\\'),
                 Some('\'') => result.push('\''),
                 Some('"') => result.push('"'),
+                Some('u') => {
+                    let mut hex = String::new();
+                    for _ in 0..4 {
+                        match chars.next() {
+                            Some(ch) if ch.is_ascii_hexdigit() => hex.push(ch),
+                            Some(ch) => {
+                                result.push('\\');
+                                result.push('u');
+                                result.push_str(&hex);
+                                result.push(ch);
+                                hex.clear();
+                                break;
+                            }
+                            None => break,
+                        }
+                    }
+                    if hex.len() == 4
+                        && let Ok(code) = u32::from_str_radix(&hex, 16)
+                        && let Some(ch) = char::from_u32(code)
+                    {
+                        result.push(ch);
+                    } else {
+                        result.push('\\');
+                        result.push('u');
+                        result.push_str(&hex);
+                    }
+                }
+                Some('U') => {
+                    let mut hex = String::new();
+                    for _ in 0..8 {
+                        match chars.next() {
+                            Some(ch) if ch.is_ascii_hexdigit() => hex.push(ch),
+                            Some(ch) => {
+                                result.push('\\');
+                                result.push('U');
+                                result.push_str(&hex);
+                                result.push(ch);
+                                hex.clear();
+                                break;
+                            }
+                            None => break,
+                        }
+                    }
+                    if hex.len() == 8
+                        && let Ok(code) = u32::from_str_radix(&hex, 16)
+                        && let Some(ch) = char::from_u32(code)
+                    {
+                        result.push(ch);
+                    } else {
+                        result.push('\\');
+                        result.push('U');
+                        result.push_str(&hex);
+                    }
+                }
                 Some(other) => {
                     result.push('\\');
                     result.push(other);
@@ -301,6 +397,69 @@ fn process_python_escapes(s: &str) -> String {
     result
 }
 
+fn parse_python_assignment(line: &str) -> Option<(&str, String)> {
+    let (name, value) = line.split_once('=')?;
+    let name = name.trim();
+    let value = value.trim();
+    let value = value.strip_prefix('u').unwrap_or(value);
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    if (value.starts_with('"') && value.ends_with('"'))
+        || (value.starts_with('\'') && value.ends_with('\''))
+    {
+        Some((name, process_python_escapes(&value[1..value.len() - 1])))
+    } else {
+        None
+    }
+}
+
+fn eval_python_print_expr(expr: &str, vars: &std::collections::HashMap<String, String>) -> String {
+    if let Some(var_name) = expr
+        .strip_suffix(".upper().encode(\"utf-8\")")
+        .or_else(|| expr.strip_suffix(".upper().encode('utf-8')"))
+    {
+        return vars
+            .get(var_name.trim())
+            .map(|s| {
+                s.chars()
+                    .map(|c| {
+                        let mapped: Vec<char> = c.to_uppercase().collect();
+                        if mapped.len() == 1 { mapped[0] } else { c }
+                    })
+                    .collect()
+            })
+            .unwrap_or_else(|| expr.to_string());
+    }
+    if let Some(var_name) = expr
+        .strip_suffix(".lower().encode(\"utf-8\")")
+        .or_else(|| expr.strip_suffix(".lower().encode('utf-8')"))
+    {
+        return vars
+            .get(var_name.trim())
+            .map(|s| {
+                s.chars()
+                    .map(|c| {
+                        let mapped: Vec<char> = c.to_lowercase().collect();
+                        if mapped.len() == 1 { mapped[0] } else { c }
+                    })
+                    .collect()
+            })
+            .unwrap_or_else(|| expr.to_string());
+    }
+    if let Some(value) = vars.get(expr) {
+        return value.clone();
+    }
+    let s = if (expr.starts_with('"') && expr.ends_with('"'))
+        || (expr.starts_with('\'') && expr.ends_with('\''))
+    {
+        &expr[1..expr.len() - 1]
+    } else {
+        expr
+    };
+    process_python_escapes(s)
+}
+
 /// Register all Oils test helper commands on a builder.
 pub fn register_oils_helpers(
     mut builder: rust_bash::RustBashBuilder,
@@ -310,6 +469,7 @@ pub fn register_oils_helpers(
         .command(Arc::new(ArgvPyCommand))
         .command(Arc::new(FooEqualsBarCommand))
         .command(Arc::new(PrintenvPyCommand))
+        .command(Arc::new(ReadFromFdPyCommand))
         .command(Arc::new(StdoutStderrPyCommand))
         .command(Arc::new(PythonCommand::python2()))
         .command(Arc::new(PythonCommand::python3()));

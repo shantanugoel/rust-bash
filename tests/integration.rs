@@ -4753,7 +4753,7 @@ fn expand_error_if_unset() {
     let r = sh
         .exec("echo ${MISSING:?variable is required} 2>&1")
         .unwrap();
-    assert_eq!(r.exit_code, 127);
+    assert_eq!(r.exit_code, 1);
     assert!(r.stderr.contains("variable is required"));
 }
 

@@ -99,6 +99,67 @@ fn format_xtrace_command(ps4: &str, cmd: &str, args: &[String]) -> String {
     format!("{ps4}{}\n", parts.join(" "))
 }
 
+fn current_indexed_array_for_trace(
+    name: &str,
+    state: &InterpreterState,
+) -> std::collections::BTreeMap<usize, String> {
+    match state.env.get(name) {
+        Some(var) => match &var.value {
+            VariableValue::IndexedArray(map) => map.clone(),
+            VariableValue::Scalar(s) if s.is_empty() => std::collections::BTreeMap::new(),
+            VariableValue::Scalar(s) => {
+                let mut map = std::collections::BTreeMap::new();
+                map.insert(0, s.clone());
+                map
+            }
+            VariableValue::AssociativeArray(_) => std::collections::BTreeMap::new(),
+        },
+        None => std::collections::BTreeMap::new(),
+    }
+}
+
+fn format_xtrace_indexed_assignment(
+    name: &str,
+    elements: &std::collections::BTreeMap<usize, String>,
+    append: bool,
+    state: &InterpreterState,
+) -> String {
+    if !append {
+        let vals: Vec<String> = elements.values().map(|v| xtrace_quote(v)).collect();
+        return format!("{name}=({})", vals.join(" "));
+    }
+
+    let base = current_indexed_array_for_trace(name, state);
+    let next_index = base.keys().next_back().map(|k| k + 1).unwrap_or(0);
+    let appended: Vec<(usize, &String)> = elements
+        .iter()
+        .filter_map(|(idx, value)| match base.get(idx) {
+            Some(existing) if existing == value => None,
+            _ => Some((*idx, value)),
+        })
+        .collect();
+
+    if appended.is_empty() {
+        return format!("{name}+=()");
+    }
+
+    let is_plain_append = appended
+        .iter()
+        .enumerate()
+        .all(|(offset, (idx, _))| *idx == next_index + offset);
+
+    if is_plain_append {
+        let vals: Vec<String> = appended.iter().map(|(_, v)| xtrace_quote(v)).collect();
+        format!("{name}+=({})", vals.join(" "))
+    } else {
+        let vals: Vec<String> = appended
+            .iter()
+            .map(|(idx, value)| format!("[{idx}]={}", xtrace_quote(value)))
+            .collect();
+        format!("{name}+=({})", vals.join(" "))
+    }
+}
+
 /// Check the errexit (`set -e`) condition after a command completes.
 /// If errexit is enabled, the last exit code was non-zero, and we're not
 /// in a suppressed context (if/while/until condition, `&&`/`||` left side,
@@ -193,6 +254,14 @@ fn execute_compound_list(
             }
             Err(RustBashError::Execution(msg)) if msg.contains("bad substitution") => {
                 // Bad substitution errors are non-fatal: print to stderr, set $?=1
+                state.last_exit_code = 1;
+                ExecResult {
+                    stderr: format!("rust-bash: {msg}\n"),
+                    exit_code: 1,
+                    ..Default::default()
+                }
+            }
+            Err(RustBashError::Execution(msg)) if msg.contains("invalid indirect expansion") => {
                 state.last_exit_code = 1;
                 ExecResult {
                     stderr: format!("rust-bash: {msg}\n"),
@@ -451,6 +520,7 @@ fn execute_command(
             state.last_exit_code = exit_code;
             if should_exit {
                 state.should_exit = true;
+                state.fatal_expansion_error = true;
             }
             Ok(ExecResult {
                 stderr: format!("rust-bash: {message}\n"),
@@ -480,12 +550,15 @@ enum Assignment {
     /// `name=(val1 val2 ...)` — indexed array assignment
     IndexedArray {
         name: String,
-        elements: Vec<(Option<usize>, String)>,
+        elements: std::collections::BTreeMap<usize, String>,
+        append: bool,
     },
     /// `declare -A name=([k]=v ...)` — associative array assignment
     AssocArray {
         name: String,
-        elements: Vec<(String, String)>,
+        elements: std::collections::BTreeMap<String, String>,
+        append: bool,
+        warnings: Vec<String>,
     },
     /// `name[index]=value` — single array element
     ArrayElement {
@@ -499,16 +572,6 @@ enum Assignment {
         index: String,
         value: String,
     },
-    /// `name+=(val1 val2 ...)` — append to array
-    AppendArray {
-        name: String,
-        elements: Vec<(Option<usize>, String)>,
-    },
-    /// `name+=(val1 val2 ...)` — append to associative array
-    AppendAssocArray {
-        name: String,
-        elements: Vec<(String, String)>,
-    },
     /// `name+=value` — append to scalar
     AppendScalar { name: String, value: String },
 }
@@ -521,8 +584,6 @@ impl Assignment {
             | Assignment::AssocArray { name, .. }
             | Assignment::ArrayElement { name, .. }
             | Assignment::AppendArrayElement { name, .. }
-            | Assignment::AppendArray { name, .. }
-            | Assignment::AppendAssocArray { name, .. }
             | Assignment::AppendScalar { name, .. } => name,
         }
     }
@@ -556,71 +617,21 @@ fn process_assignment(
                 .get(name)
                 .is_some_and(|v| matches!(v.value, VariableValue::AssociativeArray(_)));
             if is_assoc {
-                let mut elements = Vec::new();
-                for (opt_idx_word, val_word) in items {
-                    let key = if let Some(idx_word) = opt_idx_word {
-                        expand_word_to_string_mut(idx_word, state)?
-                    } else {
-                        // Assoc arrays require explicit keys
-                        String::new()
-                    };
-                    let val = expand_word_to_string_mut(val_word, state)?;
-                    elements.push((key, val));
-                }
-                if append {
-                    Ok(Assignment::AppendAssocArray {
-                        name: name.clone(),
-                        elements,
-                    })
-                } else {
-                    Ok(Assignment::AssocArray {
-                        name: name.clone(),
-                        elements,
-                    })
-                }
+                let (elements, warnings) =
+                    process_assoc_array_initializer(name, items, append, state)?;
+                Ok(Assignment::AssocArray {
+                    name: name.clone(),
+                    elements,
+                    append,
+                    warnings,
+                })
             } else {
-                let mut elements = Vec::new();
-                for (opt_idx_word, val_word) in items {
-                    let idx = if let Some(idx_word) = opt_idx_word {
-                        let idx_str = expand_word_to_string_mut(idx_word, state)?;
-                        let idx_val =
-                            crate::interpreter::arithmetic::eval_arithmetic(&idx_str, state)?;
-                        if idx_val < 0 {
-                            return Err(RustBashError::Execution(format!(
-                                "negative array subscript: {idx_val}"
-                            )));
-                        }
-                        Some(idx_val as usize)
-                    } else {
-                        None
-                    };
-                    // Use expand_word_mut so brace expansion works inside array literals:
-                    // a=( v{0..9} ) should expand to 10 separate elements.
-                    let vals = expand_word_mut(val_word, state)?;
-                    if vals.is_empty() {
-                        elements.push((idx, String::new()));
-                    } else {
-                        for (i, val) in vals.into_iter().enumerate() {
-                            if i == 0 {
-                                elements.push((idx, val));
-                            } else {
-                                // Subsequent brace-expanded words get auto-indexed (None)
-                                elements.push((None, val));
-                            }
-                        }
-                    }
-                }
-                if append {
-                    Ok(Assignment::AppendArray {
-                        name: name.clone(),
-                        elements,
-                    })
-                } else {
-                    Ok(Assignment::IndexedArray {
-                        name: name.clone(),
-                        elements,
-                    })
-                }
+                let elements = process_indexed_array_initializer(name, items, append, state)?;
+                Ok(Assignment::IndexedArray {
+                    name: name.clone(),
+                    elements,
+                    append,
+                })
             }
         }
         (
@@ -654,6 +665,356 @@ fn process_assignment(
     }
 }
 
+#[derive(Debug, Clone)]
+enum IndexedArrayOp {
+    Bare(Vec<String>),
+    Set { index_expr: String, value: String },
+    Append { index_expr: String, value: String },
+}
+
+#[derive(Debug, Clone)]
+enum AssocArrayOp {
+    Bare(Vec<String>),
+    Set { key: String, value: String },
+    Append { key: String, value: String },
+}
+
+#[derive(Debug, Clone)]
+struct ParsedArrayToken {
+    index_expr: String,
+    value_expr: String,
+    append: bool,
+}
+
+fn reconstruct_array_item_raw(opt_idx_word: &Option<ast::Word>, val_word: &ast::Word) -> String {
+    if let Some(idx_word) = opt_idx_word {
+        format!("[{}]={}", idx_word.value, val_word.value)
+    } else {
+        val_word.value.clone()
+    }
+}
+
+fn parse_array_item_token(raw: &str) -> Option<ParsedArrayToken> {
+    if !raw.starts_with('[') {
+        return None;
+    }
+    let bytes = raw.as_bytes();
+    let mut depth = 1usize;
+    let mut i = 1usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    let rest = &raw[i + 1..];
+                    if let Some(value_expr) = rest.strip_prefix("+=") {
+                        return Some(ParsedArrayToken {
+                            index_expr: raw[1..i].to_string(),
+                            value_expr: value_expr.to_string(),
+                            append: true,
+                        });
+                    }
+                    if let Some(value_expr) = rest.strip_prefix('=') {
+                        return Some(ParsedArrayToken {
+                            index_expr: raw[1..i].to_string(),
+                            value_expr: value_expr.to_string(),
+                            append: false,
+                        });
+                    }
+                    return None;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn expand_raw_array_word(
+    raw: &str,
+    state: &mut InterpreterState,
+) -> Result<Vec<String>, RustBashError> {
+    let word = ast::Word {
+        value: raw.to_string(),
+        loc: None,
+    };
+    expand_word_mut(&word, state)
+}
+
+fn expand_raw_array_word_to_string(
+    raw: &str,
+    state: &mut InterpreterState,
+) -> Result<String, RustBashError> {
+    let word = ast::Word {
+        value: raw.to_string(),
+        loc: None,
+    };
+    expand_word_to_string_mut(&word, state)
+}
+
+fn escape_tildes(raw: &str) -> String {
+    raw.replace('~', "\\~")
+}
+
+fn normalize_assoc_literal_key(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.len() >= 2
+        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
+    {
+        trimmed[1..trimmed.len() - 1].to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn indexed_array_base_state(
+    name: &str,
+    append: bool,
+    state: &InterpreterState,
+) -> (std::collections::BTreeMap<usize, String>, usize) {
+    if !append {
+        return (std::collections::BTreeMap::new(), 0);
+    }
+
+    let map = match state.env.get(name) {
+        Some(var) => match &var.value {
+            VariableValue::IndexedArray(existing) => existing.clone(),
+            VariableValue::Scalar(s) if s.is_empty() => std::collections::BTreeMap::new(),
+            VariableValue::Scalar(s) => {
+                let mut map = std::collections::BTreeMap::new();
+                map.insert(0, s.clone());
+                map
+            }
+            VariableValue::AssociativeArray(_) => std::collections::BTreeMap::new(),
+        },
+        None => std::collections::BTreeMap::new(),
+    };
+    let next_index = map.keys().next_back().map(|k| k + 1).unwrap_or(0);
+    (map, next_index)
+}
+
+fn sync_temp_indexed_array(
+    name: &str,
+    map: &std::collections::BTreeMap<usize, String>,
+    attrs: VariableAttrs,
+    state: &mut InterpreterState,
+) {
+    state.env.insert(
+        name.to_string(),
+        Variable {
+            value: VariableValue::IndexedArray(map.clone()),
+            attrs,
+        },
+    );
+}
+
+fn evaluate_indexed_array_index(
+    name: &str,
+    index_expr: &str,
+    state: &mut InterpreterState,
+) -> Result<usize, RustBashError> {
+    let expanded_index = expand_raw_array_word_to_string(index_expr, state)?;
+    let idx = crate::interpreter::arithmetic::eval_arithmetic(&expanded_index, state)?;
+    resolve_negative_array_index(idx, name, state)
+}
+
+fn process_indexed_array_initializer(
+    name: &str,
+    items: &[(Option<ast::Word>, ast::Word)],
+    append: bool,
+    state: &mut InterpreterState,
+) -> Result<std::collections::BTreeMap<usize, String>, RustBashError> {
+    let mut ops = Vec::new();
+    for (opt_idx_word, val_word) in items {
+        let raw = reconstruct_array_item_raw(opt_idx_word, val_word);
+        let expanded_tokens =
+            crate::interpreter::brace::brace_expand(&raw, state.limits.max_brace_expansion)?;
+        if expanded_tokens.len() > 1 {
+            for token in expanded_tokens {
+                let vals = expand_raw_array_word(&token, state)?;
+                if vals.is_empty() {
+                    ops.push(IndexedArrayOp::Bare(vec![String::new()]));
+                } else {
+                    ops.push(IndexedArrayOp::Bare(vals));
+                }
+            }
+            continue;
+        }
+
+        let token = expanded_tokens
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| raw.clone());
+        if let Some(parsed) = parse_array_item_token(&token) {
+            let value = expand_raw_array_word_to_string(&parsed.value_expr, state)?;
+            if parsed.append {
+                ops.push(IndexedArrayOp::Append {
+                    index_expr: parsed.index_expr,
+                    value,
+                });
+            } else {
+                ops.push(IndexedArrayOp::Set {
+                    index_expr: parsed.index_expr,
+                    value,
+                });
+            }
+        } else {
+            let vals = expand_raw_array_word(&token, state)?;
+            if vals.is_empty() {
+                ops.push(IndexedArrayOp::Bare(vec![String::new()]));
+            } else {
+                ops.push(IndexedArrayOp::Bare(vals));
+            }
+        }
+    }
+
+    let saved_var = state.env.get(name).cloned();
+    let attrs = saved_var
+        .as_ref()
+        .map(|var| var.attrs)
+        .unwrap_or(VariableAttrs::empty());
+    let (mut map, mut auto_idx) = indexed_array_base_state(name, append, state);
+    sync_temp_indexed_array(name, &map, attrs, state);
+
+    for op in ops {
+        match op {
+            IndexedArrayOp::Bare(values) => {
+                for value in values {
+                    map.insert(auto_idx, value);
+                    auto_idx += 1;
+                    sync_temp_indexed_array(name, &map, attrs, state);
+                }
+            }
+            IndexedArrayOp::Set { index_expr, value } => {
+                let idx = evaluate_indexed_array_index(name, &index_expr, state)?;
+                map.insert(idx, value);
+                auto_idx = idx + 1;
+                sync_temp_indexed_array(name, &map, attrs, state);
+            }
+            IndexedArrayOp::Append { index_expr, value } => {
+                let idx = evaluate_indexed_array_index(name, &index_expr, state)?;
+                let current = map.get(&idx).cloned().unwrap_or_default();
+                map.insert(idx, format!("{current}{value}"));
+                auto_idx = idx + 1;
+                sync_temp_indexed_array(name, &map, attrs, state);
+            }
+        }
+    }
+
+    if let Some(var) = saved_var {
+        state.env.insert(name.to_string(), var);
+    } else {
+        state.env.remove(name);
+    }
+
+    Ok(map)
+}
+
+fn current_assoc_array(
+    name: &str,
+    state: &InterpreterState,
+) -> std::collections::BTreeMap<String, String> {
+    match state.env.get(name) {
+        Some(var) => match &var.value {
+            VariableValue::AssociativeArray(map) => map.clone(),
+            _ => std::collections::BTreeMap::new(),
+        },
+        None => std::collections::BTreeMap::new(),
+    }
+}
+
+fn assoc_array_warning(name: &str, item: &str, state: &InterpreterState) -> String {
+    format!(
+        "bash: line {}: {name}: {item}: must use subscript when assigning associative array\n",
+        state.current_lineno
+    )
+}
+
+fn process_assoc_array_initializer(
+    name: &str,
+    items: &[(Option<ast::Word>, ast::Word)],
+    append: bool,
+    state: &mut InterpreterState,
+) -> Result<(std::collections::BTreeMap<String, String>, Vec<String>), RustBashError> {
+    let mut ops = Vec::new();
+    for (opt_idx_word, val_word) in items {
+        let raw = reconstruct_array_item_raw(opt_idx_word, val_word);
+        if let Some(parsed) = parse_array_item_token(&raw) {
+            let key = normalize_assoc_literal_key(&parsed.index_expr);
+            let value = expand_raw_array_word_to_string(&escape_tildes(&parsed.value_expr), state)?;
+            if parsed.append {
+                ops.push(AssocArrayOp::Append { key, value });
+            } else {
+                ops.push(AssocArrayOp::Set { key, value });
+            }
+            continue;
+        }
+
+        let expanded_tokens =
+            crate::interpreter::brace::brace_expand(&raw, state.limits.max_brace_expansion)?;
+        for token in expanded_tokens {
+            let vals = expand_raw_array_word(&token, state)?;
+            if vals.is_empty() {
+                ops.push(AssocArrayOp::Bare(vec![String::new()]));
+            } else {
+                ops.push(AssocArrayOp::Bare(vals));
+            }
+        }
+    }
+
+    let mut saw_keyed = false;
+    let mut bare_words = Vec::new();
+    for op in &ops {
+        match op {
+            AssocArrayOp::Bare(words) => bare_words.extend(words.iter().cloned()),
+            AssocArrayOp::Set { .. } | AssocArrayOp::Append { .. } => saw_keyed = true,
+        }
+    }
+
+    let existing = current_assoc_array(name, state);
+    let mut map = if append {
+        existing.clone()
+    } else {
+        std::collections::BTreeMap::new()
+    };
+    let mut warnings = Vec::new();
+
+    if !saw_keyed {
+        let mut iter = bare_words.into_iter();
+        while let Some(key) = iter.next() {
+            let value = iter.next().unwrap_or_default();
+            map.insert(key, value);
+        }
+        return Ok((map, warnings));
+    }
+
+    for op in ops {
+        match op {
+            AssocArrayOp::Bare(words) => {
+                for word in words {
+                    warnings.push(assoc_array_warning(name, &word, state));
+                }
+            }
+            AssocArrayOp::Set { key, value } => {
+                map.insert(key, value);
+            }
+            AssocArrayOp::Append { key, value } => {
+                let current = if append {
+                    map.get(&key).cloned().unwrap_or_default()
+                } else {
+                    existing.get(&key).cloned().unwrap_or_default()
+                };
+                map.insert(key, format!("{current}{value}"));
+            }
+        }
+    }
+
+    Ok((map, warnings))
+}
+
 /// Apply a processed assignment to the interpreter state.
 fn apply_assignment(
     assignment: Assignment,
@@ -663,7 +1024,7 @@ fn apply_assignment(
         Assignment::Scalar { name, value } => {
             set_variable(state, &name, value)?;
         }
-        Assignment::IndexedArray { name, elements } => {
+        Assignment::IndexedArray { name, elements, .. } => {
             if let Some(var) = state.env.get(&name)
                 && var.readonly()
             {
@@ -671,20 +1032,12 @@ fn apply_assignment(
                     "{name}: readonly variable"
                 )));
             }
-            let limit = state.limits.max_array_elements;
-            let mut map = std::collections::BTreeMap::new();
-            let mut auto_idx: usize = 0;
-            for (opt_idx, val) in elements {
-                let idx = opt_idx.unwrap_or(auto_idx);
-                if map.len() >= limit {
-                    return Err(RustBashError::LimitExceeded {
-                        limit_name: "max_array_elements",
-                        limit_value: limit,
-                        actual_value: map.len() + 1,
-                    });
-                }
-                map.insert(idx, val);
-                auto_idx = idx + 1;
+            if elements.len() > state.limits.max_array_elements {
+                return Err(RustBashError::LimitExceeded {
+                    limit_name: "max_array_elements",
+                    limit_value: state.limits.max_array_elements,
+                    actual_value: elements.len(),
+                });
             }
             let attrs = state
                 .env
@@ -694,12 +1047,12 @@ fn apply_assignment(
             state.env.insert(
                 name,
                 Variable {
-                    value: VariableValue::IndexedArray(map),
+                    value: VariableValue::IndexedArray(elements),
                     attrs,
                 },
             );
         }
-        Assignment::AssocArray { name, elements } => {
+        Assignment::AssocArray { name, elements, .. } => {
             if let Some(var) = state.env.get(&name)
                 && var.readonly()
             {
@@ -707,17 +1060,12 @@ fn apply_assignment(
                     "{name}: readonly variable"
                 )));
             }
-            let limit = state.limits.max_array_elements;
-            let mut map = std::collections::BTreeMap::new();
-            for (key, val) in elements {
-                if map.len() >= limit {
-                    return Err(RustBashError::LimitExceeded {
-                        limit_name: "max_array_elements",
-                        limit_value: limit,
-                        actual_value: map.len() + 1,
-                    });
-                }
-                map.insert(key, val);
+            if elements.len() > state.limits.max_array_elements {
+                return Err(RustBashError::LimitExceeded {
+                    limit_name: "max_array_elements",
+                    limit_value: state.limits.max_array_elements,
+                    actual_value: elements.len(),
+                });
             }
             let attrs = state
                 .env
@@ -727,7 +1075,7 @@ fn apply_assignment(
             state.env.insert(
                 name,
                 Variable {
-                    value: VariableValue::AssociativeArray(map),
+                    value: VariableValue::AssociativeArray(elements),
                     attrs,
                 },
             );
@@ -777,64 +1125,6 @@ fn apply_assignment(
                     .unwrap_or_default();
                 let new_val = format!("{current}{value}");
                 set_array_element(state, &name, uidx, new_val)?;
-            }
-        }
-        Assignment::AppendArray { name, elements } => {
-            // Find current max index + 1
-            let start_idx = match state.env.get(&name) {
-                Some(var) => match &var.value {
-                    VariableValue::IndexedArray(map) => {
-                        map.keys().next_back().map(|k| k + 1).unwrap_or(0)
-                    }
-                    VariableValue::Scalar(s) if s.is_empty() => 0,
-                    VariableValue::Scalar(_) => 1,
-                    VariableValue::AssociativeArray(_) => 0,
-                },
-                None => 0,
-            };
-
-            // If the variable doesn't exist yet, create it
-            if !state.env.contains_key(&name) {
-                state.env.insert(
-                    name.clone(),
-                    Variable {
-                        value: VariableValue::IndexedArray(std::collections::BTreeMap::new()),
-                        attrs: VariableAttrs::empty(),
-                    },
-                );
-            }
-
-            // Convert scalar to array if needed
-            if let Some(var) = state.env.get_mut(&name)
-                && let VariableValue::Scalar(s) = &var.value
-            {
-                let mut map = std::collections::BTreeMap::new();
-                if !s.is_empty() {
-                    map.insert(0, s.clone());
-                }
-                var.value = VariableValue::IndexedArray(map);
-            }
-
-            let mut auto_idx = start_idx;
-            for (opt_idx, val) in elements {
-                let idx = opt_idx.unwrap_or(auto_idx);
-                set_array_element(state, &name, idx, val)?;
-                auto_idx = idx + 1;
-            }
-        }
-        Assignment::AppendAssocArray { name, elements } => {
-            // If the variable doesn't exist yet, create it as assoc
-            if !state.env.contains_key(&name) {
-                state.env.insert(
-                    name.clone(),
-                    Variable {
-                        value: VariableValue::AssociativeArray(std::collections::BTreeMap::new()),
-                        attrs: VariableAttrs::empty(),
-                    },
-                );
-            }
-            for (key, val) in elements {
-                crate::interpreter::set_assoc_element(state, &name, key, val)?;
             }
         }
         Assignment::AppendScalar { name, value } => {
@@ -909,6 +1199,11 @@ fn apply_assignment_shell_error(
     state: &mut InterpreterState,
     result: &mut ExecResult,
 ) -> Result<(), RustBashError> {
+    if let Assignment::AssocArray { warnings, .. } = &assignment {
+        for warning in warnings {
+            result.stderr.push_str(warning);
+        }
+    }
     match apply_assignment(assignment, state) {
         Ok(()) => Ok(()),
         Err(RustBashError::Execution(msg)) => {
@@ -930,6 +1225,20 @@ fn suffix_assignment_words_are_special(cmd_word: &ast::Word, cmd_name: &str) -> 
         cmd_name,
         "declare" | "export" | "local" | "readonly" | "typeset"
     )
+}
+
+fn special_assignment_is_assoc_literal(cmd_name: &str, args: &[String]) -> bool {
+    matches!(cmd_name, "declare" | "local" | "readonly" | "typeset")
+        && args.iter().any(|arg| {
+            arg.strip_prefix('-')
+                .is_some_and(|flags| flags.chars().any(|flag| flag == 'A'))
+        })
+}
+
+fn word_is_simply_quoted_literal(word: &ast::Word) -> bool {
+    let value = &word.value;
+    (value.starts_with('\'') && value.ends_with('\'') && value.len() >= 2)
+        || (value.starts_with('"') && value.ends_with('"') && value.len() >= 2)
 }
 
 fn expand_alias_command(cmd_name: &str, state: &InterpreterState) -> (String, Vec<String>) {
@@ -1059,11 +1368,29 @@ fn execute_simple_command(
                             args.push(format!("{name}={value}"));
                         }
                         ast::AssignmentValue::Array(items) => {
+                            let assoc_literal = alias_expansion
+                                .as_ref()
+                                .map(|(name, _)| special_assignment_is_assoc_literal(name, &args))
+                                .unwrap_or(false);
+                            let assign_op = if assignment.append { "+=" } else { "=" };
                             let mut parts = Vec::new();
                             for (opt_idx_word, val_word) in items {
+                                if assoc_literal
+                                    && let Some(idx_word) = opt_idx_word
+                                    && val_word.value.contains('~')
+                                {
+                                    parts.push(format!("[{}]={}", idx_word.value, val_word.value));
+                                    continue;
+                                }
                                 let vals = expand_word_mut(val_word, state)?;
                                 if let Some(idx_word) = opt_idx_word {
-                                    let idx_str = expand_word_to_string_mut(idx_word, state)?;
+                                    let idx_str = if assoc_literal
+                                        && word_is_simply_quoted_literal(idx_word)
+                                    {
+                                        idx_word.value.clone()
+                                    } else {
+                                        expand_word_to_string_mut(idx_word, state)?
+                                    };
                                     let first = vals.first().cloned().unwrap_or_default();
                                     if first.is_empty() {
                                         parts.push(format!("[{idx_str}]=''"));
@@ -1087,7 +1414,7 @@ fn execute_simple_command(
                                     }
                                 }
                             }
-                            args.push(format!("{name}=({})", parts.join(" ")));
+                            args.push(format!("{name}{assign_op}({})", parts.join(" ")));
                         }
                     }
                 }
@@ -1118,24 +1445,21 @@ fn execute_simple_command(
             for a in &assignments {
                 let part = match a {
                     Assignment::Scalar { name, value } => format!("{name}={value}"),
-                    Assignment::IndexedArray { name, elements, .. } => {
-                        let vals: Vec<String> =
-                            elements.iter().map(|(_, v)| xtrace_quote(v)).collect();
-                        format!("{name}=({})", vals.join(" "))
-                    }
+                    Assignment::IndexedArray {
+                        name,
+                        elements,
+                        append,
+                    } => format_xtrace_indexed_assignment(name, elements, *append, state),
                     Assignment::ArrayElement {
                         name, index, value, ..
                     } => format!("{name}[{index}]={value}"),
                     Assignment::AppendArrayElement {
                         name, index, value, ..
                     } => format!("{name}[{index}]+={value}"),
-                    Assignment::AppendArray { name, elements, .. } => {
-                        let vals: Vec<String> =
-                            elements.iter().map(|(_, v)| xtrace_quote(v)).collect();
-                        format!("{name}+=({})", vals.join(" "))
+                    Assignment::AssocArray { name, append, .. } => {
+                        let op = if *append { "+=" } else { "=" };
+                        format!("{name}{op}(...)")
                     }
-                    Assignment::AssocArray { name, .. } => format!("{name}=(...)"),
-                    Assignment::AppendAssocArray { name, .. } => format!("{name}+=(...)"),
                     Assignment::AppendScalar { name, value } => format!("{name}+={value}"),
                 };
                 trace.push_str(&format!("{ps4}{part}\n"));
@@ -1254,9 +1578,7 @@ fn execute_simple_command(
             Assignment::ArrayElement { .. }
                 | Assignment::AppendArrayElement { .. }
                 | Assignment::IndexedArray { .. }
-                | Assignment::AppendArray { .. }
                 | Assignment::AssocArray { .. }
-                | Assignment::AppendAssocArray { .. }
         ) {
             continue;
         }
@@ -1331,8 +1653,8 @@ fn execute_simple_command(
         }
 
         // 6. Handle stdin redirection
-        let effective_stdin = match get_stdin_from_redirects(&redirects, state, stdin) {
-            Ok(s) => s,
+        let input_redirects = match collect_input_redirects(&redirects, state, stdin) {
+            Ok(map) => map,
             Err(RustBashError::RedirectFailed(msg)) => {
                 let mut result = ExecResult {
                     stderr: format!("rust-bash: {msg}\n"),
@@ -1345,6 +1667,14 @@ fn execute_simple_command(
             }
             Err(e) => return Err(e),
         };
+        let effective_stdin = match input_redirects.get(&0) {
+            Some(s) => s.clone(),
+            None => stdin.to_string(),
+        };
+        let saved_stdin_offset = state.stdin_offset;
+        if input_redirects.contains_key(&0) {
+            state.stdin_offset = 0;
+        }
 
         // Track last argument for $_ (last argument of the simple command).
         state.last_argument = last_arg.clone();
@@ -1353,7 +1683,17 @@ fn execute_simple_command(
         //     (captured outside closure as `should_trace`)
 
         // 7. Dispatch command
-        let mut result = dispatch_command(&cmd_name, &args, state, &effective_stdin)?;
+        let dispatch_result = dispatch_command(
+            &cmd_name,
+            &args,
+            state,
+            &effective_stdin,
+            Some(&input_redirects),
+        );
+        if input_redirects.contains_key(&0) {
+            state.stdin_offset = saved_stdin_offset;
+        }
+        let mut result = dispatch_result?;
 
         // 7a. Emit xtrace to stderr
         if let Some(ref ps4) = pre_ps4 {
@@ -1467,24 +1807,56 @@ fn execute_compound_command(
     state: &mut InterpreterState,
     stdin: &str,
 ) -> Result<ExecResult, RustBashError> {
+    let (effective_stdin, uses_fresh_stdin) = if let Some(redir_list) = redirects {
+        let redir_refs: Vec<&ast::IoRedirect> = redir_list.0.iter().collect();
+        let input_redirects = collect_input_redirects(&redir_refs, state, stdin)?;
+        (
+            input_redirects
+                .get(&0)
+                .cloned()
+                .unwrap_or_else(|| stdin.to_string()),
+            input_redirects.contains_key(&0),
+        )
+    } else {
+        (stdin.to_string(), false)
+    };
+    let saved_stdin_offset = state.stdin_offset;
+    if uses_fresh_stdin {
+        state.stdin_offset = 0;
+    }
+
     let mut result = match compound {
-        ast::CompoundCommand::IfClause(if_clause) => execute_if(if_clause, state, stdin)?,
-        ast::CompoundCommand::ForClause(for_clause) => execute_for(for_clause, state, stdin)?,
-        ast::CompoundCommand::WhileClause(wc) => execute_while_until(wc, false, state, stdin)?,
-        ast::CompoundCommand::UntilClause(uc) => execute_while_until(uc, true, state, stdin)?,
-        ast::CompoundCommand::BraceGroup(bg) => execute_compound_list(&bg.list, state, stdin)?,
-        ast::CompoundCommand::Subshell(sub) => execute_subshell(&sub.list, state, stdin)?,
-        ast::CompoundCommand::CaseClause(cc) => execute_case(cc, state, stdin)?,
+        ast::CompoundCommand::IfClause(if_clause) => {
+            execute_if(if_clause, state, &effective_stdin)?
+        }
+        ast::CompoundCommand::ForClause(for_clause) => {
+            execute_for(for_clause, state, &effective_stdin)?
+        }
+        ast::CompoundCommand::WhileClause(wc) => {
+            execute_while_until(wc, false, state, &effective_stdin)?
+        }
+        ast::CompoundCommand::UntilClause(uc) => {
+            execute_while_until(uc, true, state, &effective_stdin)?
+        }
+        ast::CompoundCommand::BraceGroup(bg) => {
+            execute_compound_list(&bg.list, state, &effective_stdin)?
+        }
+        ast::CompoundCommand::Subshell(sub) => {
+            execute_subshell(&sub.list, state, &effective_stdin)?
+        }
+        ast::CompoundCommand::CaseClause(cc) => execute_case(cc, state, &effective_stdin)?,
         ast::CompoundCommand::Arithmetic(arith) => execute_arithmetic(arith, state)?,
         ast::CompoundCommand::ArithmeticForClause(afc) => {
-            execute_arithmetic_for(afc, state, stdin)?
+            execute_arithmetic_for(afc, state, &effective_stdin)?
         }
         ast::CompoundCommand::Coprocess(_) => {
+            state.stdin_offset = saved_stdin_offset;
             return Err(RustBashError::Execution(
                 "coproc is not supported".to_string(),
             ));
         }
     };
+    state.stdin_offset = saved_stdin_offset;
 
     // Drain command-substitution stderr accumulated during expansion
     if !state.pending_cmdsub_stderr.is_empty() {
@@ -2064,6 +2436,7 @@ fn execute_subshell(
         proc_sub_prealloc: HashMap::new(),
         pipe_stdin_bytes: None,
         pending_cmdsub_stderr: String::new(),
+        fatal_expansion_error: false,
     };
 
     let result = execute_compound_list(list, &mut sub_state, stdin);
@@ -2241,6 +2614,7 @@ fn make_exec_callback(
             proc_sub_prealloc: HashMap::new(),
             pipe_stdin_bytes: None,
             pending_cmdsub_stderr: String::new(),
+            fatal_expansion_error: false,
         };
 
         let result = execute_program(&program, &mut sub_state)?;
@@ -2344,6 +2718,7 @@ fn dispatch_command(
     args: &[String],
     state: &mut InterpreterState,
     stdin: &str,
+    extra_input_fds: Option<&HashMap<i32, String>>,
 ) -> Result<ExecResult, RustBashError> {
     state.counters.command_count += 1;
     check_limits(state)?;
@@ -2388,11 +2763,19 @@ fn dispatch_command(
 
     // 3. Registered commands
     if let Some(cmd) = state.commands.get(name) {
-        let env: HashMap<String, String> = state
+        let mut env: HashMap<String, String> = state
             .env
             .iter()
             .map(|(k, v)| (k.clone(), v.value.as_scalar().to_string()))
             .collect();
+        if let Some(extra_fds) = extra_input_fds {
+            for (fd, contents) in extra_fds {
+                if *fd == 0 {
+                    continue;
+                }
+                env.insert(format!("__RUST_BASH_FD_{fd}"), contents.clone());
+            }
+        }
         // Clone variables for `test -v` array element checks (before mutable borrow).
         let vars_clone = state.env.clone();
         let fs = Arc::clone(&state.fs);
@@ -2490,8 +2873,8 @@ fn execute_exec_builtin(
     }
 
     // Has command args → execute and exit
-    let effective_stdin = match get_stdin_from_redirects(redirects, state, stdin) {
-        Ok(s) => s,
+    let input_redirects = match collect_input_redirects(redirects, state, stdin) {
+        Ok(map) => map,
         Err(RustBashError::RedirectFailed(msg)) => {
             let result = ExecResult {
                 stderr: format!("rust-bash: {msg}\n"),
@@ -2504,7 +2887,17 @@ fn execute_exec_builtin(
         }
         Err(e) => return Err(e),
     };
-    let mut result = dispatch_command(&args[0], &args[1..], state, &effective_stdin)?;
+    let effective_stdin = match input_redirects.get(&0) {
+        Some(s) => s.clone(),
+        None => stdin.to_string(),
+    };
+    let mut result = dispatch_command(
+        &args[0],
+        &args[1..],
+        state,
+        &effective_stdin,
+        Some(&input_redirects),
+    )?;
     apply_output_redirects(redirects, &mut result, state)?;
     state.last_exit_code = result.exit_code;
     state.should_exit = true;
@@ -2779,30 +3172,105 @@ fn is_special_dev_path(path: &str) -> bool {
         || is_dev_full(path)
 }
 
-fn get_stdin_from_redirects(
-    redirects: &[&ast::IoRedirect],
+fn expand_heredoc_body(
+    heredoc: &ast::IoHereDocument,
+    state: &mut InterpreterState,
+) -> Result<String, RustBashError> {
+    let mut body = if heredoc.requires_expansion {
+        let mut expanded_input = String::new();
+        let mut chars = heredoc.doc.value.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                match chars.peek().copied() {
+                    Some('\n') => {
+                        chars.next();
+                    }
+                    Some('\\') => {
+                        chars.next();
+                        expanded_input.push_str("__RB_HEREDOC_BSLASH__");
+                    }
+                    Some('$') => {
+                        chars.next();
+                        expanded_input.push_str("__RB_HEREDOC_DOLLAR__");
+                    }
+                    Some('`') => {
+                        chars.next();
+                        expanded_input.push_str("__RB_HEREDOC_BQUOTE__");
+                    }
+                    Some('"') => {
+                        chars.next();
+                        expanded_input.push_str("__RB_HEREDOC_DQ__");
+                    }
+                    Some(other) => {
+                        expanded_input.push('\\');
+                        expanded_input.push(other);
+                        chars.next();
+                    }
+                    None => expanded_input.push('\\'),
+                }
+            } else {
+                expanded_input.push(ch);
+            }
+        }
+
+        let expanded = expand_word_to_string_mut(
+            &ast::Word {
+                value: expanded_input,
+                loc: heredoc.doc.loc.clone(),
+            },
+            state,
+        )?;
+        expanded
+            .replace("__RB_HEREDOC_BSLASH__", "\\")
+            .replace("__RB_HEREDOC_DOLLAR__", "$")
+            .replace("__RB_HEREDOC_BQUOTE__", "`")
+            .replace("__RB_HEREDOC_DQ__", "\\\"")
+    } else {
+        heredoc.doc.value.clone()
+    };
+
+    if heredoc.remove_tabs {
+        body = body
+            .lines()
+            .map(|l| l.trim_start_matches('\t'))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + if body.ends_with('\n') { "\n" } else { "" };
+    }
+
+    if body.len() > state.limits.max_heredoc_size {
+        return Err(RustBashError::LimitExceeded {
+            limit_name: "max_heredoc_size",
+            limit_value: state.limits.max_heredoc_size,
+            actual_value: body.len(),
+        });
+    }
+
+    Ok(body)
+}
+
+fn read_input_redirect(
+    fd_num: i32,
+    redir: &ast::IoRedirect,
+    resolved: &HashMap<i32, String>,
     state: &mut InterpreterState,
     default_stdin: &str,
-) -> Result<String, RustBashError> {
-    for redir in redirects {
-        match redir {
-            ast::IoRedirect::File(fd, kind, target) => {
-                let fd_num = fd.unwrap_or(0);
-                if fd_num == 0
-                    && matches!(
-                        kind,
-                        ast::IoFileRedirectKind::Read | ast::IoFileRedirectKind::ReadAndWrite
-                    )
-                {
+) -> Result<Option<String>, RustBashError> {
+    match redir {
+        ast::IoRedirect::File(fd, kind, target) => {
+            if fd.unwrap_or(0) != fd_num {
+                return Ok(None);
+            }
+            match kind {
+                ast::IoFileRedirectKind::Read | ast::IoFileRedirectKind::ReadAndWrite => {
                     let filename = redirect_target_filename(target, state)?;
                     let path = resolve_path(&state.cwd, &filename);
                     if is_dev_stdin(&path) {
-                        return Ok(default_stdin.to_string());
+                        return Ok(Some(default_stdin.to_string()));
                     }
                     if is_dev_null(&path) || is_dev_zero(&path) || is_dev_full(&path) {
-                        return Ok(String::new());
+                        return Ok(Some(String::new()));
                     }
-                    // Validate empty filename
                     if filename.is_empty() {
                         return Err(RustBashError::RedirectFailed(
                             ": No such file or directory".to_string(),
@@ -2813,74 +3281,86 @@ fn get_stdin_from_redirects(
                             "{filename}: No such file or directory"
                         ))
                     })?;
-                    return Ok(String::from_utf8_lossy(&content).to_string());
+                    Ok(Some(String::from_utf8_lossy(&content).to_string()))
                 }
-                // Handle <&N (DuplicateInput) for reading from persistent FDs
-                if fd_num == 0 && matches!(kind, ast::IoFileRedirectKind::DuplicateInput) {
+                ast::IoFileRedirectKind::DuplicateInput => {
                     let dup_target = redirect_target_filename(target, state)?;
-                    if let Ok(source_fd) = dup_target.parse::<i32>()
-                        && let Some(pfd) = state.persistent_fds.get(&source_fd)
-                    {
-                        match pfd {
-                            PersistentFd::InputFile(path) | PersistentFd::ReadWriteFile(path) => {
-                                let content = state
-                                    .fs
-                                    .read_file(Path::new(path))
-                                    .map_err(|e| RustBashError::Execution(e.to_string()))?;
-                                return Ok(String::from_utf8_lossy(&content).to_string());
+                    if let Ok(source_fd) = dup_target.parse::<i32>() {
+                        if let Some(content) = resolved.get(&source_fd) {
+                            return Ok(Some(content.clone()));
+                        }
+                        if let Some(pfd) = state.persistent_fds.get(&source_fd) {
+                            match pfd {
+                                PersistentFd::InputFile(path)
+                                | PersistentFd::ReadWriteFile(path) => {
+                                    let content = state
+                                        .fs
+                                        .read_file(Path::new(path))
+                                        .map_err(|e| RustBashError::Execution(e.to_string()))?;
+                                    return Ok(Some(String::from_utf8_lossy(&content).to_string()));
+                                }
+                                PersistentFd::DevNull | PersistentFd::Closed => {
+                                    return Ok(Some(String::new()));
+                                }
+                                PersistentFd::OutputFile(_) | PersistentFd::DupStdFd(_) => {}
                             }
-                            PersistentFd::DevNull | PersistentFd::Closed => {
-                                return Ok(String::new());
-                            }
-                            PersistentFd::OutputFile(_) | PersistentFd::DupStdFd(_) => {}
                         }
                     }
+                    Ok(None)
                 }
+                _ => Ok(None),
             }
-            ast::IoRedirect::HereString(fd, word) => {
-                let fd_num = fd.unwrap_or(0);
-                if fd_num == 0 {
-                    let val = expand_word_to_string_mut(word, state)?;
-                    if val.len() > state.limits.max_heredoc_size {
-                        return Err(RustBashError::LimitExceeded {
-                            limit_name: "max_heredoc_size",
-                            limit_value: state.limits.max_heredoc_size,
-                            actual_value: val.len(),
-                        });
-                    }
-                    return Ok(format!("{val}\n"));
-                }
+        }
+        ast::IoRedirect::HereString(fd, word) => {
+            if fd.unwrap_or(0) != fd_num {
+                return Ok(None);
             }
-            ast::IoRedirect::HereDocument(fd, heredoc) => {
-                let fd_num = fd.unwrap_or(0);
-                if fd_num == 0 {
-                    let body = if heredoc.requires_expansion {
-                        expand_word_to_string_mut(&heredoc.doc, state)?
-                    } else {
-                        heredoc.doc.value.clone()
-                    };
-                    if body.len() > state.limits.max_heredoc_size {
-                        return Err(RustBashError::LimitExceeded {
-                            limit_name: "max_heredoc_size",
-                            limit_value: state.limits.max_heredoc_size,
-                            actual_value: body.len(),
-                        });
-                    }
-                    if heredoc.remove_tabs {
-                        return Ok(body
-                            .lines()
-                            .map(|l| l.trim_start_matches('\t'))
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                            + if body.ends_with('\n') { "\n" } else { "" });
-                    }
-                    return Ok(body);
-                }
+            let val = expand_word_to_string_mut(word, state)?;
+            if val.len() > state.limits.max_heredoc_size {
+                return Err(RustBashError::LimitExceeded {
+                    limit_name: "max_heredoc_size",
+                    limit_value: state.limits.max_heredoc_size,
+                    actual_value: val.len(),
+                });
             }
-            _ => {}
+            Ok(Some(format!("{val}\n")))
+        }
+        ast::IoRedirect::HereDocument(fd, heredoc) => {
+            if fd.unwrap_or(0) != fd_num {
+                return Ok(None);
+            }
+            Ok(Some(expand_heredoc_body(heredoc, state)?))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn collect_input_redirects(
+    redirects: &[&ast::IoRedirect],
+    state: &mut InterpreterState,
+    default_stdin: &str,
+) -> Result<HashMap<i32, String>, RustBashError> {
+    let mut resolved: HashMap<i32, String> = HashMap::new();
+    for redir in redirects {
+        let fd_num = match redir {
+            ast::IoRedirect::File(
+                fd,
+                ast::IoFileRedirectKind::Read
+                | ast::IoFileRedirectKind::ReadAndWrite
+                | ast::IoFileRedirectKind::DuplicateInput,
+                _,
+            ) => fd.unwrap_or(0),
+            ast::IoRedirect::HereString(fd, _) | ast::IoRedirect::HereDocument(fd, _) => {
+                fd.unwrap_or(0)
+            }
+            _ => continue,
+        };
+        if let Some(content) = read_input_redirect(fd_num, redir, &resolved, state, default_stdin)?
+        {
+            resolved.insert(fd_num, content);
         }
     }
-    Ok(default_stdin.to_string())
+    Ok(resolved)
 }
 
 fn apply_output_redirects(
@@ -3086,7 +3566,7 @@ fn apply_file_redirect(
         ast::IoFileRedirectKind::DuplicateInput => {
             let fd_num = fd.unwrap_or(0);
             if fd_num == 0 {
-                // <&N for stdin — handled in get_stdin_from_redirects
+                // <&N for stdin — handled in collect_input_redirects
             } else {
                 // N<&M where N != 0 — acts like N>&M (duplicate)
                 if !apply_duplicate_output(fd_num, target, result, state)? {
@@ -3095,7 +3575,7 @@ fn apply_file_redirect(
             }
         }
         ast::IoFileRedirectKind::Read => {
-            // Handled in get_stdin_from_redirects
+            // Handled in collect_input_redirects
         }
         ast::IoFileRedirectKind::ReadAndWrite => {
             let fd_num = fd.unwrap_or(0);
@@ -3107,7 +3587,7 @@ fn apply_file_redirect(
                     .write_file(Path::new(&path), b"")
                     .map_err(|e| RustBashError::Execution(e.to_string()))?;
             }
-            // For FD 0, input is handled in get_stdin_from_redirects.
+            // For FD 0, input is handled in collect_input_redirects.
             // For output FDs, write content to the file.
             if fd_num == 1 {
                 write_or_append(state, &path, &result.stdout, false)?;
@@ -3476,6 +3956,7 @@ fn make_proc_sub_state(state: &mut InterpreterState) -> InterpreterState {
         proc_sub_prealloc: HashMap::new(),
         pipe_stdin_bytes: None,
         pending_cmdsub_stderr: String::new(),
+        fatal_expansion_error: false,
     }
 }
 

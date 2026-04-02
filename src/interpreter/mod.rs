@@ -85,6 +85,8 @@ bitflags! {
         const NAMEREF   = 0b0010_0000;
         /// Variable was declared but never assigned a value.
         const DECLARED_ONLY = 0b0100_0000;
+        /// `declare -p` should emit associative entries in bash's reverse hash-style order.
+        const ASSOC_REVERSE_PRINT = 0b1000_0000;
     }
 }
 
@@ -398,7 +400,7 @@ pub struct InterpreterState {
     /// Pre-allocated temp file paths for redirect process substitutions, keyed by
     /// the pointer address of the `IoFileRedirectTarget` AST node.  This ensures
     /// each redirect resolves to its own pre-allocated path regardless of the order
-    /// in which `get_stdin_from_redirects` / `apply_output_redirects` visit them.
+    /// in which input/output redirect resolution visits them.
     pub(crate) proc_sub_prealloc: HashMap<usize, String>,
     /// Binary data from the previous pipeline stage, set by `execute_pipeline()`
     /// and consumed by `dispatch_command()` to populate `CommandContext::stdin_bytes`.
@@ -406,6 +408,8 @@ pub struct InterpreterState {
     /// Stderr accumulated from command substitutions during word expansion.
     /// Drained by the enclosing command execution into its `ExecResult.stderr`.
     pub(crate) pending_cmdsub_stderr: String,
+    /// Set when a fatal parameter expansion error terminates the current shell.
+    pub(crate) fatal_expansion_error: bool,
 }
 
 // ── Parsing ──────────────────────────────────────────────────────────
@@ -423,9 +427,21 @@ pub(crate) fn parser_options() -> brush_parser::ParserOptions {
 
 /// Parse a shell input string into an AST.
 pub fn parse(input: &str) -> Result<ast::Program, RustBashError> {
-    let raw_tokens =
-        brush_parser::tokenize_str(input).map_err(|e| RustBashError::Parse(e.to_string()))?;
-    let tokens = rebuild_tokens_from_source(input, &raw_tokens);
+    let mut parse_input = input.to_string();
+    let raw_tokens = match brush_parser::tokenize_str(&parse_input) {
+        Ok(tokens) => tokens,
+        Err(err) => {
+            if let Some(rewritten) = rewrite_expansion_like_heredoc_delimiters(input)
+                && let Ok(tokens) = brush_parser::tokenize_str(&rewritten)
+            {
+                parse_input = rewritten;
+                tokens
+            } else {
+                return Err(RustBashError::Parse(err.to_string()));
+            }
+        }
+    };
+    let tokens = rebuild_tokens_from_source(&parse_input, &raw_tokens);
 
     if tokens.is_empty() {
         return Ok(ast::Program {
@@ -438,7 +454,7 @@ pub fn parse(input: &str) -> Result<ast::Program, RustBashError> {
     match brush_parser::parse_tokens(&tokens, &options) {
         Ok(program) => Ok(program),
         Err(err) => {
-            if let Some(rewritten) = rewrite_assignment_prefixed_keyword(input, &tokens) {
+            if let Some(rewritten) = rewrite_assignment_prefixed_keyword(&parse_input, &tokens) {
                 let retry_raw_tokens = brush_parser::tokenize_str(&rewritten)
                     .map_err(|e| RustBashError::Parse(e.to_string()))?;
                 let retry_tokens = rebuild_tokens_from_source(&rewritten, &retry_raw_tokens);
@@ -449,6 +465,81 @@ pub fn parse(input: &str) -> Result<ast::Program, RustBashError> {
             Err(RustBashError::Parse(err.to_string()))
         }
     }
+}
+
+fn rewrite_expansion_like_heredoc_delimiters(input: &str) -> Option<String> {
+    if !input.contains("<<$") {
+        return None;
+    }
+
+    let chars: Vec<char> = input.chars().collect();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    let mut changed = false;
+
+    while i < chars.len() {
+        if chars[i] == '<' && i + 1 < chars.len() && chars[i + 1] == '<' {
+            out.push('<');
+            out.push('<');
+            i += 2;
+            if i < chars.len() && chars[i] == '-' {
+                out.push('-');
+                i += 1;
+            }
+            while i < chars.len() && matches!(chars[i], ' ' | '\t') {
+                out.push(chars[i]);
+                i += 1;
+            }
+            if i + 1 < chars.len()
+                && chars[i] == '$'
+                && matches!(chars[i + 1], '{' | '(')
+                && let Some((token, next_idx)) = take_heredoc_delimiter_token(&chars, i)
+            {
+                out.push('\'');
+                out.push_str(&token);
+                out.push('\'');
+                i = next_idx;
+                changed = true;
+                continue;
+            }
+            continue;
+        }
+
+        out.push(chars[i]);
+        i += 1;
+    }
+
+    changed.then_some(out)
+}
+
+fn take_heredoc_delimiter_token(chars: &[char], start: usize) -> Option<(String, usize)> {
+    if start + 1 >= chars.len() || chars[start] != '$' {
+        return None;
+    }
+
+    let closing = match chars[start + 1] {
+        '{' => '}',
+        '(' => ')',
+        _ => return None,
+    };
+
+    let mut token = String::new();
+    let mut depth = 0usize;
+    let mut i = start;
+    while i < chars.len() {
+        let ch = chars[i];
+        token.push(ch);
+        if ch == chars[start + 1] {
+            depth += 1;
+        } else if ch == closing {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                return Some((token, i + 1));
+            }
+        }
+        i += 1;
+    }
+    None
 }
 
 fn rebuild_tokens_from_source(
@@ -1062,6 +1153,7 @@ mod tests {
             proc_sub_prealloc: HashMap::new(),
             pipe_stdin_bytes: None,
             pending_cmdsub_stderr: String::new(),
+            fatal_expansion_error: false,
         }
     }
 }

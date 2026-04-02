@@ -73,7 +73,7 @@ pub fn base_env() -> HashMap<String, String> {
     m.insert("HOME".into(), "/root".into());
     m.insert("USER".into(), "testuser".into());
     m.insert("TZ".into(), "UTC".into());
-    m.insert("LC_ALL".into(), "C".into());
+    m.insert("LANG".into(), "C".into());
     m.insert("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into());
     m
 }

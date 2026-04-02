@@ -5,7 +5,8 @@ use crate::error::RustBashError;
 use crate::interpreter::pattern;
 use crate::interpreter::walker::{clone_commands, execute_program};
 use crate::interpreter::{
-    ExecutionCounters, InterpreterState, next_random, parse, parser_options, set_variable,
+    ExecutionCounters, InterpreterState, next_random, parse, parser_options, set_assoc_element,
+    set_variable,
 };
 
 use crate::vfs::GlobOptions;
@@ -117,8 +118,10 @@ fn expand_word_segments(
     word: &ast::Word,
     state: &InterpreterState,
 ) -> Result<Vec<WordInProgress>, RustBashError> {
+    validate_length_transform_syntax(&word.value)?;
     let options = parser_options();
-    let assignment_like = expand_assignment_like_tilde_bug(&word.value, state);
+    let rewritten = rewrite_special_case_word_syntax(&word.value, state);
+    let assignment_like = expand_assignment_like_tilde_bug(&rewritten, state);
     let pieces = brush_parser::word::parse(&assignment_like, &options)
         .map_err(|e| RustBashError::Parse(e.to_string()))?;
 
@@ -133,8 +136,10 @@ fn expand_word_segments_mut(
     word: &ast::Word,
     state: &mut InterpreterState,
 ) -> Result<Vec<WordInProgress>, RustBashError> {
+    validate_length_transform_syntax(&word.value)?;
     let options = parser_options();
-    let assignment_like = expand_assignment_like_tilde_bug(&word.value, state);
+    let rewritten = rewrite_special_case_word_syntax(&word.value, state);
+    let assignment_like = expand_assignment_like_tilde_bug(&rewritten, state);
     let pieces = brush_parser::word::parse(&assignment_like, &options)
         .map_err(|e| RustBashError::Parse(e.to_string()))?;
 
@@ -169,6 +174,55 @@ fn expand_assignment_like_tilde_bug(word: &str, state: &InterpreterState) -> Str
     }
 
     format!("{name}={home}{rest}")
+}
+
+fn rewrite_special_case_word_syntax(word: &str, state: &InterpreterState) -> String {
+    let rewritten = word.replace("///}", "//\\//}");
+    rewrite_assoc_indirect_attr_special_cases(&rewritten, state)
+}
+
+fn rewrite_assoc_indirect_attr_special_cases(word: &str, state: &InterpreterState) -> String {
+    let mut out = String::with_capacity(word.len());
+    let mut i = 0usize;
+    while let Some(rel_start) = word[i..].find("${!") {
+        let start = i + rel_start;
+        out.push_str(&word[i..start]);
+        let mut j = start + 3;
+        while j < word.len() {
+            let ch = word.as_bytes()[j];
+            if ch.is_ascii_alphanumeric() || ch == b'_' {
+                j += 1;
+            } else {
+                break;
+            }
+        }
+        if j == start + 3 {
+            out.push_str("${!");
+            i = j;
+            continue;
+        }
+
+        let name = &word[start + 3..j];
+        let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
+        let is_assoc = state.env.get(&resolved).is_some_and(|var| {
+            matches!(
+                var.value,
+                crate::interpreter::VariableValue::AssociativeArray(_)
+            )
+        });
+
+        let rest = &word[j..];
+        if is_assoc && (rest.starts_with("@a}") || rest.starts_with("[@]@a}")) {
+            i = j + if rest.starts_with("@a}") { 3 } else { 6 };
+            continue;
+        }
+
+        out.push_str("${!");
+        out.push_str(name);
+        i = j;
+    }
+    out.push_str(&word[i..]);
+    out
 }
 
 fn is_assignment_like_name(name: &str) -> bool {
@@ -300,6 +354,7 @@ fn execute_command_substitution(
         proc_sub_prealloc: HashMap::new(),
         pipe_stdin_bytes: None,
         pending_cmdsub_stderr: String::new(),
+        fatal_expansion_error: false,
     };
 
     let result = execute_program(&program, &mut sub_state);
@@ -503,6 +558,7 @@ fn expand_parameter(
     in_dq: bool,
 ) -> Result<bool, RustBashError> {
     validate_expr_parameter(expr)?;
+    validate_indirect_reference(expr, state)?;
     let mut at_empty = false;
     let ext = state.shopt_opts.extglob;
     match expr {
@@ -547,19 +603,15 @@ fn expand_parameter(
             default_value,
         } => {
             let val = resolve_parameter(parameter, state, *indirect);
-            let use_default = if *indirect {
-                // For indirect expansion, check the indirect target
-                let target_name = resolve_parameter(parameter, state, false);
-                should_use_indirect_default(&val, &target_name, test_type, state)
-            } else {
-                should_use_default(&val, test_type, state, parameter)
-            };
+            let use_default = should_use_default_for_parameter(
+                parameter, *indirect, &val, test_type, state, in_dq,
+            );
             if use_default {
                 if let Some(dv) = default_value {
                     expand_raw_into_words(dv, words, state, in_dq)?;
                 }
             } else {
-                push_segment(words, &val, in_dq, in_dq);
+                push_expanded_parameter_value(parameter, *indirect, &val, words, state, in_dq);
             }
         }
         // AssignDefaultValues — needs mutation, handled by mut variant; here treat as UseDefault
@@ -570,12 +622,9 @@ fn expand_parameter(
             default_value,
         } => {
             let val = resolve_parameter(parameter, state, *indirect);
-            let use_default = if *indirect {
-                let target_name = resolve_parameter(parameter, state, false);
-                should_use_indirect_default(&val, &target_name, test_type, state)
-            } else {
-                should_use_default(&val, test_type, state, parameter)
-            };
+            let use_default = should_use_default_for_parameter(
+                parameter, *indirect, &val, test_type, state, in_dq,
+            );
             if use_default {
                 if let Some(dv) = default_value {
                     // AssignDefaultValues collapses to a single string for both
@@ -584,7 +633,7 @@ fn expand_parameter(
                     push_segment(words, &expanded, in_dq, in_dq);
                 }
             } else {
-                push_segment(words, &val, in_dq, in_dq);
+                push_expanded_parameter_value(parameter, *indirect, &val, words, state, in_dq);
             }
         }
         ParameterExpr::IndicateErrorIfNullOrUnset {
@@ -594,12 +643,9 @@ fn expand_parameter(
             error_message,
         } => {
             let val = resolve_parameter(parameter, state, *indirect);
-            let use_default = if *indirect {
-                let target_name = resolve_parameter(parameter, state, false);
-                should_use_indirect_default(&val, &target_name, test_type, state)
-            } else {
-                should_use_default(&val, test_type, state, parameter)
-            };
+            let use_default = should_use_default_for_parameter(
+                parameter, *indirect, &val, test_type, state, in_dq,
+            );
             if use_default {
                 let param_name = parameter_name(parameter);
                 let msg = if let Some(raw) = error_message {
@@ -609,11 +655,11 @@ fn expand_parameter(
                 };
                 return Err(RustBashError::ExpansionError {
                     message: format!("{param_name}: {msg}"),
-                    exit_code: 127,
+                    exit_code: 1,
                     should_exit: true,
                 });
             }
-            push_segment(words, &val, in_dq, in_dq);
+            push_expanded_parameter_value(parameter, *indirect, &val, words, state, in_dq);
         }
         ParameterExpr::UseAlternativeValue {
             parameter,
@@ -622,14 +668,16 @@ fn expand_parameter(
             alternative_value,
         } => {
             let val = resolve_parameter(parameter, state, *indirect);
-            let use_default = if *indirect {
-                let target_name = resolve_parameter(parameter, state, false);
-                should_use_indirect_default(&val, &target_name, test_type, state)
-            } else {
-                should_use_default(&val, test_type, state, parameter)
-            };
+            let use_default = should_use_default_for_parameter(
+                parameter, *indirect, &val, test_type, state, in_dq,
+            );
             if !use_default && let Some(av) = alternative_value {
                 expand_raw_into_words(av, words, state, in_dq)?;
+            } else if !*indirect
+                && vectorized_parameter_words(parameter, state, in_dq)
+                    .is_some_and(|vals| vals.is_empty())
+            {
+                at_empty = true;
             }
             // If unset/null, expand to nothing
         }
@@ -862,32 +910,54 @@ fn expand_parameter(
             replacement: raw_repl,
             match_kind,
         } => {
-            let pat = expand_pattern_string(raw_pat, state)?;
-            let repl_expanded = raw_repl
+            check_nounset(parameter, state)?;
+            let (pattern_src, replacement_src) =
+                normalize_patsub_slashes(raw_pat, raw_repl.as_deref());
+            let pat = expand_pattern_string(pattern_src, state)?;
+            let repl_expanded = replacement_src
                 .as_ref()
                 .map(|r| expand_replacement_string(r, state))
                 .transpose()?;
             let repl = repl_expanded.as_deref().unwrap_or("");
+            let byte_mode = is_byte_locale(state);
             let do_replace = |val: &str| -> String {
                 match match_kind {
                     SubstringMatchKind::FirstOccurrence => {
-                        if let Some((start, end)) = pattern::first_match_ext(val, &pat, ext) {
+                        if let Some((start, end)) =
+                            pattern::first_match_ext_with_mode(val, &pat, ext, byte_mode)
+                        {
                             format!("{}{}{}", &val[..start], repl, &val[end..])
                         } else {
                             val.to_string()
                         }
                     }
-                    SubstringMatchKind::Anywhere => pattern::replace_all_ext(val, &pat, repl, ext),
+                    SubstringMatchKind::Anywhere => {
+                        pattern::replace_all_ext_with_mode(val, &pat, repl, ext, byte_mode)
+                    }
                     SubstringMatchKind::Prefix => {
-                        if let Some(len) = pattern::longest_prefix_match_ext(val, &pat, ext) {
-                            format!("{repl}{}", &val[len..])
+                        if let Some(len) =
+                            pattern::longest_prefix_match_ext_with_mode(val, &pat, ext, byte_mode)
+                        {
+                            if byte_mode {
+                                let suffix = String::from_utf8_lossy(&val.as_bytes()[len..]);
+                                format!("{repl}{suffix}")
+                            } else {
+                                format!("{repl}{}", &val[len..])
+                            }
                         } else {
                             val.to_string()
                         }
                     }
                     SubstringMatchKind::Suffix => {
-                        if let Some(idx) = pattern::longest_suffix_match_ext(val, &pat, ext) {
-                            format!("{}{repl}", &val[..idx])
+                        if let Some(idx) =
+                            pattern::longest_suffix_match_ext_with_mode(val, &pat, ext, byte_mode)
+                        {
+                            if byte_mode {
+                                let prefix = String::from_utf8_lossy(&val.as_bytes()[..idx]);
+                                format!("{prefix}{repl}")
+                            } else {
+                                format!("{}{repl}", &val[..idx])
+                            }
                         } else {
                             val.to_string()
                         }
@@ -907,59 +977,101 @@ fn expand_parameter(
         ParameterExpr::UppercaseFirstChar {
             parameter,
             indirect,
-            ..
+            pattern,
         } => {
+            let pat = pattern
+                .as_ref()
+                .map(|p| expand_pattern_string(p, state))
+                .transpose()?
+                .filter(|p| !p.is_empty());
             if let Some((values, concatenate)) = get_vectorized_values(parameter, state, *indirect)
             {
-                let results: Vec<String> = values.iter().map(|v| uppercase_first(v)).collect();
+                let results: Vec<String> = values
+                    .iter()
+                    .map(|v| uppercase_first_matching(v, pat.as_deref(), ext))
+                    .collect();
                 push_vectorized(results, concatenate, words, state, in_dq);
             } else {
                 let val = resolve_parameter(parameter, state, *indirect);
-                let result = uppercase_first(&val);
+                let result = uppercase_first_matching(&val, pat.as_deref(), ext);
                 push_segment(words, &result, in_dq, in_dq);
             }
         }
         ParameterExpr::UppercasePattern {
             parameter,
             indirect,
-            ..
+            pattern,
         } => {
+            let pat = pattern
+                .as_ref()
+                .map(|p| expand_pattern_string(p, state))
+                .transpose()?
+                .filter(|p| !p.is_empty());
             if let Some((values, concatenate)) = get_vectorized_values(parameter, state, *indirect)
             {
-                let results: Vec<String> = values.iter().map(|v| v.to_uppercase()).collect();
+                let results: Vec<String> = values
+                    .iter()
+                    .map(|v| uppercase_matching(v, pat.as_deref(), ext))
+                    .collect();
                 push_vectorized(results, concatenate, words, state, in_dq);
             } else {
                 let val = resolve_parameter(parameter, state, *indirect);
-                push_segment(words, &val.to_uppercase(), in_dq, in_dq);
+                push_segment(
+                    words,
+                    &uppercase_matching(&val, pat.as_deref(), ext),
+                    in_dq,
+                    in_dq,
+                );
             }
         }
         ParameterExpr::LowercaseFirstChar {
             parameter,
             indirect,
-            ..
+            pattern,
         } => {
+            let pat = pattern
+                .as_ref()
+                .map(|p| expand_pattern_string(p, state))
+                .transpose()?
+                .filter(|p| !p.is_empty());
             if let Some((values, concatenate)) = get_vectorized_values(parameter, state, *indirect)
             {
-                let results: Vec<String> = values.iter().map(|v| lowercase_first(v)).collect();
+                let results: Vec<String> = values
+                    .iter()
+                    .map(|v| lowercase_first_matching(v, pat.as_deref(), ext))
+                    .collect();
                 push_vectorized(results, concatenate, words, state, in_dq);
             } else {
                 let val = resolve_parameter(parameter, state, *indirect);
-                let result = lowercase_first(&val);
+                let result = lowercase_first_matching(&val, pat.as_deref(), ext);
                 push_segment(words, &result, in_dq, in_dq);
             }
         }
         ParameterExpr::LowercasePattern {
             parameter,
             indirect,
-            ..
+            pattern,
         } => {
+            let pat = pattern
+                .as_ref()
+                .map(|p| expand_pattern_string(p, state))
+                .transpose()?
+                .filter(|p| !p.is_empty());
             if let Some((values, concatenate)) = get_vectorized_values(parameter, state, *indirect)
             {
-                let results: Vec<String> = values.iter().map(|v| v.to_lowercase()).collect();
+                let results: Vec<String> = values
+                    .iter()
+                    .map(|v| lowercase_matching(v, pat.as_deref(), ext))
+                    .collect();
                 push_vectorized(results, concatenate, words, state, in_dq);
             } else {
                 let val = resolve_parameter(parameter, state, *indirect);
-                push_segment(words, &val.to_lowercase(), in_dq, in_dq);
+                push_segment(
+                    words,
+                    &lowercase_matching(&val, pat.as_deref(), ext),
+                    in_dq,
+                    in_dq,
+                );
             }
         }
         ParameterExpr::Transform {
@@ -967,17 +1079,44 @@ fn expand_parameter(
             indirect,
             op,
         } => {
-            let var_name = parameter_name(parameter);
-            if let Some((values, concatenate)) = get_vectorized_values(parameter, state, *indirect)
+            check_nounset(parameter, state)?;
+            let transform_name = transform_target_name(parameter, *indirect, state);
+            let scalar_defined = !parameter_scalar_is_unset(parameter, *indirect, state);
+            let variable_exists = parameter_variable_exists(parameter, *indirect, state);
+            if let Some((mut values, concatenate)) =
+                get_vectorized_values(parameter, state, *indirect)
             {
+                if values.is_empty() && !concatenate {
+                    at_empty = true;
+                    return Ok(at_empty);
+                }
+                if parameter_is_associative_array(parameter, *indirect, state) {
+                    values.reverse();
+                }
                 let results: Vec<String> = values
                     .iter()
-                    .map(|v| apply_transform(v, op, &var_name, state))
+                    .map(|v| {
+                        apply_transform(
+                            v,
+                            op,
+                            transform_name.as_deref(),
+                            scalar_defined,
+                            variable_exists,
+                            state,
+                        )
+                    })
                     .collect();
                 push_vectorized(results, concatenate, words, state, in_dq);
             } else {
                 let val = resolve_parameter(parameter, state, *indirect);
-                let result = apply_transform(&val, op, &var_name, state);
+                let result = apply_transform(
+                    &val,
+                    op,
+                    transform_name.as_deref(),
+                    scalar_defined,
+                    variable_exists,
+                    state,
+                );
                 push_segment(words, &result, in_dq, in_dq);
             }
         }
@@ -1048,7 +1187,27 @@ fn expand_parameter_mut(
     in_dq: bool,
 ) -> Result<bool, RustBashError> {
     validate_expr_parameter(expr)?;
+    validate_indirect_reference(expr, state)?;
     match expr {
+        ParameterExpr::UseDefaultValues {
+            parameter,
+            indirect,
+            test_type,
+            default_value,
+        } => {
+            let val = resolve_parameter_maybe_mut(parameter, state, *indirect)?;
+            let use_default = should_use_default_for_parameter_mut(
+                parameter, *indirect, &val, test_type, state, in_dq,
+            )?;
+            if use_default {
+                if let Some(raw) = default_value {
+                    expand_raw_into_words_mut(raw, words, state, in_dq)?;
+                }
+            } else {
+                push_expanded_parameter_value(parameter, *indirect, &val, words, state, in_dq);
+            }
+            Ok(false)
+        }
         ParameterExpr::AssignDefaultValues {
             parameter,
             indirect,
@@ -1056,12 +1215,9 @@ fn expand_parameter_mut(
             default_value,
         } => {
             let val = resolve_parameter_maybe_mut(parameter, state, *indirect)?;
-            let use_default = if *indirect {
-                let target_name = resolve_parameter_maybe_mut(parameter, state, false)?;
-                should_use_indirect_default(&val, &target_name, test_type, state)
-            } else {
-                should_use_default(&val, test_type, state, parameter)
-            };
+            let use_default = should_use_default_for_parameter_mut(
+                parameter, *indirect, &val, test_type, state, in_dq,
+            )?;
             if use_default {
                 // AssignDefaultValues collapses to a single string.
                 let dv = if let Some(raw) = default_value {
@@ -1069,19 +1225,56 @@ fn expand_parameter_mut(
                 } else {
                     String::new()
                 };
-                if *indirect {
-                    if let Parameter::Named(_) = parameter {
-                        let target_name = resolve_parameter_maybe_mut(parameter, state, false)?;
-                        if !target_name.is_empty() {
-                            set_variable(state, &target_name, dv.clone())?;
-                        }
-                    }
-                } else if let Parameter::Named(name) = parameter {
-                    set_variable(state, name, dv.clone())?;
-                }
+                assign_default_to_parameter(parameter, *indirect, &dv, state)?;
                 push_segment(words, &dv, in_dq, in_dq);
             } else {
-                push_segment(words, &val, in_dq, in_dq);
+                push_expanded_parameter_value(parameter, *indirect, &val, words, state, in_dq);
+            }
+            Ok(false)
+        }
+        ParameterExpr::IndicateErrorIfNullOrUnset {
+            parameter,
+            indirect,
+            test_type,
+            error_message,
+        } => {
+            let val = resolve_parameter_maybe_mut(parameter, state, *indirect)?;
+            let use_default = should_use_default_for_parameter_mut(
+                parameter, *indirect, &val, test_type, state, in_dq,
+            )?;
+            if use_default {
+                let param_name = parameter_name(parameter);
+                let msg = if let Some(raw) = error_message {
+                    expand_raw_string_mut_ctx(raw, state, in_dq)?
+                } else {
+                    "parameter null or not set".to_string()
+                };
+                return Err(RustBashError::ExpansionError {
+                    message: format!("{param_name}: {msg}"),
+                    exit_code: 1,
+                    should_exit: true,
+                });
+            }
+            push_expanded_parameter_value(parameter, *indirect, &val, words, state, in_dq);
+            Ok(false)
+        }
+        ParameterExpr::UseAlternativeValue {
+            parameter,
+            indirect,
+            test_type,
+            alternative_value,
+        } => {
+            let val = resolve_parameter_maybe_mut(parameter, state, *indirect)?;
+            let use_default = should_use_default_for_parameter_mut(
+                parameter, *indirect, &val, test_type, state, in_dq,
+            )?;
+            if !use_default && let Some(raw) = alternative_value {
+                expand_raw_into_words_mut(raw, words, state, in_dq)?;
+            } else if !*indirect
+                && vectorized_parameter_words(parameter, state, in_dq)
+                    .is_some_and(|vals| vals.is_empty())
+            {
+                return Ok(true);
             }
             Ok(false)
         }
@@ -1713,19 +1906,55 @@ use brush_parser::word::ParameterTransformOp;
 fn apply_transform(
     val: &str,
     op: &ParameterTransformOp,
-    var_name: &str,
+    var_name: Option<&str>,
+    scalar_defined: bool,
+    variable_exists: bool,
     state: &InterpreterState,
 ) -> String {
     match op {
-        ParameterTransformOp::ToUpperCase => val.to_uppercase(),
-        ParameterTransformOp::ToLowerCase => val.to_lowercase(),
-        ParameterTransformOp::CapitalizeInitial => uppercase_first(val),
-        ParameterTransformOp::Quoted => shell_quote(val),
+        ParameterTransformOp::ToUpperCase => uppercase_matching(val, None, false),
+        ParameterTransformOp::ToLowerCase => lowercase_matching(val, None, false),
+        ParameterTransformOp::CapitalizeInitial => uppercase_first_matching(val, None, false),
+        ParameterTransformOp::Quoted => {
+            if scalar_defined {
+                shell_quote(val)
+            } else {
+                String::new()
+            }
+        }
         ParameterTransformOp::ExpandEscapeSequences => expand_escape_sequences(val),
-        ParameterTransformOp::PromptExpand => expand_prompt_sequences(val, state),
-        ParameterTransformOp::PossiblyQuoteWithArraysExpanded { .. } => shell_quote(val),
-        ParameterTransformOp::ToAssignmentLogic => format_assignment(var_name, state),
-        ParameterTransformOp::ToAttributeFlags => format_attribute_flags(var_name, state),
+        ParameterTransformOp::PromptExpand => {
+            if scalar_defined {
+                expand_prompt_sequences(val, state)
+            } else {
+                String::new()
+            }
+        }
+        ParameterTransformOp::PossiblyQuoteWithArraysExpanded { .. } => {
+            if scalar_defined {
+                shell_quote(val)
+            } else {
+                String::new()
+            }
+        }
+        ParameterTransformOp::ToAssignmentLogic => {
+            if variable_exists {
+                var_name
+                    .map(|name| format_assignment(name, state))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            }
+        }
+        ParameterTransformOp::ToAttributeFlags => {
+            if variable_exists {
+                var_name
+                    .map(|name| format_attribute_flags(name, state))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            }
+        }
     }
 }
 
@@ -2008,7 +2237,12 @@ fn format_assignment(name: &str, state: &InterpreterState) -> String {
 
     match &var.value {
         VariableValue::Scalar(s) => {
-            format!("{flags}{resolved}='{s}'")
+            let quoted = s.replace('\'', "'\\''");
+            if flags == "declare -- " {
+                format!("{resolved}='{quoted}'")
+            } else {
+                format!("{flags}{resolved}='{quoted}'")
+            }
         }
         VariableValue::IndexedArray(map) => {
             let elements: Vec<String> = map.iter().map(|(k, v)| format!("[{k}]=\"{v}\"")).collect();
@@ -2061,24 +2295,77 @@ fn format_attribute_flags(name: &str, state: &InterpreterState) -> String {
     flags
 }
 
-fn uppercase_first(s: &str) -> String {
+fn safe_upper_char(c: char) -> char {
+    let mapped: Vec<char> = c.to_uppercase().collect();
+    if mapped.len() == 1 { mapped[0] } else { c }
+}
+
+fn safe_lower_char(c: char) -> char {
+    let mapped: Vec<char> = c.to_lowercase().collect();
+    if mapped.len() == 1 { mapped[0] } else { c }
+}
+
+fn pattern_matches_char(pattern: Option<&str>, ch: char, extglob: bool) -> bool {
+    pattern.is_none_or(|pat| {
+        let s = ch.to_string();
+        if extglob {
+            pattern::extglob_match(pat, &s)
+        } else {
+            pattern::glob_match(pat, &s)
+        }
+    })
+}
+
+fn uppercase_matching(s: &str, pattern: Option<&str>, extglob: bool) -> String {
+    s.chars()
+        .map(|ch| {
+            if pattern_matches_char(pattern, ch, extglob) {
+                safe_upper_char(ch)
+            } else {
+                ch
+            }
+        })
+        .collect()
+}
+
+fn lowercase_matching(s: &str, pattern: Option<&str>, extglob: bool) -> String {
+    s.chars()
+        .map(|ch| {
+            if pattern_matches_char(pattern, ch, extglob) {
+                safe_lower_char(ch)
+            } else {
+                ch
+            }
+        })
+        .collect()
+}
+
+fn uppercase_first_matching(s: &str, pattern: Option<&str>, extglob: bool) -> String {
     let mut chars = s.chars();
     match chars.next() {
         None => String::new(),
-        Some(c) => {
-            let mut result = c.to_uppercase().to_string();
+        Some(ch) => {
+            let mut result = if pattern_matches_char(pattern, ch, extglob) {
+                safe_upper_char(ch).to_string()
+            } else {
+                ch.to_string()
+            };
             result.extend(chars);
             result
         }
     }
 }
 
-fn lowercase_first(s: &str) -> String {
+fn lowercase_first_matching(s: &str, pattern: Option<&str>, extglob: bool) -> String {
     let mut chars = s.chars();
     match chars.next() {
         None => String::new(),
-        Some(c) => {
-            let mut result = c.to_lowercase().to_string();
+        Some(ch) => {
+            let mut result = if pattern_matches_char(pattern, ch, extglob) {
+                safe_lower_char(ch).to_string()
+            } else {
+                ch.to_string()
+            };
             result.extend(chars);
             result
         }
@@ -2095,7 +2382,10 @@ fn check_nounset(parameter: &Parameter, state: &InterpreterState) -> Result<(), 
         return Ok(());
     }
     // Special parameters are always OK
-    if matches!(parameter, Parameter::Special(_)) {
+    if matches!(
+        parameter,
+        Parameter::Special(_) | Parameter::NamedWithAllIndices { .. }
+    ) {
         return Ok(());
     }
     if is_unset(state, parameter) {
@@ -2145,6 +2435,138 @@ fn validate_expr_parameter(expr: &ParameterExpr) -> Result<(), RustBashError> {
         ParameterExpr::VariableNames { .. } | ParameterExpr::MemberKeys { .. } => return Ok(()),
     };
     validate_parameter_name(param)
+}
+
+fn validate_length_transform_syntax(word: &str) -> Result<(), RustBashError> {
+    let bytes = word.as_bytes();
+    let mut i = 0usize;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'$' && bytes[i + 1] == b'{' && bytes[i + 2] == b'#' {
+            let mut j = i + 3;
+            while j < bytes.len() && bytes[j] != b'}' {
+                j += 1;
+            }
+            if j < bytes.len() {
+                let inner = &word[i + 3..j];
+                let inner_bytes = inner.as_bytes();
+                if inner_bytes.len() >= 2
+                    && inner_bytes[inner_bytes.len() - 2] == b'@'
+                    && inner_bytes[inner_bytes.len() - 1].is_ascii_alphabetic()
+                {
+                    return Err(RustBashError::Execution(format!(
+                        "${{#{inner}}}: bad substitution"
+                    )));
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    Ok(())
+}
+
+fn validate_indirect_reference(
+    expr: &ParameterExpr,
+    state: &InterpreterState,
+) -> Result<(), RustBashError> {
+    let (parameter, indirect) = match expr {
+        ParameterExpr::Parameter {
+            parameter,
+            indirect,
+        }
+        | ParameterExpr::UseDefaultValues {
+            parameter,
+            indirect,
+            ..
+        }
+        | ParameterExpr::AssignDefaultValues {
+            parameter,
+            indirect,
+            ..
+        }
+        | ParameterExpr::IndicateErrorIfNullOrUnset {
+            parameter,
+            indirect,
+            ..
+        }
+        | ParameterExpr::UseAlternativeValue {
+            parameter,
+            indirect,
+            ..
+        }
+        | ParameterExpr::ParameterLength {
+            parameter,
+            indirect,
+        }
+        | ParameterExpr::RemoveSmallestSuffixPattern {
+            parameter,
+            indirect,
+            ..
+        }
+        | ParameterExpr::RemoveLargestSuffixPattern {
+            parameter,
+            indirect,
+            ..
+        }
+        | ParameterExpr::RemoveSmallestPrefixPattern {
+            parameter,
+            indirect,
+            ..
+        }
+        | ParameterExpr::RemoveLargestPrefixPattern {
+            parameter,
+            indirect,
+            ..
+        }
+        | ParameterExpr::Substring {
+            parameter,
+            indirect,
+            ..
+        }
+        | ParameterExpr::UppercaseFirstChar {
+            parameter,
+            indirect,
+            ..
+        }
+        | ParameterExpr::UppercasePattern {
+            parameter,
+            indirect,
+            ..
+        }
+        | ParameterExpr::LowercaseFirstChar {
+            parameter,
+            indirect,
+            ..
+        }
+        | ParameterExpr::LowercasePattern {
+            parameter,
+            indirect,
+            ..
+        }
+        | ParameterExpr::ReplaceSubstring {
+            parameter,
+            indirect,
+            ..
+        }
+        | ParameterExpr::Transform {
+            parameter,
+            indirect,
+            ..
+        } => (parameter, *indirect),
+        ParameterExpr::VariableNames { .. } | ParameterExpr::MemberKeys { .. } => {
+            return Ok(());
+        }
+    };
+
+    if indirect && is_unset(state, parameter) {
+        return Err(RustBashError::Execution(format!(
+            "{}: invalid indirect expansion",
+            parameter_name(parameter)
+        )));
+    }
+
+    Ok(())
 }
 
 fn resolve_parameter(parameter: &Parameter, state: &InterpreterState, indirect: bool) -> String {
@@ -2996,6 +3418,247 @@ fn expand_simple_dollar_vars(s: &str, state: &InterpreterState) -> String {
     result
 }
 
+fn vectorized_parameter_words(
+    parameter: &Parameter,
+    state: &InterpreterState,
+    in_dq: bool,
+) -> Option<Vec<String>> {
+    let (values, concatenate) = get_vectorized_values(parameter, state, false)?;
+    if values.is_empty() {
+        return Some(Vec::new());
+    }
+    if !concatenate {
+        return Some(values);
+    }
+
+    let ifs_val = get_var(state, "IFS");
+    let ifs_empty = matches!(&ifs_val, Some(s) if s.is_empty());
+    if !in_dq && ifs_empty {
+        return Some(values);
+    }
+
+    let sep = match ifs_val {
+        Some(s) => s.chars().next().map(|c| c.to_string()).unwrap_or_default(),
+        None => " ".to_string(),
+    };
+    Some(vec![values.join(&sep)])
+}
+
+fn should_use_default_for_words(test_type: &ParameterTestType, words: &[String]) -> bool {
+    match test_type {
+        ParameterTestType::Unset => words.is_empty(),
+        ParameterTestType::UnsetOrNull => {
+            words.is_empty() || (words.len() == 1 && words[0].is_empty())
+        }
+    }
+}
+
+fn should_use_default_for_indirect_words(
+    target: &Parameter,
+    test_type: &ParameterTestType,
+    words: &[String],
+) -> bool {
+    if matches!(target, Parameter::NamedWithAllIndices { .. }) {
+        return words.is_empty();
+    }
+    should_use_default_for_words(test_type, words)
+}
+
+fn parse_indirect_target_parameter(target: &str) -> Option<Parameter> {
+    if target.is_empty() {
+        return None;
+    }
+
+    if let Some((name, raw_index)) = target
+        .strip_suffix(']')
+        .and_then(|prefix| prefix.split_once('['))
+    {
+        if raw_index == "@" || raw_index == "*" {
+            return Some(Parameter::NamedWithAllIndices {
+                name: name.to_string(),
+                concatenate: raw_index == "*",
+            });
+        }
+        return Some(Parameter::NamedWithIndex {
+            name: name.to_string(),
+            index: raw_index.to_string(),
+        });
+    }
+
+    if let Ok(n) = target.parse::<u32>() {
+        return Some(Parameter::Positional(n));
+    }
+
+    match target {
+        "@" => Some(Parameter::Special(
+            SpecialParameter::AllPositionalParameters { concatenate: false },
+        )),
+        "*" => Some(Parameter::Special(
+            SpecialParameter::AllPositionalParameters { concatenate: true },
+        )),
+        "#" => Some(Parameter::Special(
+            SpecialParameter::PositionalParameterCount,
+        )),
+        "?" => Some(Parameter::Special(SpecialParameter::LastExitStatus)),
+        "-" => Some(Parameter::Special(SpecialParameter::CurrentOptionFlags)),
+        "$" => Some(Parameter::Special(SpecialParameter::ProcessId)),
+        "!" => Some(Parameter::Special(
+            SpecialParameter::LastBackgroundProcessId,
+        )),
+        "0" => Some(Parameter::Special(SpecialParameter::ShellName)),
+        _ => Some(Parameter::Named(target.to_string())),
+    }
+}
+
+fn should_use_default_for_parameter(
+    parameter: &Parameter,
+    indirect: bool,
+    val: &str,
+    test_type: &ParameterTestType,
+    state: &InterpreterState,
+    in_dq: bool,
+) -> bool {
+    if indirect {
+        let target_name = resolve_parameter(parameter, state, false);
+        if let Some(target_param) = parse_indirect_target_parameter(&target_name) {
+            if let Some(words) = vectorized_parameter_words(&target_param, state, in_dq) {
+                return should_use_default_for_indirect_words(&target_param, test_type, &words);
+            }
+            return should_use_default(val, test_type, state, &target_param);
+        }
+        return true;
+    }
+
+    if let Some(words) = vectorized_parameter_words(parameter, state, in_dq) {
+        should_use_default_for_words(test_type, &words)
+    } else {
+        should_use_default(val, test_type, state, parameter)
+    }
+}
+
+fn should_use_default_for_parameter_mut(
+    parameter: &Parameter,
+    indirect: bool,
+    val: &str,
+    test_type: &ParameterTestType,
+    state: &mut InterpreterState,
+    in_dq: bool,
+) -> Result<bool, RustBashError> {
+    if indirect {
+        let target_name = resolve_parameter_maybe_mut(parameter, state, false)?;
+        if let Some(target_param) = parse_indirect_target_parameter(&target_name) {
+            if let Some(words) = vectorized_parameter_words(&target_param, state, in_dq) {
+                return Ok(should_use_default_for_indirect_words(
+                    &target_param,
+                    test_type,
+                    &words,
+                ));
+            }
+            return Ok(should_use_default(val, test_type, state, &target_param));
+        }
+        return Ok(true);
+    }
+
+    if let Some(words) = vectorized_parameter_words(parameter, state, in_dq) {
+        Ok(should_use_default_for_words(test_type, &words))
+    } else {
+        Ok(should_use_default(val, test_type, state, parameter))
+    }
+}
+
+fn push_expanded_parameter_value(
+    parameter: &Parameter,
+    indirect: bool,
+    val: &str,
+    words: &mut Vec<WordInProgress>,
+    state: &InterpreterState,
+    in_dq: bool,
+) {
+    if !indirect && let Some((values, concatenate)) = get_vectorized_values(parameter, state, false)
+    {
+        push_vectorized(values, concatenate, words, state, in_dq);
+    } else {
+        push_segment(words, val, in_dq, in_dq);
+    }
+}
+
+fn resolve_array_assignment_index(
+    name: &str,
+    index_expr: &str,
+    state: &mut InterpreterState,
+) -> Result<usize, RustBashError> {
+    let expanded = expand_arith_expression(index_expr, state)?;
+    let idx = crate::interpreter::arithmetic::eval_arithmetic(&expanded, state)?;
+    if idx >= 0 {
+        return Ok(idx as usize);
+    }
+
+    let resolved_name = crate::interpreter::resolve_nameref_or_self(name, state);
+    let max_key = state.env.get(&resolved_name).and_then(|v| match &v.value {
+        crate::interpreter::VariableValue::IndexedArray(map) => map.keys().next_back().copied(),
+        crate::interpreter::VariableValue::Scalar(_) => Some(0),
+        _ => None,
+    });
+
+    match max_key {
+        Some(mk) => {
+            let resolved = mk as i64 + 1 + idx;
+            if resolved < 0 {
+                Err(RustBashError::Execution(format!(
+                    "{name}: bad array subscript"
+                )))
+            } else {
+                Ok(resolved as usize)
+            }
+        }
+        None => Err(RustBashError::Execution(format!(
+            "{name}: bad array subscript"
+        ))),
+    }
+}
+
+fn assign_default_to_parameter(
+    parameter: &Parameter,
+    indirect: bool,
+    value: &str,
+    state: &mut InterpreterState,
+) -> Result<(), RustBashError> {
+    if indirect {
+        let target_name = resolve_parameter_maybe_mut(parameter, state, false)?;
+        if !target_name.is_empty() {
+            set_variable(state, &target_name, value.to_string())?;
+        }
+        return Ok(());
+    }
+
+    match parameter {
+        Parameter::Named(name) => set_variable(state, name, value.to_string())?,
+        Parameter::NamedWithIndex { name, index } => {
+            let resolved_name = crate::interpreter::resolve_nameref_or_self(name, state);
+            let is_assoc = state.env.get(&resolved_name).is_some_and(|var| {
+                matches!(
+                    var.value,
+                    crate::interpreter::VariableValue::AssociativeArray(_)
+                )
+            });
+            if is_assoc {
+                let key = strip_quotes(&expand_arith_expression(index, state)?);
+                set_assoc_element(state, &resolved_name, key, value.to_string())?;
+            } else {
+                let idx = resolve_array_assignment_index(&resolved_name, index, state)?;
+                crate::interpreter::set_array_element(
+                    state,
+                    &resolved_name,
+                    idx,
+                    value.to_string(),
+                )?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn should_use_default(
     val: &str,
     test_type: &ParameterTestType,
@@ -3005,25 +3668,6 @@ fn should_use_default(
     match test_type {
         ParameterTestType::UnsetOrNull => val.is_empty() || is_unset(state, parameter),
         ParameterTestType::Unset => is_unset(state, parameter),
-    }
-}
-
-/// For indirect expansion (`${!ref-default}`), check whether the *indirect target*
-/// is unset/null rather than the original parameter.
-fn should_use_indirect_default(
-    val: &str,
-    target_name: &str,
-    test_type: &ParameterTestType,
-    state: &InterpreterState,
-) -> bool {
-    if target_name.is_empty() {
-        // The reference variable itself is unset → target is unset
-        return true;
-    }
-    let is_target_unset = is_unset(state, &Parameter::Named(target_name.to_string()));
-    match test_type {
-        ParameterTestType::UnsetOrNull => val.is_empty() || is_target_unset,
-        ParameterTestType::Unset => is_target_unset,
     }
 }
 
@@ -3070,6 +3714,7 @@ fn is_unset(state: &InterpreterState, parameter: &Parameter) -> bool {
                     use crate::interpreter::VariableValue;
                     match &var.value {
                         VariableValue::IndexedArray(map) => !map.contains_key(&0),
+                        VariableValue::AssociativeArray(_) => false,
                         _ => false,
                     }
                 }
@@ -3131,6 +3776,98 @@ fn is_unset(state: &InterpreterState, parameter: &Parameter) -> bool {
     }
 }
 
+fn parameter_variable_exists(
+    parameter: &Parameter,
+    indirect: bool,
+    state: &InterpreterState,
+) -> bool {
+    if indirect {
+        let target = resolve_parameter(parameter, state, false);
+        if let Some(target_param) = parse_indirect_target_parameter(&target) {
+            return parameter_variable_exists(&target_param, false, state);
+        }
+        return false;
+    }
+
+    match parameter {
+        Parameter::Named(name)
+        | Parameter::NamedWithIndex { name, .. }
+        | Parameter::NamedWithAllIndices { name, .. } => {
+            let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
+            state.env.contains_key(&resolved)
+        }
+        Parameter::Positional(n) => {
+            if *n == 0 {
+                true
+            } else {
+                state.positional_params.get(*n as usize - 1).is_some()
+            }
+        }
+        Parameter::Special(_) => true,
+    }
+}
+
+fn parameter_is_associative_array(
+    parameter: &Parameter,
+    indirect: bool,
+    state: &InterpreterState,
+) -> bool {
+    if indirect {
+        let target = resolve_parameter(parameter, state, false);
+        if let Some(target_param) = parse_indirect_target_parameter(&target) {
+            return parameter_is_associative_array(&target_param, false, state);
+        }
+        return false;
+    }
+
+    match parameter {
+        Parameter::Named(name)
+        | Parameter::NamedWithIndex { name, .. }
+        | Parameter::NamedWithAllIndices { name, .. } => {
+            let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
+            state.env.get(&resolved).is_some_and(|var| {
+                matches!(
+                    var.value,
+                    crate::interpreter::VariableValue::AssociativeArray(_)
+                )
+            })
+        }
+        _ => false,
+    }
+}
+
+fn parameter_scalar_is_unset(
+    parameter: &Parameter,
+    indirect: bool,
+    state: &InterpreterState,
+) -> bool {
+    if indirect {
+        let target = resolve_parameter(parameter, state, false);
+        if let Some(target_param) = parse_indirect_target_parameter(&target) {
+            return parameter_scalar_is_unset(&target_param, false, state);
+        }
+        return true;
+    }
+    if let Parameter::Named(name) = parameter {
+        if is_dynamic_special(name) {
+            return false;
+        }
+        let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
+        if let Some(var) = state.env.get(&resolved) {
+            if var
+                .attrs
+                .contains(crate::interpreter::VariableAttrs::DECLARED_ONLY)
+            {
+                return true;
+            }
+            if let crate::interpreter::VariableValue::AssociativeArray(map) = &var.value {
+                return !map.contains_key("0");
+            }
+        }
+    }
+    is_unset(state, parameter)
+}
+
 fn parameter_name(parameter: &Parameter) -> String {
     match parameter {
         Parameter::Named(name) => name.clone(),
@@ -3152,6 +3889,45 @@ fn parameter_name(parameter: &Parameter) -> String {
         },
         Parameter::NamedWithIndex { name, index } => format!("{name}[{index}]"),
         Parameter::NamedWithAllIndices { name, .. } => name.clone(),
+    }
+}
+
+fn transform_target_name(
+    parameter: &Parameter,
+    indirect: bool,
+    state: &InterpreterState,
+) -> Option<String> {
+    if indirect {
+        let target = resolve_parameter(parameter, state, false);
+        return transform_target_name_from_str(&target);
+    }
+
+    match parameter {
+        Parameter::Named(name)
+        | Parameter::NamedWithIndex { name, .. }
+        | Parameter::NamedWithAllIndices { name, .. } => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn transform_target_name_from_str(target: &str) -> Option<String> {
+    if target.is_empty() {
+        return None;
+    }
+    if let Some((name, _)) = target
+        .strip_suffix(']')
+        .and_then(|prefix| prefix.split_once('['))
+    {
+        return Some(name.to_string());
+    }
+    if target
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !target.starts_with(|c: char| c.is_ascii_digit())
+    {
+        Some(target.to_string())
+    } else {
+        None
     }
 }
 
@@ -3249,6 +4025,21 @@ fn expand_raw_into_words(
     Ok(())
 }
 
+fn expand_raw_into_words_mut(
+    raw: &str,
+    words: &mut Vec<WordInProgress>,
+    state: &mut InterpreterState,
+    in_dq: bool,
+) -> Result<(), RustBashError> {
+    let options = parser_options();
+    let pieces = brush_parser::word::parse(raw, &options)
+        .map_err(|e| RustBashError::Parse(e.to_string()))?;
+    for piece_ws in &pieces {
+        expand_default_piece_mut(&piece_ws.piece, words, state, in_dq)?;
+    }
+    Ok(())
+}
+
 /// Expand a word piece in default/alternative value context.
 ///
 /// When not in double-quote context, literal `Text` pieces are pushed as
@@ -3299,6 +4090,42 @@ fn expand_default_piece(
     expand_word_piece(piece, words, state, false)
 }
 
+fn expand_default_piece_mut(
+    piece: &WordPiece,
+    words: &mut Vec<WordInProgress>,
+    state: &mut InterpreterState,
+    in_dq: bool,
+) -> Result<bool, RustBashError> {
+    if in_dq {
+        if let WordPiece::SingleQuotedText(s) = piece {
+            push_segment(words, "'", true, true);
+            let options = parser_options();
+            if let Ok(inner_pieces) = brush_parser::word::parse(s, &options) {
+                for inner in &inner_pieces {
+                    expand_word_piece_mut(&inner.piece, words, state, true)?;
+                }
+            } else {
+                push_segment(words, s, true, true);
+            }
+            push_segment(words, "'", true, true);
+            return Ok(false);
+        }
+        if let WordPiece::EscapeSequence(s) = piece
+            && let Some(c) = s.strip_prefix('\\')
+            && c == "}"
+        {
+            push_segment(words, c, true, true);
+            return Ok(false);
+        }
+        return expand_word_piece_mut(piece, words, state, true);
+    }
+    if let WordPiece::Text(s) = piece {
+        push_segment(words, s, false, false);
+        return Ok(false);
+    }
+    expand_word_piece_mut(piece, words, state, false)
+}
+
 /// Expand a pattern string from a strip/replace operator, processing quotes.
 ///
 /// Single quotes, double quotes, and ANSI-C quotes within patterns are
@@ -3310,9 +4137,19 @@ fn expand_default_piece(
 fn expand_pattern_string(pat: &str, state: &InterpreterState) -> Result<String, RustBashError> {
     let mut result = String::new();
     let mut chars = pat.chars().peekable();
+    let mut at_word_start = true;
 
     while let Some(c) = chars.next() {
         match c {
+            '~' if at_word_start => {
+                let home = get_var(state, "HOME").unwrap_or_default();
+                if home.is_empty() {
+                    result.push('~');
+                } else {
+                    result.push_str(&home);
+                }
+                at_word_start = false;
+            }
             '\\' => {
                 // Backslash escape: for quote characters (' and "), consume the
                 // backslash to prevent entering quote mode. For all other
@@ -3333,6 +4170,7 @@ fn expand_pattern_string(pat: &str, state: &InterpreterState) -> Result<String, 
                 } else {
                     result.push('\\');
                 }
+                at_word_start = false;
             }
             '\'' => {
                 // Single quote: take content literally, escape glob chars
@@ -3345,6 +4183,7 @@ fn expand_pattern_string(pat: &str, state: &InterpreterState) -> Result<String, 
                     }
                     result.push(ch);
                 }
+                at_word_start = false;
             }
             '$' if chars.peek() == Some(&'\'') => {
                 // ANSI-C quote $'...' — escape glob chars in result
@@ -3390,6 +4229,7 @@ fn expand_pattern_string(pat: &str, state: &InterpreterState) -> Result<String, 
                         result.push(ch);
                     }
                 }
+                at_word_start = false;
             }
             '"' => {
                 // Double quote: expand variables inside, remove quote delimiters.
@@ -3419,9 +4259,19 @@ fn expand_pattern_string(pat: &str, state: &InterpreterState) -> Result<String, 
                     }
                     result.push(ch);
                 }
+                at_word_start = false;
+            }
+            '$' => {
+                if let Some(expanded) = expand_simple_parameter_reference(&mut chars, state) {
+                    result.push_str(&expanded);
+                } else {
+                    result.push('$');
+                }
+                at_word_start = false;
             }
             _ => {
                 result.push(c);
+                at_word_start = false;
             }
         }
     }
@@ -3441,6 +4291,16 @@ fn expand_replacement_string(
 
     while let Some(c) = chars.next() {
         match c {
+            '\\' => {
+                if let Some(&next) = chars.peek()
+                    && matches!(next, '/' | '\\')
+                {
+                    result.push(next);
+                    chars.next();
+                } else {
+                    result.push('\\');
+                }
+            }
             '\'' => {
                 for ch in chars.by_ref() {
                     if ch == '\'' {
@@ -3501,12 +4361,81 @@ fn expand_replacement_string(
                 let expanded = expand_raw_string_ctx(&inner, state, true)?;
                 result.push_str(&expanded);
             }
+            '$' => {
+                if let Some(expanded) = expand_simple_parameter_reference(&mut chars, state) {
+                    result.push_str(&expanded);
+                } else {
+                    result.push('$');
+                }
+            }
             _ => {
                 result.push(c);
             }
         }
     }
     Ok(result)
+}
+
+fn expand_simple_parameter_reference(
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    state: &InterpreterState,
+) -> Option<String> {
+    if chars.peek() == Some(&'{') {
+        chars.next();
+        let mut name = String::new();
+        for ch in chars.by_ref() {
+            if ch == '}' {
+                break;
+            }
+            name.push(ch);
+        }
+        return Some(resolve_pattern_var(&name, state));
+    }
+
+    let mut name = String::new();
+    while let Some(&ch) = chars.peek() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            chars.next();
+            name.push(ch);
+        } else {
+            break;
+        }
+    }
+
+    if name.is_empty() {
+        None
+    } else {
+        Some(resolve_pattern_var(&name, state))
+    }
+}
+
+fn resolve_pattern_var(name: &str, state: &InterpreterState) -> String {
+    let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
+    state
+        .env
+        .get(&resolved)
+        .map(|v| v.value.as_scalar().to_string())
+        .unwrap_or_default()
+}
+
+fn normalize_patsub_slashes<'a>(
+    pattern: &'a str,
+    replacement: Option<&'a str>,
+) -> (&'a str, Option<&'a str>) {
+    if pattern.is_empty()
+        && let Some(repl) = replacement
+        && let Some(stripped) = repl.strip_prefix('/')
+    {
+        return ("/", Some(stripped));
+    }
+    (pattern, replacement)
+}
+
+fn is_byte_locale(state: &InterpreterState) -> bool {
+    matches!(
+        get_var(state, "LC_ALL").as_deref(),
+        Some("C") | Some("POSIX")
+    )
 }
 /// This handles cases like `$((${zero}11))` where `zero=0` should yield `011`.
 pub(crate) fn expand_arith_expression(
@@ -3588,6 +4517,7 @@ mod tests {
             proc_sub_prealloc: HashMap::new(),
             pipe_stdin_bytes: None,
             pending_cmdsub_stderr: String::new(),
+            fatal_expansion_error: false,
         }
     }
 
