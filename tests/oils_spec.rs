@@ -168,6 +168,10 @@ fn execute_oils_case(case: &OilsTestCase) -> Option<String> {
             "/repo/spec/testdata/echo.sz".into(),
             b"echo sz\n".to_vec(),
         ),
+        (
+            "/repo/spec/testdata/utf8-chars.txt".into(),
+            "aaμa€a𐍈".as_bytes().to_vec(),
+        ),
     ]));
 
     let mut sh = match builder.build() {

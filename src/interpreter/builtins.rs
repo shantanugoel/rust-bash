@@ -928,16 +928,14 @@ fn builtin_export(
         }
 
         if let Some((name, value)) = arg.split_once("+=") {
-            // export name+=value — append
-            let current = state
-                .env
-                .get(name)
-                .map(|v| v.value.as_scalar().to_string())
-                .unwrap_or_default();
-            let new_val = format!("{current}{value}");
-            set_variable(state, name, new_val)?;
-            if let Some(var) = state.env.get_mut(name) {
-                var.attrs.insert(VariableAttrs::EXPORTED);
+            match declare_append_value(state, name, value, VariableAttrs::EXPORTED, false, false) {
+                Ok(()) => {}
+                Err(RustBashError::Execution(msg)) => {
+                    stderr.push_str(&format!("rust-bash: {msg}\n"));
+                    exit_code = 1;
+                    continue;
+                }
+                Err(other) => return Err(other),
             }
         } else if let Some((name, value)) = arg.split_once('=') {
             set_variable(state, name, value.to_string())?;
@@ -1460,19 +1458,14 @@ fn builtin_readonly(
             continue;
         }
         if let Some((name, value)) = arg.split_once("+=") {
-            let current = state
-                .env
-                .get(name)
-                .map(|v| v.value.as_scalar().to_string())
-                .unwrap_or_default();
-            let new_val = format!("{current}{value}");
-            if let Err(e) = set_variable(state, name, new_val) {
-                stderr.push_str(&format!("{e}\n"));
-                exit_code = 1;
-                continue;
-            }
-            if let Some(var) = state.env.get_mut(name) {
-                var.attrs.insert(VariableAttrs::READONLY);
+            match declare_append_value(state, name, value, VariableAttrs::READONLY, false, false) {
+                Ok(()) => {}
+                Err(RustBashError::Execution(msg)) => {
+                    stderr.push_str(&format!("rust-bash: {msg}\n"));
+                    exit_code = 1;
+                    continue;
+                }
+                Err(other) => return Err(other),
             }
         } else if let Some((name, value)) = arg.split_once('=') {
             if let Err(e) = set_variable(state, name, value.to_string()) {
@@ -2086,15 +2079,31 @@ fn declare_append_value(
         }
     } else {
         // Scalar append
-        let current = state
-            .env
-            .get(name)
-            .map(|v| v.value.as_scalar().to_string())
-            .unwrap_or_default();
-        let new_val = format!("{current}{value}");
-        set_variable(state, name, new_val)?;
-        if let Some(var) = state.env.get_mut(name) {
-            var.attrs.insert(flag_attrs);
+        match state.env.get(name).map(|var| &var.value) {
+            Some(VariableValue::IndexedArray(map)) => {
+                let current = map.get(&0).cloned().unwrap_or_default();
+                crate::interpreter::set_array_element(state, name, 0, format!("{current}{value}"))?;
+                if let Some(var) = state.env.get_mut(name) {
+                    var.attrs.insert(flag_attrs);
+                }
+            }
+            Some(VariableValue::AssociativeArray(_)) => {
+                return Err(RustBashError::Execution(format!(
+                    "{name}: cannot append scalar to associative array"
+                )));
+            }
+            _ => {
+                let current = state
+                    .env
+                    .get(name)
+                    .map(|v| v.value.as_scalar().to_string())
+                    .unwrap_or_default();
+                let new_val = format!("{current}{value}");
+                set_variable(state, name, new_val)?;
+                if let Some(var) = state.env.get_mut(name) {
+                    var.attrs.insert(flag_attrs);
+                }
+            }
         }
     }
     Ok(())
@@ -3123,9 +3132,16 @@ fn get_shopt(state: &InterpreterState, name: &str) -> Option<bool> {
         "promptvars" => Some(o.promptvars),
         "shift_verbose" => Some(o.shift_verbose),
         "sourcepath" => Some(o.sourcepath),
+        "strict_arg_parse" => Some(o.strict_arg_parse),
+        "strict_argv" => Some(o.strict_argv),
+        "strict_array" => Some(o.strict_array),
         "strict_arith" => Some(o.strict_arith),
         "varredir_close" => Some(o.varredir_close),
         "xpg_echo" => Some(o.xpg_echo),
+        "strict:all" => {
+            Some(o.strict_arg_parse && o.strict_argv && o.strict_array && o.strict_arith)
+        }
+        "ysh:all" => Some(false),
         _ => None,
     }
 }
@@ -3179,9 +3195,19 @@ fn set_shopt(state: &mut InterpreterState, name: &str, value: bool) -> bool {
         "promptvars" => o.promptvars = value,
         "shift_verbose" => o.shift_verbose = value,
         "sourcepath" => o.sourcepath = value,
+        "strict_arg_parse" => o.strict_arg_parse = value,
+        "strict_argv" => o.strict_argv = value,
+        "strict_array" => o.strict_array = value,
         "strict_arith" => o.strict_arith = value,
         "varredir_close" => o.varredir_close = value,
         "xpg_echo" => o.xpg_echo = value,
+        "strict:all" => {
+            o.strict_arg_parse = value;
+            o.strict_argv = value;
+            o.strict_array = value;
+            o.strict_arith = value;
+        }
+        "ysh:all" => {}
         _ => return false,
     }
     true

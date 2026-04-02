@@ -178,7 +178,8 @@ fn expand_assignment_like_tilde_bug(word: &str, state: &InterpreterState) -> Str
 
 fn rewrite_special_case_word_syntax(word: &str, state: &InterpreterState) -> String {
     let rewritten = word.replace("///}", "//\\//}");
-    rewrite_assoc_indirect_attr_special_cases(&rewritten, state)
+    let rewritten = rewrite_assoc_indirect_attr_special_cases(&rewritten, state);
+    rewrite_ambiguous_substring_ternaries(&rewritten)
 }
 
 fn rewrite_assoc_indirect_attr_special_cases(word: &str, state: &InterpreterState) -> String {
@@ -223,6 +224,83 @@ fn rewrite_assoc_indirect_attr_special_cases(word: &str, state: &InterpreterStat
     }
     out.push_str(&word[i..]);
     out
+}
+
+fn rewrite_ambiguous_substring_ternaries(word: &str) -> String {
+    let mut out = String::with_capacity(word.len());
+    let mut i = 0usize;
+
+    while let Some(rel_start) = word[i..].find("${") {
+        let start = i + rel_start;
+        out.push_str(&word[i..start]);
+
+        let Some((body, end)) = take_parameter_body(word, start + 2) else {
+            out.push_str(&word[start..]);
+            return out;
+        };
+
+        out.push_str("${");
+        out.push_str(&rewrite_parameter_body_ambiguous_slice(body));
+        out.push('}');
+        i = end + 1;
+    }
+
+    out.push_str(&word[i..]);
+    out
+}
+
+fn take_parameter_body(word: &str, start: usize) -> Option<(&str, usize)> {
+    let bytes = word.as_bytes();
+    let mut depth = 1usize;
+    let mut i = start;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((&word[start..i], i));
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn rewrite_parameter_body_ambiguous_slice(body: &str) -> String {
+    let bytes = body.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+        i += 1;
+    }
+    if i == 0 || i >= bytes.len() || bytes[i] != b':' {
+        return body.to_string();
+    }
+
+    let mut bracket_depth = 0usize;
+    let mut colon_positions = Vec::new();
+    let mut question_seen = false;
+    for (offset, ch) in body[i + 1..].char_indices() {
+        match ch {
+            '[' => bracket_depth += 1,
+            ']' if bracket_depth > 0 => bracket_depth -= 1,
+            '?' if bracket_depth == 0 => question_seen = true,
+            ':' if bracket_depth == 0 => colon_positions.push(i + 1 + offset),
+            _ => {}
+        }
+    }
+
+    if !question_seen || colon_positions.len() < 2 {
+        return body.to_string();
+    }
+
+    let split = *colon_positions.last().unwrap();
+    let param = &body[..i];
+    let offset_expr = &body[i + 1..split];
+    let length_expr = &body[split + 1..];
+    format!("{param}:$(({offset_expr})):{}", length_expr.trim_start())
 }
 
 fn is_assignment_like_name(name: &str) -> bool {
@@ -364,7 +442,7 @@ fn execute_command_substitution(
     state.counters.output_size = sub_state.counters.output_size;
     state.counters.substitution_depth -= 1;
 
-    let result = result?;
+    let mut result = result?;
 
     // $? reflects the exit code of the substituted command
     state.last_exit_code = result.exit_code;
@@ -375,8 +453,15 @@ fn execute_command_substitution(
         state.pending_cmdsub_stderr.push_str(&result.stderr);
     }
 
-    // Strip trailing newlines from captured stdout
-    let mut output = result.stdout;
+    // Strip trailing newlines from captured stdout.
+    // When a command produced binary output, decode it lossily so command
+    // substitution still preserves the visible text portion instead of
+    // collapsing to the empty string.
+    let mut output = if let Some(bytes) = result.stdout_bytes.take() {
+        crate::shell_bytes::decode_shell_bytes(&bytes)
+    } else {
+        result.stdout
+    };
     let trimmed_len = output.trim_end_matches('\n').len();
     output.truncate(trimmed_len);
 
@@ -574,6 +659,7 @@ fn expand_parameter(
             parameter,
             indirect,
         } => {
+            check_nounset(parameter, state)?;
             // ${#arr[@]} and ${#arr[*]} return element count
             match parameter {
                 Parameter::Special(SpecialParameter::AllPositionalParameters {
@@ -592,7 +678,7 @@ fn expand_parameter(
                 }
                 _ => {
                     let val = resolve_parameter(parameter, state, *indirect);
-                    push_segment(words, &val.len().to_string(), in_dq, in_dq);
+                    push_segment(words, &string_length(&val, state).to_string(), in_dq, in_dq);
                 }
             }
         }
@@ -2026,7 +2112,7 @@ fn expand_escape_sequences(val: &str) -> String {
                         result.push('\\');
                         result.push('x');
                     } else if let Ok(n) = u32::from_str_radix(&hex, 16)
-                        && let Some(c) = char::from_u32(n)
+                        && let Some(c) = shell_char_from_byte_escape(n)
                     {
                         result.push(c);
                     }
@@ -2080,8 +2166,18 @@ fn expand_escape_sequences(val: &str) -> String {
                         val_octal = val_octal * 8 + chars[i].to_digit(8).unwrap_or(0);
                         count += 1;
                     }
-                    if let Some(c) = char::from_u32(val_octal) {
+                    if let Some(c) = shell_char_from_byte_escape(val_octal) {
                         result.push(c);
+                    }
+                }
+                'c' => {
+                    if i + 1 < chars.len() {
+                        i += 1;
+                        let ctrl = ((chars[i] as u32) & 0x1f) as u8;
+                        result.push(ctrl as char);
+                    } else {
+                        result.push('\\');
+                        result.push('c');
                     }
                 }
                 other => {
@@ -2095,6 +2191,18 @@ fn expand_escape_sequences(val: &str) -> String {
         i += 1;
     }
     result
+}
+
+fn shell_char_from_byte_escape(value: u32) -> Option<char> {
+    if value <= 0x7f {
+        char::from_u32(value)
+    } else if value <= 0xff {
+        crate::shell_bytes::decode_shell_bytes(&[value as u8])
+            .chars()
+            .next()
+    } else {
+        char::from_u32(value)
+    }
 }
 
 /// Expand prompt escape sequences (@P).
@@ -2457,6 +2565,11 @@ fn validate_length_transform_syntax(word: &str) -> Result<(), RustBashError> {
                         "${{#{inner}}}: bad substitution"
                     )));
                 }
+                if length_inner_has_test_operator(inner_bytes) {
+                    return Err(RustBashError::Execution(format!(
+                        "${{#{inner}}}: bad substitution"
+                    )));
+                }
                 i = j + 1;
                 continue;
             }
@@ -2464,6 +2577,35 @@ fn validate_length_transform_syntax(word: &str) -> Result<(), RustBashError> {
         i += 1;
     }
     Ok(())
+}
+
+fn length_inner_has_test_operator(inner: &[u8]) -> bool {
+    let mut i = 0usize;
+    while i < inner.len() && (inner[i].is_ascii_alphanumeric() || inner[i] == b'_') {
+        i += 1;
+    }
+    if i == 0 {
+        return false;
+    }
+
+    if i < inner.len() && inner[i] == b'[' {
+        let mut depth = 1usize;
+        i += 1;
+        while i < inner.len() && depth > 0 {
+            match inner[i] {
+                b'[' => depth += 1,
+                b']' => depth -= 1,
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+
+    matches!(
+        inner.get(i..),
+        Some([b':', b'-', ..] | [b':', b'=', ..] | [b':', b'?', ..] | [b':', b'+', ..])
+            | Some([b'-', ..] | [b'=', ..] | [b'?', ..] | [b'+', ..])
+    )
 }
 
 fn validate_indirect_reference(
@@ -2666,6 +2808,9 @@ fn strip_quotes(s: &str) -> String {
 
 /// Resolve `${arr[index]}` — look up a specific element of an array variable.
 fn resolve_array_element(name: &str, index: &str, state: &InterpreterState) -> String {
+    if index.trim().is_empty() {
+        return String::new();
+    }
     // Handle call-stack pseudo-arrays before checking env.
     if let Some(val) = resolve_call_stack_element(name, index, state) {
         return val;
@@ -2715,6 +2860,11 @@ fn resolve_array_element_mut(
     index: &str,
     state: &mut InterpreterState,
 ) -> Result<String, RustBashError> {
+    if index.trim().is_empty() {
+        return Err(RustBashError::Execution(format!(
+            "{name}: bad array subscript"
+        )));
+    }
     // Handle call-stack pseudo-arrays before checking env.
     if let Some(val) = resolve_call_stack_element(name, index, state) {
         return Ok(val);
@@ -4151,22 +4301,15 @@ fn expand_pattern_string(pat: &str, state: &InterpreterState) -> Result<String, 
                 at_word_start = false;
             }
             '\\' => {
-                // Backslash escape: for quote characters (' and "), consume the
-                // backslash to prevent entering quote mode. For all other
-                // characters, pass backslash through to the glob engine.
-                // NOTE: `\\'...'` (escaped backslash before quoted string) is
-                // not handled — the second `\` would consume the quote. This is
-                // extremely rare in practice and the parser typically resolves
-                // `\\` before it reaches this function.
                 if let Some(&next) = chars.peek() {
-                    if next == '\'' || next == '"' {
-                        chars.next();
-                        // Push the character bare (not a glob metachar)
-                        result.push(next);
-                    } else {
-                        // Pass backslash through for the glob engine
+                    chars.next();
+                    if matches!(
+                        next,
+                        '?' | '*' | '[' | ']' | '\\' | '(' | ')' | '|' | '!' | '+' | '@'
+                    ) {
                         result.push('\\');
                     }
+                    result.push(next);
                 } else {
                     result.push('\\');
                 }
@@ -4437,6 +4580,15 @@ fn is_byte_locale(state: &InterpreterState) -> bool {
         Some("C") | Some("POSIX")
     )
 }
+
+fn string_length(val: &str, state: &InterpreterState) -> usize {
+    if is_byte_locale(state) {
+        val.len()
+    } else {
+        val.chars().count()
+    }
+}
+
 /// This handles cases like `$((${zero}11))` where `zero=0` should yield `011`.
 pub(crate) fn expand_arith_expression(
     expr: &str,

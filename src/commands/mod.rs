@@ -199,12 +199,17 @@ impl VirtualCommand for EchoCommand {
         } else {
             format!("{output}\n")
         };
+        let stdout_bytes = if crate::shell_bytes::contains_markers(&stdout) {
+            Some(crate::shell_bytes::encode_shell_string(&stdout))
+        } else {
+            None
+        };
 
         CommandResult {
             stdout,
             stderr: String::new(),
             exit_code: 0,
-            stdout_bytes: None,
+            stdout_bytes,
         }
     }
 }
@@ -403,14 +408,19 @@ impl VirtualCommand for CatCommand {
         }
 
         let mut output = String::new();
+        let mut output_bytes = Vec::new();
         let mut stderr = String::new();
         let mut exit_code = 0;
 
         for file in &files {
-            let content = if *file == "-" || *file == "/dev/stdin" {
-                ctx.stdin.to_string()
+            let (content, raw_bytes) = if *file == "-" || *file == "/dev/stdin" {
+                let bytes = ctx
+                    .stdin_bytes
+                    .map(|b| b.to_vec())
+                    .unwrap_or_else(|| crate::shell_bytes::encode_shell_string(ctx.stdin));
+                (crate::shell_bytes::decode_shell_bytes(&bytes), bytes)
             } else if *file == "/dev/null" || *file == "/dev/zero" || *file == "/dev/full" {
-                String::new()
+                (String::new(), Vec::new())
             } else {
                 let path = if file.starts_with('/') {
                     std::path::PathBuf::from(file)
@@ -418,7 +428,7 @@ impl VirtualCommand for CatCommand {
                     std::path::PathBuf::from(ctx.cwd).join(file)
                 };
                 match ctx.fs.read_file(&path) {
-                    Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
+                    Ok(bytes) => (crate::shell_bytes::decode_shell_bytes(&bytes), bytes),
                     Err(e) => {
                         stderr.push_str(&format!("cat: {file}: {e}\n"));
                         exit_code = 1;
@@ -443,13 +453,19 @@ impl VirtualCommand for CatCommand {
             } else {
                 output.push_str(&content);
             }
+            output_bytes.extend_from_slice(&raw_bytes);
         }
 
+        let has_marker_output = crate::shell_bytes::contains_markers(&output);
         CommandResult {
             stdout: output,
             stderr,
             exit_code,
-            stdout_bytes: None,
+            stdout_bytes: if number_lines || !has_marker_output {
+                None
+            } else {
+                Some(output_bytes)
+            },
         }
     }
 }
@@ -796,6 +812,27 @@ fn ls_dir(
     let entries = match ctx.fs.readdir(path) {
         Ok(e) => e,
         Err(e) => {
+            if let Ok(meta) = ctx.fs.stat(path)
+                && meta.node_type != crate::vfs::NodeType::Directory
+            {
+                if opts.long_format {
+                    let type_char = match meta.node_type {
+                        crate::vfs::NodeType::Directory => 'd',
+                        crate::vfs::NodeType::Symlink => 'l',
+                        crate::vfs::NodeType::File => '-',
+                    };
+                    out.stdout.push_str(&format!(
+                        "{}{} {}\n",
+                        type_char,
+                        format_mode(meta.mode),
+                        display_name
+                    ));
+                } else {
+                    out.stdout.push_str(display_name);
+                    out.stdout.push('\n');
+                }
+                return;
+            }
             out.stderr
                 .push_str(&format!("ls: cannot access '{}': {}\n", display_name, e));
             out.exit_code = 2;

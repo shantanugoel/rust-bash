@@ -208,6 +208,9 @@ pub struct ShellOpts {
 /// Shopt options (`shopt -s`/`-u` flags).
 #[derive(Debug, Clone)]
 pub struct ShoptOpts {
+    pub strict_arg_parse: bool,
+    pub strict_argv: bool,
+    pub strict_array: bool,
     pub nullglob: bool,
     pub globstar: bool,
     pub dotglob: bool,
@@ -262,6 +265,9 @@ pub struct ShoptOpts {
 impl Default for ShoptOpts {
     fn default() -> Self {
         Self {
+            strict_arg_parse: false,
+            strict_argv: false,
+            strict_array: false,
             nullglob: false,
             globstar: false,
             dotglob: false,

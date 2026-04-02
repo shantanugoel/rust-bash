@@ -1543,8 +1543,55 @@ impl super::VirtualCommand for HeadCommand {
             && files.contains(&"/dev/zero")
         {
             let bytes = vec![0u8; count];
+            let stdout = crate::shell_bytes::decode_shell_bytes(&bytes);
             return CommandResult {
-                stdout: String::from_utf8_lossy(&bytes).to_string(),
+                stdout_bytes: crate::shell_bytes::contains_markers(&stdout).then_some(bytes),
+                stdout,
+                ..Default::default()
+            };
+        }
+
+        if let Some(count) = num_bytes {
+            let mut stdout = String::new();
+            let mut stdout_bytes = Vec::new();
+            for (multi_index, file) in files.iter().enumerate() {
+                let (label, bytes) = if *file == "-" || *file == "/dev/stdin" {
+                    (
+                        "(standard input)".to_string(),
+                        ctx.stdin_bytes
+                            .map(|b| b.to_vec())
+                            .unwrap_or_else(|| crate::shell_bytes::encode_shell_string(ctx.stdin)),
+                    )
+                } else {
+                    let path = resolve_path(file, ctx.cwd);
+                    match ctx.fs.read_file(&path) {
+                        Ok(bytes) => ((*file).to_string(), bytes),
+                        Err(e) => {
+                            return CommandResult {
+                                stderr: format!("{file}: {e}\n"),
+                                exit_code: 1,
+                                ..Default::default()
+                            };
+                        }
+                    }
+                };
+
+                if files.len() > 1 {
+                    if multi_index > 0 {
+                        stdout.push('\n');
+                    }
+                    stdout.push_str(&format!("==> {} <==\n", label));
+                }
+
+                let slice = &bytes[..std::cmp::min(count, bytes.len())];
+                stdout.push_str(&crate::shell_bytes::decode_shell_bytes(slice));
+                stdout_bytes.extend_from_slice(slice);
+            }
+
+            let has_marker_output = crate::shell_bytes::contains_markers(&stdout);
+            return CommandResult {
+                stdout,
+                stdout_bytes: has_marker_output.then_some(stdout_bytes),
                 ..Default::default()
             };
         }
@@ -1563,15 +1610,9 @@ impl super::VirtualCommand for HeadCommand {
                 }
                 stdout.push_str(&format!("==> {} <==\n", filename));
             }
-            if let Some(count) = num_bytes {
-                // Byte count mode
-                let bytes: String = content.chars().take(count).collect();
-                stdout.push_str(&bytes);
-            } else {
-                for line in content.lines().take(num_lines) {
-                    stdout.push_str(line);
-                    stdout.push('\n');
-                }
+            for line in content.lines().take(num_lines) {
+                stdout.push_str(line);
+                stdout.push('\n');
             }
         }
 
@@ -1702,7 +1743,7 @@ impl super::VirtualCommand for OdCommand {
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
         let mut no_address = false;
-        let mut format = "o2".to_string(); // default: octal 2-byte
+        let mut formats: Vec<String> = Vec::new();
         let mut files: Vec<&str> = Vec::new();
         let mut i = 0;
 
@@ -1718,13 +1759,15 @@ impl super::VirtualCommand for OdCommand {
                 if arg == "-An" {
                     no_address = true;
                 }
+            } else if arg == "-c" {
+                formats.push("c".to_string());
             } else if let Some(suffix) = arg.strip_prefix("-t") {
                 if !suffix.is_empty() {
-                    format = suffix.to_string();
+                    formats.push(suffix.to_string());
                 } else {
                     i += 1;
                     if i < args.len() {
-                        format = args[i].clone();
+                        formats.push(args[i].clone());
                     }
                 }
             } else if !arg.starts_with('-') {
@@ -1733,21 +1776,34 @@ impl super::VirtualCommand for OdCommand {
             i += 1;
         }
 
+        if formats.is_empty() {
+            formats.push("o2".to_string());
+        }
+
         // Read input bytes
-        let input_str = if files.is_empty() {
-            ctx.stdin.to_string()
+        let bytes = if files.is_empty() {
+            ctx.stdin_bytes
+                .map(|b| b.to_vec())
+                .unwrap_or_else(|| shell_text_to_bytes(ctx.stdin))
         } else {
-            let mut s = String::new();
+            let mut data = Vec::new();
             for file in &files {
                 if *file == "-" || *file == "/dev/stdin" {
-                    s.push_str(ctx.stdin);
+                    data.extend_from_slice(
+                        &ctx.stdin_bytes
+                            .map(|b| b.to_vec())
+                            .unwrap_or_else(|| shell_text_to_bytes(ctx.stdin)),
+                    );
                 } else if *file == "/dev/zero" {
-                    // /dev/zero content should come via pipe
-                    s.push_str(ctx.stdin);
+                    data.extend_from_slice(
+                        &ctx.stdin_bytes
+                            .map(|b| b.to_vec())
+                            .unwrap_or_else(|| shell_text_to_bytes(ctx.stdin)),
+                    );
                 } else {
                     let path = resolve_path(file, ctx.cwd);
                     match ctx.fs.read_file(&path) {
-                        Ok(bytes) => s.push_str(&String::from_utf8_lossy(&bytes)),
+                        Ok(bytes) => data.extend_from_slice(&bytes),
                         Err(e) => {
                             return CommandResult {
                                 stderr: format!("od: {file}: {e}\n"),
@@ -1758,53 +1814,66 @@ impl super::VirtualCommand for OdCommand {
                     }
                 }
             }
-            s
+            data
         };
-
-        let bytes = input_str.as_bytes();
         let mut stdout = String::new();
 
         // Format bytes according to type specifier
-        if format == "x1" {
-            // Hex, 1-byte units
-            let mut offset = 0;
-            while offset < bytes.len() {
-                if !no_address {
-                    stdout.push_str(&format!("{:07o}", offset));
-                }
-                let end = std::cmp::min(offset + 16, bytes.len());
+        let mut offset = 0;
+        while offset < bytes.len() {
+            if !no_address {
+                stdout.push_str(&format!("{:07o}", offset));
+            }
+            let end = std::cmp::min(offset + 16, bytes.len());
+            for format in &formats {
                 for b in &bytes[offset..end] {
-                    stdout.push_str(&format!(" {:02x}", b));
+                    match format.as_str() {
+                        "x1" => stdout.push_str(&format!("{:>4}", format!("{:02x}", b))),
+                        "c" => stdout.push_str(&format!("{:>4}", od_c_field(*b))),
+                        _ => stdout.push_str(&format!(" {:03o}", b)),
+                    }
                 }
                 stdout.push('\n');
-                offset += 16;
             }
-            if !no_address && !bytes.is_empty() {
-                stdout.push_str(&format!("{:07o}\n", bytes.len()));
-            }
-        } else {
-            // Default: octal dump (simplified)
-            let mut offset = 0;
-            while offset < bytes.len() {
-                if !no_address {
-                    stdout.push_str(&format!("{:07o}", offset));
-                }
-                let end = std::cmp::min(offset + 16, bytes.len());
-                for b in &bytes[offset..end] {
-                    stdout.push_str(&format!(" {:03o}", b));
-                }
-                stdout.push('\n');
-                offset += 16;
-            }
-            if !no_address && !bytes.is_empty() {
-                stdout.push_str(&format!("{:07o}\n", bytes.len()));
-            }
+            offset += 16;
+        }
+        if !no_address && !bytes.is_empty() {
+            stdout.push_str(&format!("{:07o}\n", bytes.len()));
         }
 
         CommandResult {
             stdout,
             ..Default::default()
         }
+    }
+}
+
+fn shell_text_to_bytes(text: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    for ch in text.chars() {
+        if let Some(byte) = crate::shell_bytes::marker_byte(ch) {
+            out.push(byte);
+        } else if (ch as u32) <= 0xff {
+            out.push(ch as u8);
+        } else {
+            let mut buf = [0u8; 4];
+            out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+        }
+    }
+    out
+}
+
+fn od_c_field(byte: u8) -> String {
+    match byte {
+        b'\n' => "\\n".to_string(),
+        b'\t' => "\\t".to_string(),
+        b'\r' => "\\r".to_string(),
+        0x0b => "\\v".to_string(),
+        0x0c => "\\f".to_string(),
+        0x08 => "\\b".to_string(),
+        0x07 => "\\a".to_string(),
+        0x20..=0x7e => (byte as char).to_string(),
+        _ => format!("{:03o}", byte),
     }
 }
 

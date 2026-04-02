@@ -32,6 +32,7 @@ argv.py ${@%a}
 #### Remove const suffix from undefined
 echo ${undef%suffix}
 ## stdout:
+## OK bash/zsh stdout-json: "\n"
 
 #### Remove shortest glob suffix
 v=aabbccdd

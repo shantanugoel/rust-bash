@@ -81,10 +81,14 @@ fn glob_match_inner(
                 continue;
             }
         } else if pi < pat.len() && pat[pi] == b'[' {
-            if let Some((matched, end)) = match_char_class(&pat[pi..], txt[ti], nocase)
-                && matched
-            {
-                pi += end;
+            if let Some((matched, end)) = match_char_class(&pat[pi..], txt[ti], nocase) {
+                if matched {
+                    pi += end;
+                    ti += 1;
+                    continue;
+                }
+            } else if bytes_eq(pat[pi], txt[ti], nocase) {
+                pi += 1;
                 ti += 1;
                 continue;
             }
@@ -436,11 +440,14 @@ fn ext_match(pat: &[u8], pi: usize, txt: &[u8], ti: usize, nocase: bool, depth: 
 
     // [...] character class
     if pat[pi] == b'[' {
-        if ti < txt.len()
-            && let Some((matched, end)) = match_char_class(&pat[pi..], txt[ti], nocase)
-            && matched
-        {
-            return ext_match(pat, pi + end, txt, ti + 1, nocase, depth);
+        if ti < txt.len() {
+            if let Some((matched, end)) = match_char_class(&pat[pi..], txt[ti], nocase) {
+                if matched {
+                    return ext_match(pat, pi + end, txt, ti + 1, nocase, depth);
+                }
+            } else if bytes_eq(pat[pi], txt[ti], nocase) {
+                return ext_match(pat, pi + 1, txt, ti + 1, nocase, depth);
+            }
         }
         return false;
     }

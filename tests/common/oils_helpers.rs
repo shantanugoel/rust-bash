@@ -45,26 +45,31 @@ impl VirtualCommand for ArgvPyCommand {
 
 /// Produce a Python-style repr of a string, matching Python 2 behavior.
 fn python_repr_string(s: &str) -> String {
-    let mut base = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\\' => base.push_str("\\\\"),
-            '\t' => base.push_str("\\t"),
-            '\n' => base.push_str("\\n"),
-            '\r' => base.push_str("\\r"),
-            _ if c.is_ascii_control() => {
-                base.push_str(&format!("\\x{:02x}", c as u32));
+    let bytes = s.as_bytes();
+    let quote = if bytes.contains(&b'\'') && !bytes.contains(&b'"') {
+        '"'
+    } else {
+        '\''
+    };
+
+    let mut out = String::new();
+    out.push(quote);
+    for &b in bytes {
+        match b {
+            b'\\' => out.push_str("\\\\"),
+            b'\t' => out.push_str("\\t"),
+            b'\n' => out.push_str("\\n"),
+            b'\r' => out.push_str("\\r"),
+            b if b == quote as u8 => {
+                out.push('\\');
+                out.push(quote);
             }
-            _ => base.push(c),
+            0x20..=0x7e => out.push(b as char),
+            _ => out.push_str(&format!("\\x{b:02x}")),
         }
     }
-    if s.contains('\'') && !s.contains('"') {
-        let escaped = base.replace('"', "\\\"");
-        format!("\"{escaped}\"")
-    } else {
-        let escaped = base.replace('\'', "\\'");
-        format!("'{escaped}'")
-    }
+    out.push(quote);
+    out
 }
 
 // ---------------------------------------------------------------------------

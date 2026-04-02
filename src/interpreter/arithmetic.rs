@@ -1374,6 +1374,11 @@ fn read_array_element_checked(
     name: &str,
     raw_subscript: &str,
 ) -> Result<i64, RustBashError> {
+    if raw_subscript.trim().is_empty() {
+        return Err(RustBashError::Execution(format!(
+            "{name}: bad array subscript"
+        )));
+    }
     let resolved_name = crate::interpreter::resolve_nameref_or_self(name, state);
     if state.shell_opts.nounset && !state.env.contains_key(&resolved_name) {
         return Err(RustBashError::Execution(format!(
@@ -1392,6 +1397,11 @@ fn write_array_element(
     raw_subscript: &str,
     value: i64,
 ) -> Result<(), RustBashError> {
+    if raw_subscript.trim().is_empty() {
+        return Err(RustBashError::Execution(format!(
+            "{name}: bad array subscript"
+        )));
+    }
     use crate::interpreter::VariableValue;
     let resolved_name = crate::interpreter::resolve_nameref_or_self(name, state);
     if is_assoc_array(state, &resolved_name) {

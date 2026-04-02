@@ -269,6 +269,14 @@ fn execute_compound_list(
                     ..Default::default()
                 }
             }
+            Err(RustBashError::Execution(msg)) if msg.contains("bad array subscript") => {
+                state.last_exit_code = 1;
+                ExecResult {
+                    stderr: format!("rust-bash: {msg}\n"),
+                    exit_code: 1,
+                    ..Default::default()
+                }
+            }
             Err(e) => return Err(e),
         };
         result.stdout.push_str(&r.stdout);
@@ -363,7 +371,7 @@ fn execute_pipeline(
     };
 
     let mut pipe_data = stdin.to_string();
-    let mut pipe_data_bytes: Option<Vec<u8>> = None;
+    let mut pipe_data_bytes: Option<Vec<u8>> = state.pipe_stdin_bytes.take();
     let mut combined_stderr = String::new();
     let mut exit_code = 0;
     let mut exit_codes: Vec<i32> = Vec::new();
@@ -388,8 +396,13 @@ fn execute_pipeline(
         let r = execute_command(command, state, &pipe_data)?;
         // If the command produced binary output, use it for next stage
         if let Some(bytes) = r.stdout_bytes {
-            pipe_data_bytes = Some(bytes);
-            pipe_data = String::new();
+            if bytes.is_empty() && !r.stdout.is_empty() {
+                pipe_data = r.stdout;
+                pipe_data_bytes = None;
+            } else {
+                pipe_data_bytes = Some(bytes);
+                pipe_data = String::new();
+            }
         } else {
             pipe_data = r.stdout;
             pipe_data_bytes = None;
@@ -456,7 +469,7 @@ fn execute_pipeline(
 
     // At the pipeline boundary, convert binary output to lossy string if needed
     let final_stdout = if let Some(bytes) = pipe_data_bytes {
-        String::from_utf8_lossy(&bytes).into_owned()
+        crate::shell_bytes::decode_shell_bytes(&bytes)
     } else {
         pipe_data
     };
@@ -645,6 +658,11 @@ fn process_assignment(
                 loc: None,
             };
             let expanded_index = expand_word_to_string_mut(&index_word, state)?;
+            if expanded_index.trim().is_empty() {
+                return Err(RustBashError::Execution(format!(
+                    "{name}: bad array subscript"
+                )));
+            }
             if append {
                 Ok(Assignment::AppendArrayElement {
                     name: name.clone(),
@@ -1365,7 +1383,8 @@ fn execute_simple_command(
                     match &assignment.value {
                         ast::AssignmentValue::Scalar(w) => {
                             let value = expand_word_to_string_mut(w, state)?;
-                            args.push(format!("{name}={value}"));
+                            let op = if assignment.append { "+=" } else { "=" };
+                            args.push(format!("{name}{op}{value}"));
                         }
                         ast::AssignmentValue::Array(items) => {
                             let assoc_literal = alias_expansion
@@ -1436,7 +1455,20 @@ fn execute_simple_command(
     let Some(cmd_name) = alias_expansion.as_ref().map(|(name, _)| name.clone()) else {
         // Expand assignments lazily (no command to run, so no deferred expansion needed)
         for (raw_assign, append) in &raw_assignments {
-            assignments.push(process_assignment(raw_assign, *append, state)?);
+            match process_assignment(raw_assign, *append, state) {
+                Ok(assignment) => assignments.push(assignment),
+                Err(RustBashError::Execution(msg)) => {
+                    if msg.contains("unbound variable") {
+                        return Err(RustBashError::Execution(msg));
+                    }
+                    return Ok(ExecResult {
+                        stderr: format!("rust-bash: {msg}\n"),
+                        exit_code: 1,
+                        ..ExecResult::default()
+                    });
+                }
+                Err(other) => return Err(other),
+            }
         }
         // xtrace for bare assignments (e.g. `X=1`)
         if state.shell_opts.xtrace && !assignments.is_empty() {
@@ -1508,7 +1540,20 @@ fn execute_simple_command(
         // Expand assignments lazily
         let mut expanded = Vec::new();
         for (raw_assign, append) in &raw_assignments {
-            expanded.push(process_assignment(raw_assign, *append, state)?);
+            match process_assignment(raw_assign, *append, state) {
+                Ok(assignment) => expanded.push(assignment),
+                Err(RustBashError::Execution(msg)) => {
+                    if msg.contains("unbound variable") {
+                        return Err(RustBashError::Execution(msg));
+                    }
+                    return Ok(ExecResult {
+                        stderr: format!("rust-bash: {msg}\n"),
+                        exit_code: 1,
+                        ..ExecResult::default()
+                    });
+                }
+                Err(other) => return Err(other),
+            }
         }
         let mut result = ExecResult {
             exit_code: state.last_exit_code,
@@ -1543,7 +1588,20 @@ fn execute_simple_command(
             });
         }
         for (raw_assign, append) in &raw_assignments {
-            let a = process_assignment(raw_assign, *append, state)?;
+            let a = match process_assignment(raw_assign, *append, state) {
+                Ok(assignment) => assignment,
+                Err(RustBashError::Execution(msg)) => {
+                    if msg.contains("unbound variable") {
+                        return Err(RustBashError::Execution(msg));
+                    }
+                    return Ok(ExecResult {
+                        stderr: format!("rust-bash: {msg}\n"),
+                        exit_code: 1,
+                        ..ExecResult::default()
+                    });
+                }
+                Err(other) => return Err(other),
+            };
             let mut dummy = ExecResult::default();
             apply_assignment_shell_error(a, state, &mut dummy)?;
             if dummy.exit_code != 0 {
@@ -2259,7 +2317,9 @@ fn execute_arithmetic_for(
         }
 
         // Evaluate condition (empty condition = always true)
-        if let Some(cond) = &afc.condition {
+        if let Some(cond) = &afc.condition
+            && !cond.value.trim().is_empty()
+        {
             let expanded =
                 crate::interpreter::expansion::expand_arith_expression(&cond.value, state)?;
             let val = eval_command_arithmetic_expr(&expanded, state)?;
@@ -2633,6 +2693,7 @@ fn execute_function_call(
     name: &str,
     args: &[String],
     state: &mut InterpreterState,
+    stdin: &str,
 ) -> Result<ExecResult, RustBashError> {
     use crate::interpreter::ControlFlow;
 
@@ -2670,7 +2731,7 @@ fn execute_function_call(
     let saved_source = std::mem::replace(&mut state.current_source, func_def.source.clone());
     let saved_source_text =
         std::mem::replace(&mut state.current_source_text, func_def.source_text.clone());
-    let result = execute_compound_command(&func_def.body.0, func_def.body.1.as_ref(), state, "");
+    let result = execute_compound_command(&func_def.body.0, func_def.body.1.as_ref(), state, stdin);
     state.current_source = saved_source;
     state.current_source_text = saved_source_text;
 
@@ -2758,7 +2819,7 @@ fn dispatch_command(
 
     // 2. User-defined functions
     if state.functions.contains_key(name) {
-        return execute_function_call(name, args, state);
+        return execute_function_call(name, args, state, stdin);
     }
 
     // 3. Registered commands
@@ -3628,6 +3689,7 @@ fn apply_write_redirect(
         if fd_num == 1 {
             result.stderr.push_str(&result.stdout);
             result.stdout.clear();
+            result.stdout_bytes = None;
         }
     } else if is_dev_full(path) {
         // Writing to /dev/full always fails with ENOSPC.
@@ -3765,12 +3827,16 @@ fn apply_dup_fd(
     // Standard FD duplication
     if target_fd == 1 && fd_num == 2 {
         // 2>&1: merge stderr into stdout
-        result.stdout.push_str(&result.stderr);
-        result.stderr.clear();
+        if !result.stderr.is_empty() {
+            result.stdout.push_str(&result.stderr);
+            result.stderr.clear();
+            result.stdout_bytes = None;
+        }
     } else if target_fd == 2 && fd_num == 1 {
         // 1>&2: merge stdout into stderr
         result.stderr.push_str(&result.stdout);
         result.stdout.clear();
+        result.stdout_bytes = None;
     } else if fd_num == 1 || fd_num == 2 {
         // Redirect stdout/stderr to a persistent FD target
         if let Some(pfd) = state.persistent_fds.get(&target_fd) {
@@ -3797,11 +3863,15 @@ fn apply_dup_fd(
                 PersistentFd::DupStdFd(std_fd) => {
                     // Redirect fd_num to the standard fd that target_fd points to
                     if *std_fd == 1 && fd_num == 2 {
-                        result.stdout.push_str(&result.stderr);
-                        result.stderr.clear();
+                        if !result.stderr.is_empty() {
+                            result.stdout.push_str(&result.stderr);
+                            result.stderr.clear();
+                            result.stdout_bytes = None;
+                        }
                     } else if *std_fd == 2 && fd_num == 1 {
                         result.stderr.push_str(&result.stdout);
                         result.stdout.clear();
+                        result.stdout_bytes = None;
                     }
                     // fd_num == *std_fd is a no-op (already going there)
                 }

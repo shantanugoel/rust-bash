@@ -38,6 +38,7 @@ pub mod commands;
 pub mod error;
 pub mod interpreter;
 pub mod platform;
+mod shell_bytes;
 pub mod vfs;
 
 #[cfg(feature = "network")]

@@ -1,6 +1,6 @@
-# Ordered Oils fix queue as of 2026-04-01.
+# Ordered Oils fix queue as of 2026-04-02.
 # Source of truth: current live Oils run (`cargo test --test oils_spec -- --nocapture --test-threads=1`).
-# Current totals: 1560 pass / 598 xfail / 79 skip, with 46 whole-file skips in `tests/oils_spec.rs`.
+# Current totals: 1603 pass / 555 xfail / 79 skip, with 46 whole-file skips in `tests/oils_spec.rs`.
 #
 # ── How the Oils test infra works ──
 # Runner:      tests/oils_spec.rs (datatest_stable harness, discovers .test.sh files)
@@ -25,21 +25,15 @@
 # `builtin-cd.test` and `redirect.test` stay on the queue, but expect a small VFS/symlink/fd tail to remain until M9.
 
 ## Parser, Expansion, Quoting, Assignment
-- var-op-strip.test (xfail=6) prefix/suffix strip semantics; strip all unicode fixed
-- arith-context.test (xfail=3) arithmetic parser / evaluator context rules
-- append.test (xfail=8) `+=` semantics for scalars and arrays
-- quote.test (xfail=6) quoting parse/runtime fidelity
-- var-op-len.test (xfail=7) `${#...}` edge cases
 - var-op-slice.test (xfail=7) slicing semantics
 - var-num.test (xfail=2) numeric special variables / expansions
-- func-parsing.test (xfail=6) function-definition parse edge cases
+- func-parsing.test (xfail=2) function-definition parse edge cases
 - brace-expansion.test (xfail=5) brace expansion tail
 - shell-grammar.test (xfail=4) grammar fidelity beyond current parser happy path
 - whitespace.test (xfail=3) whitespace-sensitive parsing / execution
-- var-sub.test (xfail=4) remaining unquoted parameter expansion cases
+- var-sub.test (xfail=3) remaining unquoted parameter expansion cases
 - command-sub-ksh.test (xfail=4) legacy command-sub syntax tail
 - bool-parse.test (xfail=3) boolean / conditional parse rules
-- for-expr.test (xfail=2) C-style `for ((...))` parse/runtime fidelity
 - fatal-errors.test (xfail=2) fatal parse/runtime error behavior
 - sh-func.test (xfail=2) shell-function parsing / invocation tail
 - word-eval.test (xfail=1) word evaluation corner cases
@@ -59,7 +53,7 @@
 - vars-special.test (xfail=12) `BASHPID`, `LINENO`, `$_`, startup defaults, pipeline state
 - builtin-set.test (xfail=7) `set` flag handling and side effects
 - errexit.test (xfail=12) `set -e` / redirection / alias / function behavior
-- builtin-echo.test (xfail=8) escape behavior and bash echo quirks
+- builtin-echo.test (xfail=3) escape behavior and bash echo quirks
 - command_.test (xfail=11) command lookup / PATH / cache / script execution behavior
 - builtin-meta.test (xfail=10) `command -v/-V`, `builtin`, `command -p`
 - builtin-eval-source.test (xfail=7) `eval` / `source` option and PATH semantics
@@ -71,7 +65,7 @@
 - loop.test (xfail=6) `break` / `continue` / loop validation tail
 - sh-options-bash.test (xfail=4) `SHELLOPTS` / `BASHOPTS` fidelity
 - builtin-meta-assign.test (xfail=1) assignment-builtin interaction tail
-- case_.test (xfail=4) `case` parsing / pattern tail
+- case_.test (xfail=3) `case` parsing / pattern tail
 - exit-status.test (xfail=3) shell exit-code bookkeeping
 - builtin-type.test (xfail=2) smaller `type` output / keyword cases
 - builtin-bash.test (xfail=3) `bash` / `sh` builtin tail

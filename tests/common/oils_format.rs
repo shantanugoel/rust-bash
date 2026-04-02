@@ -82,7 +82,7 @@ fn parse_case(lines: &[&str]) -> OilsTestCase {
         code_lines.pop();
     }
 
-    let code = code_lines.join("\n");
+    let mut code = code_lines.join("\n");
 
     // Parse metadata lines.
     let meta_lines = if meta_start < body.len() {
@@ -155,7 +155,9 @@ fn parse_case(lines: &[&str]) -> OilsTestCase {
         }
 
         // Default (non-override) metadata.
-        if let Some(val) = stripped.strip_prefix("stdout: ") {
+        if let Some(val) = stripped.strip_prefix("code: ") {
+            code = val.to_string();
+        } else if let Some(val) = stripped.strip_prefix("stdout: ") {
             default_stdout = Some(ensure_trailing_newline_if_nonempty(val));
         } else if stripped == "stdout:" {
             default_stdout = Some(String::new());

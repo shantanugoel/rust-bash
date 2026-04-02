@@ -24,21 +24,31 @@ append.test:Append array to array
 append.test:Append string to string
 append.test:Append string to undefined variable
 append.test:Append to array to undefined variable
+append.test:assign builtin appending array: declare d+=(d e)
 append.test:error: append used like env prefix
 append.test:error: myarray+=s
+append.test:error: typeset myarray+=s
+append.test:export readonly +=
+append.test:export+=array disallowed (strict_array)
+append.test:local +=
 append.test:error: s+=(my array)
 append.test:myarray[1]+=s - Append to element
 append.test:myarray[-1]+=s - Append to last element
 append.test:Strings have value semantics, not reference semantics
+append.test:Try to append list to element
 append.test:Type mismatching of lhs+=rhs should not cause a crash
+append.test:typeset s+=
 append.test:typeset s+=(my array)
 append.test:typeset s${dyn}+=
 arith-context.test:$[$undefined] is a synonym for $(($undefined (#2566)
 arith-context.test:$[$var is a synonym for $(($var (#2426)
 arith-context.test:$[ is a synonym for $((
+arith-context.test:Ambiguous colon in slice
 arith-context.test:Array index on LHS of assignment
 arith-context.test:Array index on LHS with indices
+arith-context.test:Empty expression a[]
 arith-context.test:Empty expression (( ))  $(( ))
+arith-context.test:Empty expression for (( ))
 arith-context.test:Empty expression in ${a[@]: : }
 arith-context.test:Multiple right brackets inside expression
 arith-context.test:Quadruple parens should be disambiguated
@@ -275,6 +285,7 @@ array.test:Retrieve index that is a variable
 array.test:Retrieve index that is a variable without $
 array.test:Retrieve out of bounds index
 array.test:Retrieve sparse array indices with ${!a}
+array.test:Set array item to array
 array.test:Set element
 array.test:Set element with array ref
 array.test:Set element with var ref
@@ -538,7 +549,9 @@ builtin-dirs.test:pushd does not take more than one argument
 builtin-dirs.test:pushd/popd
 builtin-dirs.test:pushd usage
 builtin-echo.test:\0
+builtin-echo.test:\0377 is the highest octal byte
 builtin-echo.test:\c stops processing input
+builtin-echo.test:\x
 builtin-echo.test:echo backslashes
 builtin-echo.test:echo builtin should disallow typed args - literal
 builtin-echo.test:echo builtin should disallow typed args - variable
@@ -555,6 +568,9 @@ builtin-echo.test:echo -e with octal escape
 builtin-echo.test:echo -e with whitespace C escapes
 builtin-echo.test:echo -ez (invalid flag)
 builtin-echo.test:echo to redirected directory is an error
+builtin-echo.test:incomplete hex escape
+builtin-echo.test:incomplete octal escape
+builtin-echo.test:incomplete unicode escape
 builtin-echo.test:\u6
 builtin-eval-source.test:Eval
 builtin-eval-source.test:eval accepts/ignores --
@@ -777,6 +793,7 @@ case_.test:case \n bug regression
 case_.test:Case statement
 case_.test:Case statement with ;&
 case_.test:Case with empty condition
+case_.test:matching every byte against itself
 case_.test:Match a literal with a glob character
 case_.test:Match a literal with a glob character with a dynamic pattern
 case_.test:Multiple Patterns Match
@@ -952,16 +969,22 @@ for-expr.test:Accepts { } syntax too
 for-expr.test:Arith lexer mode
 for-expr.test:Condition that's greater than 32 bits
 for-expr.test:C-style for loop
+for-expr.test:Empty init and cond
 for-expr.test:Empty init
 for-expr.test:For loop with and without semicolon
+for-expr.test:Infinite loop with ((;;))
 for-expr.test:Integers near 31, 32, 62 bits
+func-parsing.test:Bad function
 func-parsing.test:Break after ) is OK.
 func-parsing.test:Function with spaces, to see if ( and ) are separate tokens.
 func-parsing.test:Hard case, function with } token in it
+func-parsing.test:Incomplete Function
+func-parsing.test:Incomplete Function 2
 func-parsing.test:. in function name
 func-parsing.test:= in function name
 func-parsing.test:Nested definition
 func-parsing.test:subshell function
+func-parsing.test:Unbraced function body.
 glob-bash.test:dotglob (bash option that no_dash_glob is roughly consistent with)
 glob-bash.test:shopt -s failglob exits properly in command context with set -e
 glob-bash.test:shopt -s failglob exits properly in loop context with set -e
@@ -1166,6 +1189,9 @@ process-sub.test:status code is available
 quote.test:$''
 quote.test:$"" is a synonym for ""
 quote.test:$? split over multiple lines
+quote.test:$'' octal escapes don't have leading 0
+quote.test:$'' octal escapes with fewer than 3 chars
+quote.test:$'' supports \cA escape for Ctrl-A - mask with 0x1f
 quote.test:$'' with newlines
 quote.test:$'' with quotes
 quote.test:Backslash escapes
@@ -1186,12 +1212,15 @@ quote.test:Semicolon
 quote.test:Single-quoted
 quote.test:Storing backslashes and then echoing them
 quote.test:Two single-quoted parts
+quote.test:Unterminated double quote
+quote.test:Unterminated single quote
 quote.test:Unquoted and single quoted
 quote.test:Unquoted words
 quote.test:Var length
 quote.test:Var substitution
 quote.test:Var substitution with braces
 quote.test:Var substitution with braces, quoted
+quote.test:YSH allows unquoted foo\ bar too
 redirect-command.test:$(< file; end) is not a special case
 redirect-command.test:Brace group redirect
 redirect-command.test:< file in pipeline and subshell doesn't work
@@ -1412,7 +1441,14 @@ var-op-bash.test:assoc array and @P @Q @a
 var-op-bash.test:undef and @P @Q @a
 var-op-bash.test:undef vs. empty string in var ops
 var-op-len.test:Length of undefined variable
+var-op-len.test:Length of undefined variable with nounset
+var-op-len.test:Length operator can't be followed by test operator
+var-op-len.test:String length with incomplete utf-8
+var-op-len.test:String length with invalid utf-8 continuation bytes
 var-op-len.test:String length
+var-op-len.test:Unicode string length (spec/testdata/utf8-chars.txt)
+var-op-len.test:Unicode string length (UTF-8)
+var-op-len.test:${#s} respects LC_ALL - length in bytes or code points
 var-op-patsub.test:${v//} is empty search and replacement
 var-op-patsub.test:${v/a} is the same as ${v/a/}  -- no replacement string
 var-op-patsub.test:${v/} is empty search and replacement
@@ -1464,6 +1500,7 @@ var-op-strip.test:Nested % and # operators (bug reported by Crestwave)
 var-op-strip.test:Prepend using replacement of #
 var-op-strip.test:Remove const prefix
 var-op-strip.test:Remove const suffix
+var-op-strip.test:Remove const suffix from undefined
 var-op-strip.test:Remove const suffix is vectorized on $@ array
 var-op-strip.test:Remove const suffix is vectorized on user array
 var-op-strip.test:Remove longest glob prefix
@@ -1475,7 +1512,12 @@ var-op-strip.test:strip all
 var-op-strip.test:strip all unicode
 var-op-strip.test:strip * (bug regression)
 var-op-strip.test:Strip char class
+var-op-strip.test:Strip Right Brace (#702)
+var-op-strip.test:Strip unicode prefix
 var-op-strip.test:strip none
+var-op-strip.test:strip none unicode
+var-op-strip.test:strip unquoted and quoted [
+var-op-strip.test:strip unquoted and quoted []
 var-op-strip.test:strip unquoted and quoted ?
 var-op-strip.test:strip unquoted and quoted [a]
 var-op-strip.test:Test that you can remove everything with const
@@ -1597,6 +1639,7 @@ var-sub-quote.test:Var substitution with newlines (#2492)
 var-sub-quote.test:Var substitution with \n in value
 var-sub-quote.test:Var with multiple words: no quotes
 var-sub.test:Here doc with bad "$@" delimiter
+var-sub.test:Braced block inside ${}
 var-sub.test:Nested ${}
 whitespace.test:\r in arith expression is allowed by some shells, but not most!
 whitespace.test:whitespace in string to integer conversion
