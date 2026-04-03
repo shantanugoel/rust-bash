@@ -50,7 +50,7 @@ Pass a JSON string to `rust_bash_create` to configure the sandbox. All fields ar
     "max_execution_time_secs": 30,
     "max_loop_iterations": 10000,
     "max_output_size": 10485760,
-    "max_call_depth": 100,
+    "max_call_depth": 25,
     "max_string_length": 10485760,
     "max_glob_results": 100000,
     "max_substitution_depth": 50,
@@ -79,7 +79,7 @@ Pass a JSON string to `rust_bash_create` to configure the sandbox. All fields ar
 | `limits.max_execution_time_secs` | `integer` | `30` | Wall-clock timeout in seconds. |
 | `limits.max_loop_iterations` | `integer` | `10000` | Maximum iterations across all loops. |
 | `limits.max_output_size` | `integer` | `10485760` | Maximum combined stdout+stderr bytes. |
-| `limits.max_call_depth` | `integer` | `100` | Maximum function/subshell call depth. |
+| `limits.max_call_depth` | `integer` | `25` | Maximum function/subshell call depth. |
 | `limits.max_string_length` | `integer` | `10485760` | Maximum length of any single string value. |
 | `limits.max_glob_results` | `integer` | `100000` | Maximum number of glob expansion results. |
 | `limits.max_substitution_depth` | `integer` | `50` | Maximum nesting depth for command substitutions. |

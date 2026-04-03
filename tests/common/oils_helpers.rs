@@ -7,6 +7,46 @@
 
 use rust_bash::{CommandContext, CommandMeta, CommandResult, VirtualCommand};
 
+const SHELL_BYTE_MARKER_BASE: u32 = 0xE000;
+
+fn marker_for_byte(byte: u8) -> char {
+    char::from_u32(SHELL_BYTE_MARKER_BASE + byte as u32).unwrap()
+}
+
+fn marker_byte(ch: char) -> Option<u8> {
+    let code = ch as u32;
+    if (SHELL_BYTE_MARKER_BASE..=SHELL_BYTE_MARKER_BASE + 0xFF).contains(&code) {
+        Some((code - SHELL_BYTE_MARKER_BASE) as u8)
+    } else {
+        None
+    }
+}
+
+fn contains_markers(s: &str) -> bool {
+    s.chars().any(|ch| marker_byte(ch).is_some())
+}
+
+fn encode_shell_string(s: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(s.len());
+    for ch in s.chars() {
+        if let Some(byte) = marker_byte(ch) {
+            out.push(byte);
+        } else {
+            let mut buf = [0u8; 4];
+            out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+        }
+    }
+    out
+}
+
+fn shell_char_from_byte(byte: u8) -> char {
+    if byte.is_ascii() {
+        byte as char
+    } else {
+        marker_for_byte(byte)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // argv.py
 // ---------------------------------------------------------------------------
@@ -45,7 +85,7 @@ impl VirtualCommand for ArgvPyCommand {
 
 /// Produce a Python-style repr of a string, matching Python 2 behavior.
 fn python_repr_string(s: &str) -> String {
-    let bytes = s.as_bytes();
+    let bytes = encode_shell_string(s);
     let quote = if bytes.contains(&b'\'') && !bytes.contains(&b'"') {
         '"'
     } else {
@@ -54,7 +94,7 @@ fn python_repr_string(s: &str) -> String {
 
     let mut out = String::new();
     out.push(quote);
-    for &b in bytes {
+    for b in bytes {
         match b {
             b'\\' => out.push_str("\\\\"),
             b'\t' => out.push_str("\\t"),
@@ -315,9 +355,11 @@ impl VirtualCommand for PythonCommand {
                 stdout.push('\n');
             }
         }
+        let stdout_bytes = contains_markers(&stdout).then(|| encode_shell_string(&stdout));
         CommandResult {
             stdout,
             exit_code: 0,
+            stdout_bytes,
             ..Default::default()
         }
     }
@@ -337,6 +379,32 @@ fn process_python_escapes(s: &str) -> String {
                 Some('\\') => result.push('\\'),
                 Some('\'') => result.push('\''),
                 Some('"') => result.push('"'),
+                Some('x') => {
+                    let mut hex = String::new();
+                    for _ in 0..2 {
+                        match chars.next() {
+                            Some(ch) if ch.is_ascii_hexdigit() => hex.push(ch),
+                            Some(ch) => {
+                                result.push('\\');
+                                result.push('x');
+                                result.push_str(&hex);
+                                result.push(ch);
+                                hex.clear();
+                                break;
+                            }
+                            None => break,
+                        }
+                    }
+                    if hex.len() == 2
+                        && let Ok(byte) = u8::from_str_radix(&hex, 16)
+                    {
+                        result.push(shell_char_from_byte(byte));
+                    } else {
+                        result.push('\\');
+                        result.push('x');
+                        result.push_str(&hex);
+                    }
+                }
                 Some('u') => {
                     let mut hex = String::new();
                     for _ in 0..4 {

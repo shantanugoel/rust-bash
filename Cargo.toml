@@ -41,6 +41,7 @@ base64 = "0.22"
 bitflags = "2.11.0"
 brush-parser = {git = "https://github.com/reubeno/brush.git", rev = "ae35b6dd09f394c66fd805bea747e35a013ee978"}
 chrono = "0.4"
+chrono-tz = "0.10.4"
 clap = { version = "4.6.0", features = ["derive"], optional = true }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 jaq-core = "3.0.0-gamma"

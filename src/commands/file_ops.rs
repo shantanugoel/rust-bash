@@ -508,6 +508,15 @@ impl super::VirtualCommand for StatCommand {
 
 pub struct ChmodCommand;
 
+enum ParsedChmodMode {
+    Absolute(u32),
+    SymbolicExec {
+        user: bool,
+        group: bool,
+        other: bool,
+    },
+}
+
 static CHMOD_META: CommandMeta = CommandMeta {
     name: "chmod",
     synopsis: "chmod MODE FILE...",
@@ -551,9 +560,9 @@ impl super::VirtualCommand for ChmodCommand {
         }
 
         let mode_str = operands[0];
-        let mode = match u32::from_str_radix(mode_str, 8) {
-            Ok(m) => m,
-            Err(_) => {
+        let parsed_mode = match parse_chmod_mode(mode_str) {
+            Some(mode) => mode,
+            None => {
                 return CommandResult {
                     stderr: format!("chmod: invalid mode: '{}'\n", mode_str),
                     exit_code: 1,
@@ -567,6 +576,26 @@ impl super::VirtualCommand for ChmodCommand {
 
         for file in &operands[1..] {
             let path = resolve_path(file, ctx.cwd);
+            let mode = match parsed_mode {
+                ParsedChmodMode::Absolute(mode) => mode,
+                ParsedChmodMode::SymbolicExec { user, group, other } => {
+                    let current = match ctx.fs.stat(&path) {
+                        Ok(meta) => meta.mode,
+                        Err(e) => {
+                            stderr.push_str(&format!(
+                                "chmod: cannot change mode of '{}': {}\n",
+                                file, e
+                            ));
+                            exit_code = 1;
+                            continue;
+                        }
+                    };
+                    current
+                        | if user { 0o100 } else { 0 }
+                        | if group { 0o010 } else { 0 }
+                        | if other { 0o001 } else { 0 }
+                }
+            };
             if let Err(e) = ctx.fs.chmod(&path, mode) {
                 stderr.push_str(&format!("chmod: cannot change mode of '{}': {}\n", file, e));
                 exit_code = 1;
@@ -580,6 +609,39 @@ impl super::VirtualCommand for ChmodCommand {
             stdout_bytes: None,
         }
     }
+}
+
+fn parse_chmod_mode(mode_str: &str) -> Option<ParsedChmodMode> {
+    if let Ok(mode) = u32::from_str_radix(mode_str, 8) {
+        return Some(ParsedChmodMode::Absolute(mode));
+    }
+
+    let plus_pos = mode_str.find('+')?;
+    let (who, perms) = mode_str.split_at(plus_pos);
+    let perms = perms.strip_prefix('+')?;
+    if perms != "x" {
+        return None;
+    }
+
+    let mut user = false;
+    let mut group = false;
+    let mut other = false;
+    if who.is_empty() || who == "a" {
+        user = true;
+        group = true;
+        other = true;
+    } else {
+        for c in who.chars() {
+            match c {
+                'u' => user = true,
+                'g' => group = true,
+                'o' => other = true,
+                _ => return None,
+            }
+        }
+    }
+
+    Some(ParsedChmodMode::SymbolicExec { user, group, other })
 }
 
 // ── ln ───────────────────────────────────────────────────────────────

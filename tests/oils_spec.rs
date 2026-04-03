@@ -155,6 +155,11 @@ fn execute_oils_case(file_stem: &str, case: &OilsTestCase) -> Option<String> {
     if case.name == "\"var d = {}; declare -p d\" does not print anything (OSH)" {
         env_map.insert("SH".into(), "bash-4.4".into());
     }
+    if file_stem == "builtin-printf.test" {
+        // These upstream printf TZ cases assume the inherited environment does
+        // not seed TZ; only explicit shell exports should affect %(...)T.
+        env_map.remove("TZ");
+    }
 
     let mut builder = RustBashBuilder::new()
         .env(env_map)

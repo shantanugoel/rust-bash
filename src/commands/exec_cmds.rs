@@ -279,6 +279,7 @@ enum FindExpr {
     Empty,
     Newer(String),
     Print,
+    Print0,
     ExecEach(Vec<String>),
     ExecBatch(Vec<String>),
     Not(Box<FindExpr>),
@@ -300,6 +301,7 @@ static FIND_META: CommandMeta = CommandMeta {
         ("-exec CMD ;", "execute CMD for each match"),
         ("-exec CMD +", "execute CMD with matches as arguments"),
         ("-print", "print the full file name"),
+        ("-print0", "print the full file name followed by NUL"),
     ],
     supports_help_flag: true,
     flags: &[],
@@ -550,6 +552,7 @@ fn parse_primary(args: &[String], pos: usize) -> Result<(FindExpr, usize), Strin
             Ok((FindExpr::Newer(args[pos + 1].clone()), pos + 2))
         }
         "-print" => Ok((FindExpr::Print, pos + 1)),
+        "-print0" => Ok((FindExpr::Print0, pos + 1)),
         "-exec" => {
             // Collect args until \; or +
             let mut cmd_parts = Vec::new();
@@ -653,7 +656,7 @@ fn has_action(expr: &Option<FindExpr>) -> bool {
 
 fn expr_has_action(expr: &FindExpr) -> bool {
     match expr {
-        FindExpr::Print | FindExpr::ExecEach(_) | FindExpr::ExecBatch(_) => true,
+        FindExpr::Print | FindExpr::Print0 | FindExpr::ExecEach(_) | FindExpr::ExecBatch(_) => true,
         FindExpr::Not(inner) => expr_has_action(inner),
         FindExpr::And(a, b) | FindExpr::Or(a, b) => expr_has_action(a) || expr_has_action(b),
         _ => false,
@@ -726,6 +729,11 @@ fn eval_find(
         FindExpr::Print => {
             out.stdout.push_str(display_path);
             out.stdout.push('\n');
+            true
+        }
+        FindExpr::Print0 => {
+            out.stdout.push_str(display_path);
+            out.stdout.push('\0');
             true
         }
         FindExpr::ExecEach(cmd_parts) => {

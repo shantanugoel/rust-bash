@@ -296,7 +296,7 @@ fn parse_args(args: &[String]) -> Result<SedOpts<'_>, CommandResult> {
             }
             "-n" | "--quiet" | "--silent" => opts.quiet = true,
             "-i" | "--in-place" => opts.in_place = true,
-            "-E" | "-r" => opts.extended_regex = true,
+            "-E" | "-r" | "--regexp-extended" => opts.extended_regex = true,
             "-e" => {
                 i += 1;
                 if i >= args.len() {

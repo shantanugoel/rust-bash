@@ -1,7 +1,7 @@
 # Ordered Oils fix queue as of 2026-04-03.
 # Source of truth: current `tests/fixtures/oils/pass-list.txt` plus `tests/oils_spec.rs`
 # skip rules and `tests/common/oils_format.rs` case parsing.
-# Current totals: 1780 pass / 419 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
+# Current totals: 1870 pass / 329 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
 #
 # ── How the Oils test infra works ──
 # Runner:      tests/oils_spec.rs (datatest_stable harness, discovers .test.sh files)
@@ -26,30 +26,24 @@
 # `builtin-cd.test` and `redirect.test` stay on the queue, but expect a small VFS/symlink/fd tail to remain until M9.
 
 ## Builtins, Shell State, Options, Control, Tracing
-- builtin-read.test (xfail=26) `read` / `mapfile` semantics remain the biggest builtin gap
-- builtin-printf.test (xfail=14) format handling, escapes, integer conversion, `%T`, `%b`, `-v`
-- sh-options.test (xfail=10) shell option state, invocation flags, `$-`, `shopt`
-- builtin-type-bash.test (xfail=14) `type` / PATH / alias / function precedence
-- dbracket.test (xfail=6) `[[ ... ]]` parse/runtime semantics
 - xtrace.test (xfail=5) tracing output fidelity and `PS4` behavior
 - vars-special.test (xfail=12) `BASHPID`, `LINENO`, `$_`, startup defaults, pipeline state
 - builtin-set.test (xfail=6) `set` flag handling and side effects
-- errexit.test (xfail=12) `set -e` / redirection / alias / function behavior
+- errexit.test (xfail=10) `set -e` / redirection / alias / function behavior
 - builtin-echo.test (xfail=3) escape behavior and bash echo quirks
 - command_.test (xfail=11) command lookup / PATH / cache / script execution behavior
-- builtin-meta.test (xfail=10) `command -v/-V`, `builtin`, `command -p`
+- builtin-meta.test (xfail=7) `command -v/-V`, `builtin`, `command -p`
 - builtin-eval-source.test (xfail=7) `eval` / `source` option and PATH semantics
 - builtin-vars.test (xfail=7) `unset`, `local`, export / scope edge cases
 - builtin-bracket.test (xfail=10) `test` / `[` predicate fidelity
 - builtin-special.test (xfail=8) POSIX special builtin semantics
-- strict-options.test (xfail=6) strict mode control-flow / argv behavior
+- strict-options.test (xfail=5) strict mode control-flow / argv behavior
 - builtin-getopts.test (xfail=6) `getopts`, `OPTIND`, `OPTARG` edge cases
 - loop.test (xfail=5) `break` / `continue` / loop validation tail
-- sh-options-bash.test (xfail=3) `SHELLOPTS` / `BASHOPTS` fidelity
+- sh-options-bash.test (xfail=2) `SHELLOPTS` / `BASHOPTS` fidelity
 - builtin-meta-assign.test (xfail=1) assignment-builtin interaction tail
-- case_.test (xfail=3) `case` parsing / pattern tail
+- case_.test (xfail=2) `case` parsing / pattern tail
 - exit-status.test (xfail=3) shell exit-code bookkeeping
-- builtin-type.test (xfail=2) smaller `type` output / keyword cases
 - builtin-bash.test (xfail=3) `bash` / `sh` builtin tail
 - builtin-misc.test (xfail=2) leftover builtin behavior gaps
 - builtin-dirs.test (xfail=1) directory-stack builtin tail
@@ -67,8 +61,8 @@
 
 ## Execution, Redirects, Globs, Filesystem Fidelity
 - sh-usage.test (xfail=8) `sh` / `bash` invocation and argument handling
-- bugs.test (xfail=7) mixed regression bucket; sweep after core semantics are stable
-- redirect.test (xfail=7) redirection semantics; leave the final fd/VFS tail for M9
+- bugs.test (xfail=6) mixed regression bucket; sweep after core semantics are stable
+- redirect.test (xfail=6) redirection semantics; leave the final fd/VFS tail for M9
 - builtin-cd.test (xfail=7) `cd` / `pwd` semantics; leave the final symlink/PWD fidelity tail for M9
 - redirect-multi.test (xfail=1) multi-redirect word expansion and ambiguity tail
 - glob.test (xfail=4) remaining glob semantics and locale/order edge cases
@@ -76,16 +70,16 @@
 - globignore.test (xfail=4) `GLOBIGNORE` interaction semantics
 - process-sub.test (xfail=3) process substitution semantics
 - serialize.test (xfail=5) shell state serialization / `%q` / `set` output fidelity
-- redirect-command.test (xfail=4) command + redirect interaction semantics
+- redirect-command.test (xfail=3) command + redirect interaction semantics
 - redir-order.test (xfail=4) redirect ordering semantics
 - extglob-files.test (xfail=2) extglob filesystem matching tail
-- extglob-match.test (xfail=2) extglob matcher semantics
-- pipeline.test (xfail=9) pipeline execution semantics
+- extglob-match.test (xfail=1) extglob matcher semantics
+- pipeline.test (xfail=4) pipeline execution semantics
 - glob-bash.test (xfail=1) bash-specific glob behavior tail
 
 ## Deferred Until Milestone 9
 - nul-bytes.test (xfail=16) binary/NUL semantics; maps to M9 binary-encoding work
-- unicode.test (xfail=7) Unicode escape / invalid-codepoint fidelity; keep with M9 binary/text fidelity work
+- unicode.test (xfail=6) Unicode escape / invalid-codepoint fidelity; keep with M9 binary/text fidelity work
 
 ## Parser-Adjacent Backlog
 - alias.test (xfail=26) keep at the end; current blocker is moving alias expansion earlier than the post-AST `split_whitespace()` hack in `src/interpreter/walker.rs`, likely between tokenization and parsing in `src/interpreter/mod.rs` and/or by changing `RustBash::exec()` parse granularity; this is not proven to require `brush_parser` changes

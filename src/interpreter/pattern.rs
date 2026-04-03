@@ -37,6 +37,10 @@ pub(crate) fn extglob_match_nocase(pattern: &str, text: &str) -> bool {
     glob_match_inner(pattern.as_bytes(), text.as_bytes(), true, false, false)
 }
 
+pub(crate) fn has_extglob_pattern(pattern: &str) -> bool {
+    has_extglob_syntax(pattern.as_bytes())
+}
+
 /// Return the byte length of the UTF-8 character starting at `first_byte`.
 fn utf8_char_len(first_byte: u8) -> usize {
     if first_byte < 0x80 {

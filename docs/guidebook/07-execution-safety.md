@@ -8,7 +8,7 @@ rust-bash is designed to run untrusted, AI-generated scripts. This chapter cover
 
 ```rust
 pub struct ExecutionLimits {
-    pub max_call_depth: usize,           // default: 100
+    pub max_call_depth: usize,           // default: 25
     pub max_command_count: usize,        // default: 10,000
     pub max_loop_iterations: usize,      // default: 10,000
     pub max_execution_time: Duration,    // default: 30s

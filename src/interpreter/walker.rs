@@ -415,13 +415,27 @@ fn execute_pipeline(
         if state.should_exit || state.control_flow.is_some() {
             break;
         }
-        // Reset stdin offset when entering a new pipe stage with fresh data
-        if idx > 0 {
-            state.stdin_offset = 0;
-        }
-        // Propagate binary data from previous stage via interpreter state
-        state.pipe_stdin_bytes = pipe_data_bytes.take();
-        let r = execute_command(command, state, &pipe_data)?;
+        let is_last_stage = idx + 1 == pipeline.seq.len();
+        let r = if is_actual_pipe && !(state.shopt_opts.lastpipe && is_last_stage) {
+            let mut stage_state = make_pipeline_stage_state(state);
+            if idx > 0 {
+                stage_state.stdin_offset = 0;
+            }
+            stage_state.pipe_stdin_bytes = pipe_data_bytes.take();
+            let r = execute_command(command, &mut stage_state, &pipe_data)?;
+            state.counters.command_count = stage_state.counters.command_count;
+            state.counters.output_size = stage_state.counters.output_size;
+            state.proc_sub_counter = stage_state.proc_sub_counter;
+            r
+        } else {
+            // Reset stdin offset when entering a new pipe stage with fresh data
+            if idx > 0 {
+                state.stdin_offset = 0;
+            }
+            // Propagate binary data from previous stage via interpreter state
+            state.pipe_stdin_bytes = pipe_data_bytes.take();
+            execute_command(command, state, &pipe_data)?
+        };
         // If the command produced binary output, use it for next stage
         if let Some(bytes) = r.stdout_bytes {
             if bytes.is_empty() && !r.stdout.is_empty() {
@@ -537,6 +551,18 @@ fn execute_command(
                         name,
                         FunctionDef {
                             body: func_def.body.clone(),
+                            definition: func_def
+                                .location()
+                                .and_then(|loc| {
+                                    char_range_slice(
+                                        &state.current_source_text,
+                                        loc.start.index,
+                                        loc.end.index,
+                                    )
+                                })
+                                .unwrap_or_default()
+                                .trim()
+                                .to_string(),
                             source: state.current_source.clone(),
                             source_text: state.current_source_text.clone(),
                             lineno: state.current_lineno,
@@ -548,8 +574,17 @@ fn execute_command(
             },
             Err(e) => Err(e),
         },
-        ast::Command::ExtendedTest(ext_test, _redirects) => {
-            execute_extended_test(&ext_test.expr, state)
+        ast::Command::ExtendedTest(ext_test, redirects) => {
+            let mut result = execute_extended_test(&ext_test.expr, state)?;
+            if !state.pending_cmdsub_stderr.is_empty() {
+                let cmdsub_stderr = std::mem::take(&mut state.pending_cmdsub_stderr);
+                result.stderr = format!("{cmdsub_stderr}{}", result.stderr);
+            }
+            if let Some(redir_list) = redirects {
+                let redirect_refs: Vec<&ast::IoRedirect> = redir_list.0.iter().collect();
+                apply_output_redirects(&redirect_refs, &mut result, state)?;
+            }
+            Ok(result)
         }
     };
 
@@ -1752,14 +1787,20 @@ fn execute_simple_command(
         let input_redirects = match collect_input_redirects(&redirects, state, stdin) {
             Ok(map) => map,
             Err(RustBashError::RedirectFailed(msg)) => {
-                let mut result = ExecResult {
-                    stderr: format!("rust-bash: {msg}\n"),
-                    exit_code: 1,
-                    ..ExecResult::default()
-                };
-                state.last_exit_code = 1;
-                apply_output_redirects(&redirects, &mut result, state)?;
-                return Ok(result);
+                if matches!(cmd_name.as_str(), "mapfile" | "readarray")
+                    && stdin_redirect_reads_directory(&redirects, state)?
+                {
+                    HashMap::from([(0, String::new())])
+                } else {
+                    let mut result = ExecResult {
+                        stderr: format!("rust-bash: {msg}\n"),
+                        exit_code: 1,
+                        ..ExecResult::default()
+                    };
+                    state.last_exit_code = 1;
+                    apply_output_redirects(&redirects, &mut result, state)?;
+                    return Ok(result);
+                }
             }
             Err(e) => return Err(e),
         };
@@ -1768,9 +1809,11 @@ fn execute_simple_command(
             None => stdin.to_string(),
         };
         let saved_stdin_offset = state.stdin_offset;
+        let saved_current_stdin_persistent_fd = state.current_stdin_persistent_fd;
         if input_redirects.contains_key(&0) {
             state.stdin_offset = 0;
         }
+        state.current_stdin_persistent_fd = redirected_stdin_persistent_fd(&redirects, state)?;
 
         // Track last argument for $_ (last argument of the simple command).
         state.last_argument = last_arg.clone();
@@ -1789,6 +1832,7 @@ fn execute_simple_command(
         if input_redirects.contains_key(&0) {
             state.stdin_offset = saved_stdin_offset;
         }
+        state.current_stdin_persistent_fd = saved_current_stdin_persistent_fd;
         let mut result = dispatch_result?;
 
         // 7a. Emit xtrace to stderr
@@ -1917,9 +1961,16 @@ fn execute_compound_command(
         (stdin.to_string(), false)
     };
     let saved_stdin_offset = state.stdin_offset;
+    let saved_current_stdin_persistent_fd = state.current_stdin_persistent_fd;
     if uses_fresh_stdin {
         state.stdin_offset = 0;
     }
+    state.current_stdin_persistent_fd = if let Some(redir_list) = redirects {
+        let redir_refs: Vec<&ast::IoRedirect> = redir_list.0.iter().collect();
+        redirected_stdin_persistent_fd(&redir_refs, state)?
+    } else {
+        None
+    };
 
     let mut result = match compound {
         ast::CompoundCommand::IfClause(if_clause) => {
@@ -1953,6 +2004,7 @@ fn execute_compound_command(
         }
     };
     state.stdin_offset = saved_stdin_offset;
+    state.current_stdin_persistent_fd = saved_current_stdin_persistent_fd;
 
     // Drain command-substitution stderr accumulated during expansion
     if !state.pending_cmdsub_stderr.is_empty() {
@@ -2573,6 +2625,8 @@ fn execute_subshell(
         control_flow: None,
         positional_params: state.positional_params.clone(),
         shell_name: state.shell_name.clone(),
+        interactive_shell: state.interactive_shell,
+        invoked_with_c: state.invoked_with_c,
         random_seed: state.random_seed,
         local_scopes: state.local_scopes.clone(),
         temp_binding_scopes: state.temp_binding_scopes.clone(),
@@ -2581,6 +2635,7 @@ fn execute_subshell(
         in_trap: false,
         errexit_suppressed: 0,
         stdin_offset: 0,
+        current_stdin_persistent_fd: None,
         dir_stack: state.dir_stack.clone(),
         command_hash: state.command_hash.clone(),
         aliases: state.aliases.clone(),
@@ -2593,6 +2648,7 @@ fn execute_subshell(
         machtype: state.machtype.clone(),
         hosttype: state.hosttype.clone(),
         persistent_fds: state.persistent_fds.clone(),
+        persistent_fd_offsets: state.persistent_fd_offsets.clone(),
         next_auto_fd: state.next_auto_fd,
         proc_sub_counter: state.proc_sub_counter,
         proc_sub_prealloc: HashMap::new(),
@@ -2612,6 +2668,64 @@ fn execute_subshell(
 
     // Only the exit code propagates back; all other state changes are discarded
     Ok(result)
+}
+
+fn make_pipeline_stage_state(state: &mut InterpreterState) -> InterpreterState {
+    InterpreterState {
+        fs: Arc::clone(&state.fs),
+        env: state.env.clone(),
+        cwd: state.cwd.clone(),
+        functions: state.functions.clone(),
+        last_exit_code: state.last_exit_code,
+        commands: clone_commands(&state.commands),
+        shell_opts: state.shell_opts.clone(),
+        shopt_opts: state.shopt_opts.clone(),
+        limits: state.limits.clone(),
+        counters: ExecutionCounters {
+            command_count: state.counters.command_count,
+            output_size: state.counters.output_size,
+            start_time: state.counters.start_time,
+            substitution_depth: state.counters.substitution_depth,
+            call_depth: 0,
+        },
+        network_policy: state.network_policy.clone(),
+        should_exit: false,
+        loop_depth: 0,
+        control_flow: None,
+        positional_params: state.positional_params.clone(),
+        shell_name: state.shell_name.clone(),
+        interactive_shell: state.interactive_shell,
+        invoked_with_c: state.invoked_with_c,
+        random_seed: state.random_seed,
+        local_scopes: state.local_scopes.clone(),
+        temp_binding_scopes: state.temp_binding_scopes.clone(),
+        in_function_depth: state.in_function_depth,
+        traps: state.traps.clone(),
+        in_trap: false,
+        errexit_suppressed: 0,
+        stdin_offset: 0,
+        current_stdin_persistent_fd: None,
+        dir_stack: state.dir_stack.clone(),
+        command_hash: state.command_hash.clone(),
+        aliases: state.aliases.clone(),
+        current_lineno: state.current_lineno,
+        current_source: state.current_source.clone(),
+        current_source_text: state.current_source_text.clone(),
+        shell_start_time: state.shell_start_time,
+        last_argument: state.last_argument.clone(),
+        call_stack: state.call_stack.clone(),
+        machtype: state.machtype.clone(),
+        hosttype: state.hosttype.clone(),
+        persistent_fds: state.persistent_fds.clone(),
+        persistent_fd_offsets: state.persistent_fd_offsets.clone(),
+        next_auto_fd: state.next_auto_fd,
+        proc_sub_counter: state.proc_sub_counter,
+        proc_sub_prealloc: HashMap::new(),
+        pipe_stdin_bytes: None,
+        pending_cmdsub_stderr: String::new(),
+        fatal_expansion_error: false,
+        last_command_had_error: false,
+    }
 }
 
 fn execute_case(
@@ -2752,6 +2866,8 @@ fn make_exec_callback(
             control_flow: None,
             positional_params: positional_params.clone(),
             shell_name: shell_name.clone(),
+            interactive_shell: false,
+            invoked_with_c: false,
             random_seed,
             local_scopes: Vec::new(),
             temp_binding_scopes: Vec::new(),
@@ -2760,6 +2876,7 @@ fn make_exec_callback(
             in_trap: false,
             errexit_suppressed: 0,
             stdin_offset: 0,
+            current_stdin_persistent_fd: None,
             dir_stack: Vec::new(),
             command_hash: HashMap::new(),
             aliases: HashMap::new(),
@@ -2772,6 +2889,7 @@ fn make_exec_callback(
             machtype: machtype.clone(),
             hosttype: hosttype.clone(),
             persistent_fds: HashMap::new(),
+            persistent_fd_offsets: HashMap::new(),
             next_auto_fd: 10,
             proc_sub_counter: 0,
             proc_sub_prealloc: HashMap::new(),
@@ -2917,7 +3035,7 @@ fn dispatch_command(
     }
 
     // 1. Special shell builtins (unshadowable)
-    if let Some(result) = builtins::execute_builtin(name, args, state, stdin)? {
+    if let Some(result) = builtins::execute_builtin(name, args, state, stdin, extra_input_fds)? {
         return Ok(result);
     }
 
@@ -3094,12 +3212,15 @@ fn exec_persistent_redirects(
                         let fd_num = fd.unwrap_or(1);
                         if is_dev_null(&path) {
                             state.persistent_fds.insert(fd_num, PersistentFd::DevNull);
+                            state.persistent_fd_offsets.insert(fd_num, 0);
                         } else if is_dev_stdout(&path) {
                             // exec > /dev/stdout restores normal stdout
                             state.persistent_fds.remove(&fd_num);
+                            state.persistent_fd_offsets.remove(&fd_num);
                         } else if is_dev_stderr(&path) {
                             // exec > /dev/stderr is unusual but valid
                             state.persistent_fds.remove(&fd_num);
+                            state.persistent_fd_offsets.remove(&fd_num);
                         } else {
                             // Create/truncate the file
                             state
@@ -3109,28 +3230,39 @@ fn exec_persistent_redirects(
                             state
                                 .persistent_fds
                                 .insert(fd_num, PersistentFd::OutputFile(path));
+                            state.persistent_fd_offsets.insert(fd_num, 0);
                         }
                     }
                     ast::IoFileRedirectKind::Append => {
                         let fd_num = fd.unwrap_or(1);
                         if is_dev_null(&path) {
                             state.persistent_fds.insert(fd_num, PersistentFd::DevNull);
+                            state.persistent_fd_offsets.insert(fd_num, 0);
                         } else if is_dev_stdout(&path) || is_dev_stderr(&path) {
                             state.persistent_fds.remove(&fd_num);
+                            state.persistent_fd_offsets.remove(&fd_num);
                         } else {
+                            let file_len = state
+                                .fs
+                                .read_file(Path::new(&path))
+                                .map(|contents| contents.len())
+                                .unwrap_or(0);
                             state
                                 .persistent_fds
                                 .insert(fd_num, PersistentFd::OutputFile(path));
+                            state.persistent_fd_offsets.insert(fd_num, file_len);
                         }
                     }
                     ast::IoFileRedirectKind::Read => {
                         let fd_num = fd.unwrap_or(0);
                         if is_dev_null(&path) {
                             state.persistent_fds.insert(fd_num, PersistentFd::DevNull);
+                            state.persistent_fd_offsets.insert(fd_num, 0);
                         } else {
                             state
                                 .persistent_fds
                                 .insert(fd_num, PersistentFd::InputFile(path));
+                            state.persistent_fd_offsets.insert(fd_num, 0);
                         }
                     }
                     ast::IoFileRedirectKind::ReadAndWrite => {
@@ -3144,6 +3276,7 @@ fn exec_persistent_redirects(
                         state
                             .persistent_fds
                             .insert(fd_num, PersistentFd::ReadWriteFile(path));
+                        state.persistent_fd_offsets.insert(fd_num, 0);
                     }
                     ast::IoFileRedirectKind::DuplicateOutput => {
                         let fd_num = fd.unwrap_or(1);
@@ -3151,25 +3284,47 @@ fn exec_persistent_redirects(
                         // Handle close: >&-
                         if dup_target == "-" {
                             state.persistent_fds.insert(fd_num, PersistentFd::Closed);
+                            state.persistent_fd_offsets.remove(&fd_num);
                         } else if let Some(stripped) = dup_target.strip_suffix('-') {
                             // FD move: N>&M-
                             if let Ok(source_fd) = stripped.parse::<i32>() {
                                 if let Some(entry) = state.persistent_fds.get(&source_fd).cloned() {
                                     state.persistent_fds.insert(fd_num, entry);
+                                    let offset = state
+                                        .persistent_fd_offsets
+                                        .get(&source_fd)
+                                        .copied()
+                                        .unwrap_or(0);
+                                    state.persistent_fd_offsets.insert(fd_num, offset);
                                 }
                                 state.persistent_fds.insert(source_fd, PersistentFd::Closed);
+                                state.persistent_fd_offsets.remove(&source_fd);
                             }
                         } else if let Ok(target_fd) = dup_target.parse::<i32>() {
                             // Dup: N>&M — copy M's destination to N
                             if let Some(entry) = state.persistent_fds.get(&target_fd).cloned() {
                                 state.persistent_fds.insert(fd_num, entry);
+                                let offset = state
+                                    .persistent_fd_offsets
+                                    .get(&target_fd)
+                                    .copied()
+                                    .unwrap_or(0);
+                                state.persistent_fd_offsets.insert(fd_num, offset);
                             } else if target_fd == 0 || target_fd == 1 || target_fd == 2 {
                                 // Standard fd without persistent redirect — store as dup
                                 state
                                     .persistent_fds
                                     .insert(fd_num, PersistentFd::DupStdFd(target_fd));
+                                if target_fd == 0 {
+                                    state
+                                        .persistent_fd_offsets
+                                        .insert(fd_num, state.stdin_offset);
+                                } else {
+                                    state.persistent_fd_offsets.remove(&fd_num);
+                                }
                             } else {
                                 state.persistent_fds.remove(&fd_num);
+                                state.persistent_fd_offsets.remove(&fd_num);
                             }
                         }
                     }
@@ -3178,6 +3333,24 @@ fn exec_persistent_redirects(
                         let dup_target = redirect_target_filename(target, state)?;
                         if dup_target == "-" {
                             state.persistent_fds.insert(fd_num, PersistentFd::Closed);
+                            state.persistent_fd_offsets.remove(&fd_num);
+                        } else if let Ok(target_fd) = dup_target.parse::<i32>() {
+                            if let Some(entry) = state.persistent_fds.get(&target_fd).cloned() {
+                                state.persistent_fds.insert(fd_num, entry);
+                                let offset = state
+                                    .persistent_fd_offsets
+                                    .get(&target_fd)
+                                    .copied()
+                                    .unwrap_or(0);
+                                state.persistent_fd_offsets.insert(fd_num, offset);
+                            } else if target_fd == 0 {
+                                state
+                                    .persistent_fds
+                                    .insert(fd_num, PersistentFd::DupStdFd(0));
+                                state
+                                    .persistent_fd_offsets
+                                    .insert(fd_num, state.stdin_offset);
+                            }
                         }
                     }
                 }
@@ -3188,10 +3361,14 @@ fn exec_persistent_redirects(
                 if is_dev_null(&path) {
                     state.persistent_fds.insert(1, PersistentFd::DevNull);
                     state.persistent_fds.insert(2, PersistentFd::DevNull);
+                    state.persistent_fd_offsets.insert(1, 0);
+                    state.persistent_fd_offsets.insert(2, 0);
                 } else {
                     let pfd = PersistentFd::OutputFile(path);
                     state.persistent_fds.insert(1, pfd.clone());
                     state.persistent_fds.insert(2, pfd);
+                    state.persistent_fd_offsets.insert(1, 0);
+                    state.persistent_fd_offsets.insert(2, 0);
                 }
             }
             _ => {}
@@ -3221,6 +3398,7 @@ fn exec_fd_variable_alloc(
             && let Ok(fd_num) = var.value.as_scalar().parse::<i32>()
         {
             state.persistent_fds.insert(fd_num, PersistentFd::Closed);
+            state.persistent_fd_offsets.remove(&fd_num);
         }
         return Ok(ExecResult::default());
     }
@@ -3250,8 +3428,10 @@ fn exec_fd_variable_alloc(
                 ast::IoFileRedirectKind::Write | ast::IoFileRedirectKind::Clobber => {
                     if is_dev_null(&path) {
                         state.persistent_fds.insert(fd_num, PersistentFd::DevNull);
+                        state.persistent_fd_offsets.insert(fd_num, 0);
                     } else if is_dev_stdout(&path) || is_dev_stderr(&path) {
                         state.persistent_fds.remove(&fd_num);
+                        state.persistent_fd_offsets.remove(&fd_num);
                     } else {
                         state
                             .fs
@@ -3260,31 +3440,43 @@ fn exec_fd_variable_alloc(
                         state
                             .persistent_fds
                             .insert(fd_num, PersistentFd::OutputFile(path));
+                        state.persistent_fd_offsets.insert(fd_num, 0);
                     }
                 }
                 ast::IoFileRedirectKind::Append => {
                     if is_dev_null(&path) {
                         state.persistent_fds.insert(fd_num, PersistentFd::DevNull);
+                        state.persistent_fd_offsets.insert(fd_num, 0);
                     } else if is_dev_stdout(&path) || is_dev_stderr(&path) {
                         state.persistent_fds.remove(&fd_num);
+                        state.persistent_fd_offsets.remove(&fd_num);
                     } else {
+                        let file_len = state
+                            .fs
+                            .read_file(Path::new(&path))
+                            .map(|contents| contents.len())
+                            .unwrap_or(0);
                         state
                             .persistent_fds
                             .insert(fd_num, PersistentFd::OutputFile(path));
+                        state.persistent_fd_offsets.insert(fd_num, file_len);
                     }
                 }
                 ast::IoFileRedirectKind::Read => {
                     if is_dev_null(&path) {
                         state.persistent_fds.insert(fd_num, PersistentFd::DevNull);
+                        state.persistent_fd_offsets.insert(fd_num, 0);
                     } else {
                         state
                             .persistent_fds
                             .insert(fd_num, PersistentFd::InputFile(path));
+                        state.persistent_fd_offsets.insert(fd_num, 0);
                     }
                 }
                 ast::IoFileRedirectKind::ReadAndWrite => {
                     if is_dev_null(&path) {
                         state.persistent_fds.insert(fd_num, PersistentFd::DevNull);
+                        state.persistent_fd_offsets.insert(fd_num, 0);
                     } else {
                         if !state.fs.exists(Path::new(&path)) {
                             state
@@ -3295,6 +3487,7 @@ fn exec_fd_variable_alloc(
                         state
                             .persistent_fds
                             .insert(fd_num, PersistentFd::ReadWriteFile(path));
+                        state.persistent_fd_offsets.insert(fd_num, 0);
                     }
                 }
                 _ => {}
@@ -3522,6 +3715,70 @@ fn collect_input_redirects(
         }
     }
     Ok(resolved)
+}
+
+fn redirected_stdin_persistent_fd(
+    redirects: &[&ast::IoRedirect],
+    state: &mut InterpreterState,
+) -> Result<Option<i32>, RustBashError> {
+    let mut current = None;
+
+    for redir in redirects {
+        match redir {
+            ast::IoRedirect::File(fd, ast::IoFileRedirectKind::DuplicateInput, target)
+                if fd.unwrap_or(0) == 0 =>
+            {
+                let dup_target = redirect_target_filename(target, state)?;
+                current = dup_target
+                    .parse::<i32>()
+                    .ok()
+                    .filter(|fd| state.persistent_fds.contains_key(fd));
+            }
+            ast::IoRedirect::File(
+                fd,
+                ast::IoFileRedirectKind::Read | ast::IoFileRedirectKind::ReadAndWrite,
+                _,
+            ) if fd.unwrap_or(0) == 0 => {
+                current = None;
+            }
+            ast::IoRedirect::HereString(fd, _) | ast::IoRedirect::HereDocument(fd, _)
+                if fd.unwrap_or(0) == 0 =>
+            {
+                current = None;
+            }
+            _ => {}
+        }
+    }
+
+    Ok(current)
+}
+
+fn stdin_redirect_reads_directory(
+    redirects: &[&ast::IoRedirect],
+    state: &mut InterpreterState,
+) -> Result<bool, RustBashError> {
+    for redir in redirects {
+        match redir {
+            ast::IoRedirect::File(
+                fd,
+                ast::IoFileRedirectKind::Read | ast::IoFileRedirectKind::ReadAndWrite,
+                target,
+            ) if fd.unwrap_or(0) == 0 => {
+                let filename = redirect_target_filename(target, state)?;
+                let path = resolve_path(&state.cwd, &filename);
+                if state
+                    .fs
+                    .stat(Path::new(&path))
+                    .is_ok_and(|meta| meta.node_type == crate::vfs::NodeType::Directory)
+                {
+                    return Ok(true);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(false)
 }
 
 fn apply_output_redirects(
@@ -3947,7 +4204,7 @@ fn apply_dup_fd(
     fd_num: i32,
     target_fd: i32,
     result: &mut ExecResult,
-    state: &InterpreterState,
+    state: &mut InterpreterState,
 ) -> Result<(), RustBashError> {
     // Standard FD duplication
     if target_fd == 1 && fd_num == 2 {
@@ -3977,6 +4234,27 @@ fn apply_dup_fd(
                         c
                     };
                     write_or_append(state, path, &content, true)?;
+                    let next_offset = state
+                        .persistent_fd_offsets
+                        .get(&target_fd)
+                        .copied()
+                        .unwrap_or(0)
+                        + content.len();
+                    state.persistent_fd_offsets.insert(target_fd, next_offset);
+                }
+                PersistentFd::ReadWriteFile(path) => {
+                    let content = if fd_num == 1 {
+                        let c = result.stdout.clone();
+                        result.stdout.clear();
+                        c
+                    } else {
+                        let c = result.stderr.clone();
+                        result.stderr.clear();
+                        c
+                    };
+                    let next_offset =
+                        write_to_persistent_fd_at_offset(path, &content, target_fd, state)?;
+                    state.persistent_fd_offsets.insert(target_fd, next_offset);
                 }
                 PersistentFd::DevNull | PersistentFd::Closed => {
                     if fd_num == 1 {
@@ -4005,6 +4283,34 @@ fn apply_dup_fd(
         }
     }
     Ok(())
+}
+
+fn write_to_persistent_fd_at_offset(
+    path: &str,
+    content: &str,
+    fd: i32,
+    state: &InterpreterState,
+) -> Result<usize, RustBashError> {
+    let mut bytes = state
+        .fs
+        .read_file(Path::new(path))
+        .unwrap_or_else(|_| Vec::new());
+    let offset = state.persistent_fd_offsets.get(&fd).copied().unwrap_or(0);
+    if offset > bytes.len() {
+        bytes.resize(offset, 0);
+    }
+
+    let content_bytes = content.as_bytes();
+    let end = offset + content_bytes.len();
+    if end > bytes.len() {
+        bytes.resize(end, 0);
+    }
+    bytes[offset..end].copy_from_slice(content_bytes);
+    state
+        .fs
+        .write_file(Path::new(path), &bytes)
+        .map_err(|e| RustBashError::Execution(e.to_string()))?;
+    Ok(end)
 }
 
 /// Handle a process substitution in a command prefix or suffix.
@@ -4138,6 +4444,8 @@ fn make_proc_sub_state(state: &mut InterpreterState) -> InterpreterState {
         control_flow: None,
         positional_params: state.positional_params.clone(),
         shell_name: state.shell_name.clone(),
+        interactive_shell: state.interactive_shell,
+        invoked_with_c: state.invoked_with_c,
         random_seed: state.random_seed,
         local_scopes: Vec::new(),
         temp_binding_scopes: Vec::new(),
@@ -4146,6 +4454,7 @@ fn make_proc_sub_state(state: &mut InterpreterState) -> InterpreterState {
         in_trap: false,
         errexit_suppressed: 0,
         stdin_offset: 0,
+        current_stdin_persistent_fd: None,
         dir_stack: state.dir_stack.clone(),
         command_hash: state.command_hash.clone(),
         aliases: state.aliases.clone(),
@@ -4158,6 +4467,7 @@ fn make_proc_sub_state(state: &mut InterpreterState) -> InterpreterState {
         machtype: state.machtype.clone(),
         hosttype: state.hosttype.clone(),
         persistent_fds: HashMap::new(),
+        persistent_fd_offsets: HashMap::new(),
         next_auto_fd: 10,
         proc_sub_counter: state.proc_sub_counter,
         proc_sub_prealloc: HashMap::new(),
@@ -4394,12 +4704,24 @@ fn eval_extended_test_expr(
                 if is_fully_quoted {
                     return Ok(left.contains(&pattern));
                 }
+                if raw.trim() == "~" {
+                    return eval_regex_match(&left, &regex::escape(&pattern), state);
+                }
                 // Check for partial quoting — extract quoted portions and escape them
                 let effective_pattern = build_regex_with_quoted_literals(raw, state)?;
                 return eval_regex_match(&left, &effective_pattern, state);
             }
 
-            let right = expand_word_to_string_mut(right_word, state)?;
+            let right_is_fully_quoted = is_word_fully_quoted(&right_word.value);
+            let right = match pred {
+                ast::BinaryPredicate::StringExactlyMatchesPattern
+                | ast::BinaryPredicate::StringDoesNotExactlyMatchPattern
+                    if !right_is_fully_quoted =>
+                {
+                    crate::interpreter::expansion::expand_pattern_string(&right_word.value, state)?
+                }
+                _ => expand_word_to_string_mut(right_word, state)?,
+            };
 
             // Arithmetic predicates (-eq, -ne, -lt, -gt, -le, -ge) evaluate
             // operands as arithmetic expressions in [[ ]] context.
@@ -4441,10 +4763,22 @@ fn eval_extended_test_expr(
                 // Case-insensitive pattern matching
                 let result = match pred {
                     ast::BinaryPredicate::StringExactlyMatchesPattern => {
-                        crate::interpreter::pattern::extglob_match_nocase(&right, &left)
+                        if right_is_fully_quoted {
+                            left.eq_ignore_ascii_case(&right)
+                        } else if crate::interpreter::pattern::has_extglob_pattern(&right) {
+                            crate::interpreter::pattern::extglob_match_nocase(&right, &left)
+                        } else {
+                            crate::interpreter::pattern::glob_match_nocase(&right, &left)
+                        }
                     }
                     ast::BinaryPredicate::StringDoesNotExactlyMatchPattern => {
-                        !crate::interpreter::pattern::extglob_match_nocase(&right, &left)
+                        if right_is_fully_quoted {
+                            !left.eq_ignore_ascii_case(&right)
+                        } else if crate::interpreter::pattern::has_extglob_pattern(&right) {
+                            !crate::interpreter::pattern::extglob_match_nocase(&right, &left)
+                        } else {
+                            !crate::interpreter::pattern::glob_match_nocase(&right, &left)
+                        }
                     }
                     ast::BinaryPredicate::StringExactlyMatchesString => {
                         left.eq_ignore_ascii_case(&right)
@@ -4461,10 +4795,22 @@ fn eval_extended_test_expr(
                 // Use extglob-aware matching for pattern predicates
                 let result = match pred {
                     ast::BinaryPredicate::StringExactlyMatchesPattern => {
-                        crate::interpreter::pattern::extglob_match(&right, &left)
+                        if right_is_fully_quoted {
+                            left == right
+                        } else if crate::interpreter::pattern::has_extglob_pattern(&right) {
+                            crate::interpreter::pattern::extglob_match(&right, &left)
+                        } else {
+                            crate::interpreter::pattern::glob_match(&right, &left)
+                        }
                     }
                     ast::BinaryPredicate::StringDoesNotExactlyMatchPattern => {
-                        !crate::interpreter::pattern::extglob_match(&right, &left)
+                        if right_is_fully_quoted {
+                            left != right
+                        } else if crate::interpreter::pattern::has_extglob_pattern(&right) {
+                            !crate::interpreter::pattern::extglob_match(&right, &left)
+                        } else {
+                            !crate::interpreter::pattern::glob_match(&right, &left)
+                        }
                     }
                     _ => crate::commands::test_cmd::eval_binary_predicate(
                         pred, &left, &right, true, &*state.fs, &state.cwd,

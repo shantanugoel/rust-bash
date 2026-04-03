@@ -145,7 +145,7 @@ pub struct ExecutionLimits {
 impl Default for ExecutionLimits {
     fn default() -> Self {
         Self {
-            max_call_depth: 50,
+            max_call_depth: 25,
             max_command_count: 10_000,
             max_loop_iterations: 10_000,
             max_execution_time: Duration::from_secs(30),
@@ -325,6 +325,7 @@ impl Default for ShoptOpts {
 #[derive(Debug, Clone)]
 pub struct FunctionDef {
     pub body: ast::FunctionBody,
+    pub definition: String,
     pub source: String,
     pub source_text: String,
     pub lineno: usize,
@@ -357,6 +358,8 @@ pub struct InterpreterState {
     pub(crate) control_flow: Option<ControlFlow>,
     pub positional_params: Vec<String>,
     pub shell_name: String,
+    pub interactive_shell: bool,
+    pub invoked_with_c: bool,
     /// Simple PRNG state for $RANDOM.
     pub(crate) random_seed: u32,
     /// Stack of restore maps for `local` variable scoping in functions.
@@ -375,6 +378,8 @@ pub struct InterpreterState {
     /// Byte offset into the current stdin stream, used by `read` to consume
     /// successive lines from piped input across loop iterations.
     pub(crate) stdin_offset: usize,
+    /// The persistent FD currently supplying stdin for the active command, if any.
+    pub(crate) current_stdin_persistent_fd: Option<i32>,
     /// Directory stack for `pushd`/`popd`/`dirs`.
     pub(crate) dir_stack: Vec<String>,
     /// Cached command-name → resolved-path mappings for `hash`.
@@ -399,6 +404,8 @@ pub struct InterpreterState {
     pub(crate) hosttype: String,
     /// Persistent FD redirections set by `exec` (e.g. `exec > file`).
     pub(crate) persistent_fds: HashMap<i32, PersistentFd>,
+    /// Current read/write position for persistent file descriptors.
+    pub(crate) persistent_fd_offsets: HashMap<i32, usize>,
     /// Next auto-allocated FD number for `{varname}>file` syntax.
     pub(crate) next_auto_fd: i32,
     /// Counter for generating unique process substitution temp file names.
@@ -437,6 +444,9 @@ pub(crate) fn parser_options() -> brush_parser::ParserOptions {
 pub fn parse(input: &str) -> Result<ast::Program, RustBashError> {
     let mut parse_input =
         rewrite_legacy_ksh_command_substitutions(input).unwrap_or_else(|| input.to_string());
+    if let Some(rewritten) = rewrite_assignment_prefixed_dbracket(&parse_input) {
+        parse_input = rewritten;
+    }
     let raw_tokens = match brush_parser::tokenize_str(&parse_input) {
         Ok(tokens) => tokens,
         Err(err) => {
@@ -738,6 +748,10 @@ fn rewrite_assignment_prefixed_keyword(
     input: &str,
     tokens: &[brush_parser::Token],
 ) -> Option<String> {
+    if let Some(rewritten) = rewrite_assignment_prefixed_dbracket(input) {
+        return Some(rewritten);
+    }
+
     const RESERVED_WORDS: &[&str] = &[
         "case", "do", "done", "elif", "else", "esac", "fi", "for", "if", "in", "select", "then",
         "until", "while",
@@ -770,6 +784,57 @@ fn rewrite_assignment_prefixed_keyword(
     rewritten.push('\\');
     rewritten.push_str(&input[start..]);
     Some(rewritten)
+}
+
+fn rewrite_assignment_prefixed_dbracket(input: &str) -> Option<String> {
+    fn is_simple_command_delimiter(byte: u8) -> bool {
+        byte.is_ascii_whitespace() || matches!(byte, b';' | b'&' | b'|' | b'(' | b')' | b'<' | b'>')
+    }
+
+    fn is_inline_whitespace(byte: u8) -> bool {
+        matches!(byte, b' ' | b'\t')
+    }
+
+    let trimmed = input.trim_start();
+    let offset = input.len() - trimmed.len();
+    let bytes = trimmed.as_bytes();
+    let mut pos = 0usize;
+    let mut saw_assignment = false;
+
+    while pos < bytes.len() {
+        let start = pos;
+        while pos < bytes.len() && bytes[pos] != b'=' && !is_simple_command_delimiter(bytes[pos]) {
+            pos += 1;
+        }
+        if pos == start || pos >= bytes.len() || bytes[pos] != b'=' {
+            pos = start;
+            break;
+        }
+        pos += 1;
+        while pos < bytes.len() && !is_simple_command_delimiter(bytes[pos]) {
+            pos += 1;
+        }
+        saw_assignment = true;
+        while pos < bytes.len() && is_inline_whitespace(bytes[pos]) {
+            pos += 1;
+        }
+    }
+
+    if saw_assignment && trimmed[pos..].starts_with("[[") {
+        let open_start = offset + pos;
+        let close_start = input[open_start + 2..]
+            .find("]]")
+            .map(|idx| open_start + 2 + idx)?;
+        let mut rewritten = String::with_capacity(input.len() + 6);
+        rewritten.push_str(&input[..open_start]);
+        rewritten.push_str("'[['");
+        rewritten.push_str(&input[open_start + 2..close_start]);
+        rewritten.push_str("']]'");
+        rewritten.push_str(&input[close_start + 2..]);
+        return Some(rewritten);
+    }
+
+    None
 }
 
 fn rewrite_extended_test_unary_literal_operands(input: &str) -> Option<String> {
@@ -1392,6 +1457,8 @@ mod tests {
             control_flow: None,
             positional_params: Vec::new(),
             shell_name: "rust-bash".to_string(),
+            interactive_shell: false,
+            invoked_with_c: false,
             random_seed: 42,
             local_scopes: Vec::new(),
             temp_binding_scopes: Vec::new(),
@@ -1400,6 +1467,7 @@ mod tests {
             in_trap: false,
             errexit_suppressed: 0,
             stdin_offset: 0,
+            current_stdin_persistent_fd: None,
             dir_stack: Vec::new(),
             command_hash: HashMap::new(),
             aliases: HashMap::new(),
@@ -1412,6 +1480,7 @@ mod tests {
             machtype: "x86_64-pc-linux-gnu".to_string(),
             hosttype: "x86_64".to_string(),
             persistent_fds: HashMap::new(),
+            persistent_fd_offsets: HashMap::new(),
             next_auto_fd: 10,
             proc_sub_counter: 0,
             proc_sub_prealloc: HashMap::new(),

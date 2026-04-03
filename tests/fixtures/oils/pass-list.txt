@@ -391,12 +391,12 @@ assign.test:Using ${x-default} after unsetting local shadowing a global
 assign.test:"var d = {}; declare -p d" does not print anything (OSH)
 bool-parse.test:Allowed: [[ = ]] and [[ == ]]
 bool-parse.test:[ -f = ] and [ -f == ]
+bool-parse.test:[[ -f -f ]] and [[ -f == ]]
 bool-parse.test:Not allowed: [[ ) ]] and [[ ( ]]
-bool-parse.test:test builtin - Unexpected trailing word '--' (#2409)
 bool-parse.test:test builtin: ( = ) is confusing: equality test or non-empty string test
 bool-parse.test:test builtin: ( == ) is confusing: equality test or non-empty string test
+bool-parse.test:test builtin - Unexpected trailing word '--' (#2409)
 bool-parse.test:test builtin: ( x ) behavior is the same in both cases
-bool-parse.test:[[ -f -f ]] and [[ -f == ]]
 brace-expansion.test:Adjacent comma and range works
 brace-expansion.test:Ascending number range expansion with negative step is invalid
 brace-expansion.test:Char range expansion
@@ -469,6 +469,7 @@ bugs.test:if/else
 bugs.test:OSH can use ARGV name
 bugs.test:other builtins fail on writing to full disk
 bugs.test:printf integer size bug
+bugs.test:process sub <(echo 42 | tee PWNED) not allowed
 bugs.test:(( status bug
 bugs.test:subshell while running a script (regression)
 bugs.test:Turn an array into an integer.
@@ -638,6 +639,9 @@ builtin-meta.test:command command -v seq
 builtin-meta.test:command -p (hide tool in custom path)
 builtin-meta.test:command skips function lookup
 builtin-meta.test:command -v
+builtin-meta.test:command -v doesn't find executable dir
+builtin-meta.test:command -v doesn't find non-executable file
+builtin-meta.test:command -v executable, builtin
 builtin-meta.test:command -V nonexistent
 builtin-misc.test:Invalid shift argument
 builtin-misc.test:Print shell strings with normal chars: set and printf %q and ${x@Q}
@@ -647,10 +651,13 @@ builtin-misc.test:time pipeline
 builtin-printf.test:%06d zero padding vs. %6.6d
 builtin-printf.test:%06s is no-op
 builtin-printf.test:%06x %06X %06o
+builtin-printf.test:%10.5(strftime format)T
 builtin-printf.test:Arbitrary base 64#a is rejected (unlike in shell arithmetic)
+builtin-printf.test:bash truncates long strftime string at 128
 builtin-printf.test:dynamic declare instead of %q
 builtin-printf.test:dynamic declare instead of %s
 builtin-printf.test:empty string (osh is more strict)
+builtin-printf.test:Invalid UTF-8
 builtin-printf.test:leading spaces are accepted in value given to %d %X, but not trailing spaces
 builtin-printf.test:negative numbers with unsigned / octal / hex
 builtin-printf.test:No char after ' => zero code point
@@ -661,11 +668,14 @@ builtin-printf.test:printf %6.4x X o
 builtin-printf.test:printf %6q (width)
 builtin-printf.test:printf %6.s and %0.s
 builtin-printf.test:printf + and space flags
+builtin-printf.test:printf backslash escapes
 builtin-printf.test:printf %b does backslash escaping
 builtin-printf.test:printf %b respects \c early return
 builtin-printf.test:printf %b supports octal escapes, both \141 and \0141
 builtin-printf.test:printf %b unicode escapes
+builtin-printf.test:printf %b with truncated octal escapes
 builtin-printf.test:printf %c ASCII
+builtin-printf.test:printf %c unicode - prints the first BYTE of a string - it does not respect UTF-8
 builtin-printf.test:printf %d with + prefix (positive sign)
 builtin-printf.test:printf %d %X support hex 0x5 and octal 055
 builtin-printf.test:printf eE fF gG
@@ -676,9 +686,13 @@ builtin-printf.test:printf floating point with - and 0
 builtin-printf.test:printf integer
 builtin-printf.test:printf invalid backslash escape (is ignored)
 builtin-printf.test:printf invalid format
+builtin-printf.test:printf negative integer overflow
 builtin-printf.test:printf negative numbers
+builtin-printf.test:printf octal backslash escapes
+builtin-printf.test:printf positive integer overflow
 builtin-printf.test:printf %q
 builtin-printf.test:printf %*.*s (width/precision from args)
+builtin-printf.test:printf unicode backslash escapes
 builtin-printf.test:printf -v a[1]
 builtin-printf.test:printf -v dynamic scope
 builtin-printf.test:printf -v %q
@@ -690,25 +704,47 @@ builtin-printf.test:printf with too few arguments
 builtin-printf.test:printf with too many arguments
 builtin-printf.test:Regression for 'printf x y'
 builtin-printf.test:Runtime error for invalid integer
+builtin-printf.test:%(strftime format)T
+builtin-printf.test:%(strftime format)T doesn't respect TZ if not exported
+builtin-printf.test:%(strftime format)T TZ in environ but not in shell's memory
+builtin-printf.test:Too large
 builtin-printf.test:Unicode char with '
 builtin-printf.test:unsigned / octal / hex
 builtin-printf.test:unsigned / octal / hex big
+builtin-read.test:"backslash + newline" should be swallowed regardless of "-d <delim>"
 builtin-read.test:dynamic scope used to set vars
 builtin-read.test:empty input and splitting
+builtin-read.test:IFS='\ ' and backslash escaping
 builtin-read.test:IFS= read -n (OSH regression: value saved in tempenv)
+builtin-read.test:IFS='x ' incomplete backslash
 builtin-read.test:IFS='x ' read a b: trailing spaces (with max_split)
+builtin-read.test:IFS=x read a b <<< xxxxxx
+builtin-read.test:IFS='x ' read -a: intermediate spaces (unlimited split)
+builtin-read.test:IFS='x ' read -a: trailing spaces (unlimited split)
+builtin-read.test:mapfile from directory (bash doesn't handle errors)
+builtin-read.test:max_split and backslash escaping
+builtin-read.test:read and "\ "
+builtin-read.test:read -a reads into array
+builtin-read.test:read bash bug
 builtin-read.test:read builtin splits value across multiple vars
 builtin-read.test:read builtin with no newline returns status 1
 builtin-read.test:read builtin with too few variables
 builtin-read.test:read -d : (colon-separated records)
 builtin-read.test:read /dev/null
 builtin-read.test:read -d -n - respects delimiter and splits
+builtin-read.test:read -d '' (null-separated records)
 builtin-read.test:read does not respect C backslash escapes
 builtin-read.test:read -d when there's no delimiter
 builtin-read.test:read from empty file
 builtin-read.test:read from redirected directory is non-fatal error
 builtin-read.test:read line from here doc
+builtin-read.test:read multiple lines with IFS=:
+builtin-read.test:read multiple vars spanning many lines
 builtin-read.test:read -n 0
+builtin-read.test:read -n 4 with backslash + delim
+builtin-read.test:read -n 4 with incomplete backslash
+builtin-read.test:read -n and backslash escape
+builtin-read.test:read -N doesn't respect delimiter, while read -n does
 builtin-read.test:read -n doesn't strip whitespace (bug fix)
 builtin-read.test:read -n from directory
 builtin-read.test:read -n from pipe
@@ -718,17 +754,25 @@ builtin-read.test:read -n (with $REPLY)
 builtin-read.test:read -n with invalid arg
 builtin-read.test:read -p (not fully tested)
 builtin-read.test:read -rd
+builtin-read.test:read -r -d '' for NUL strings, e.g. find -print0
 builtin-read.test:read -r ignores backslashes
 builtin-read.test:read -r with \n
 builtin-read.test:read -r with other backslash escapes
 builtin-read.test:read -s from pipe, not a terminal
 builtin-read.test:read -t 0.5
 builtin-read.test:read -t -0.5 is invalid
+builtin-read.test:read -t 0 tests if input is available
+builtin-read.test:read -u
+builtin-read.test:read -u 3 -d 5
+builtin-read.test:read -u 3 -d b -N 6
+builtin-read.test:read -u -s
 builtin-read.test:read usage
 builtin-read.test:read -u syntax error
 builtin-read.test:read will unset extranous vars
 builtin-read.test:read with IFS=''
 builtin-read.test:read with IFS=$'\n'
+builtin-read.test:read with line continuation reads multiple physical lines
+builtin-read.test:read without args uses $REPLY, no splitting occurs (without -n)
 builtin-read.test:read with smooshed args
 builtin-read.test:read with zero args
 builtin-set.test:A single + is an ignored flag; not an argument
@@ -743,10 +787,10 @@ builtin-set.test:set +a stops exporting
 builtin-set.test:set -eu (flag parsing)
 builtin-set.test:set -o allexport (long form)
 builtin-set.test:set -o lists options
+builtin-set.test:set -u -- clears argv
 builtin-set.test:set -u error can break out of nested evals
 builtin-set.test:set -u with undefined variable exits the interpreter
 builtin-set.test:set -u -- x y z
-builtin-set.test:set -u -- clears argv
 builtin-set.test:set with both options and argv
 builtin-set.test:variables set before set -a are not exported
 builtin-special.test:Non-special builtins CAN be redefined as functions
@@ -754,14 +798,28 @@ builtin-special.test:set is special and fails whole script, even if using || tru
 builtin-special.test:Shift is special and fails whole script
 builtin-special.test:true is not special; prefix assignments don't persist, it can be redefined
 builtin-type-bash.test:type -a -> alias; prints alias definition
+builtin-type-bash.test:type -a -> builtin
+builtin-type-bash.test:type -a -> builtin and file
+builtin-type-bash.test:type -a -> builtin and file and shell function
 builtin-type-bash.test:type -a -> executable not in PATH
+builtin-type-bash.test:type -a -> file
 builtin-type-bash.test:type -a -> keyword
 builtin-type-bash.test:type -ap -> alias
+builtin-type-bash.test:type -ap -> builtin
+builtin-type-bash.test:type -ap -> builtin and file; doesn't print builtin or function
+builtin-type-bash.test:type -ap -> file; abbreviated
 builtin-type-bash.test:type -ap -> function
+builtin-type-bash.test:type -a -P gives multiple files
+builtin-type-bash.test:type -f builtin -> function and file exists
 builtin-type-bash.test:type -f builtin -> not found
+builtin-type-bash.test:type -p and -P builtin -> file
 builtin-type-bash.test:type -p builtin -> not a file
+builtin-type-bash.test:type -P builtin -> not a file
+builtin-type-bash.test:type -P builtin -> not a file but file found
 builtin-type-bash.test:type -p builtin -> not found
 builtin-type-bash.test:type -P builtin -> not found
+builtin-type-bash.test:type -P does not find directories (regression)
+builtin-type-bash.test:type prints function source code
 builtin-type-bash.test:type -t -> alias
 builtin-type-bash.test:type -t -> builtin
 builtin-type-bash.test:type -t control flow
@@ -770,8 +828,10 @@ builtin-type-bash.test:type -t -> function
 builtin-type-bash.test:type -t -> not found
 builtin-type.test:more special builtins
 builtin-type.test:special builtins are called out
+builtin-type.test:type -> alias external
 builtin-type.test:type -> keyword builtin
 builtin-type.test:type -> not found
+builtin-type.test:type of relative path
 builtin-vars.test:assign to readonly variable
 builtin-vars.test:assign to readonly variable - errexit
 builtin-vars.test:Dependent export setting
@@ -806,6 +866,7 @@ case_.test:Case with empty condition
 case_.test:Match a literal with a glob character
 case_.test:Match a literal with a glob character with a dynamic pattern
 case_.test:matching every byte against itself
+case_.test:matching the byte 0xff against empty string - DISABLED - CI only bug?
 case_.test:Multiple Patterns Match
 case_.test:Pattern ? matches 1 code point (many bytes), but not multiple code points
 command-parsing.test:Prefix env on assignment
@@ -813,6 +874,10 @@ command-parsing.test:Prefix env on control flow
 command-parsing.test:Redirect on assignment (enabled 7/2019)
 command-parsing.test:Redirect on control flow (ignored in OSH)
 command-parsing.test:Redirect on control flow with ysh:all (no_parse_ignored)
+command-sub-ksh.test:${ echo hi;}
+command-sub-ksh.test:${ echo hi }  without semi-colon
+command-sub-ksh.test:${|REPLY=hi}
+command-sub-ksh.test:for loop / case
 command-sub.test:Backtick
 command-sub.test:Backtick 2
 command-sub.test:case
@@ -828,10 +893,6 @@ command-sub.test:Here doc with pipeline
 command-sub.test:Making command out of command sub should work
 command-sub.test:Making keyword out of command sub should NOT work
 command-sub.test:Quoting " within ``
-command-sub-ksh.test:${ echo hi;}
-command-sub-ksh.test:${ echo hi }  without semi-colon
-command-sub-ksh.test:${|REPLY=hi}
-command-sub-ksh.test:for loop / case
 command_.test:Command block
 command_.test:External programs don't have _OVM in environment
 command_.test:hash -r doesn't allow additional args
@@ -841,6 +902,7 @@ comments.test:comment
 comments.test:not a comment without leading space x
 dbracket.test:[[ a 3< b ]] doesn't work (bug regression)
 dbracket.test:Argument that looks like a real operator
+dbracket.test:(( array1 == array2 )) doesn't work
 dbracket.test:Array coerces to string (shopt -s strict_array to disallow)
 dbracket.test:[[ at runtime doesn't work
 dbracket.test:&& chain
@@ -851,6 +913,7 @@ dbracket.test:empty ! is treated as literal
 dbracket.test:[[ empty string is false
 dbracket.test:-eq coercion produces weird results
 dbracket.test:-eq does dynamic arithmetic parsing (not supported in OSH)
+dbracket.test:equality
 dbracket.test:[[ '(' foo ]] is syntax error
 dbracket.test:[[ glob matching, [[ has no glob expansion
 dbracket.test:[[ glob matching with escapes
@@ -858,6 +921,7 @@ dbracket.test:[[ glob matching with unquoted var
 dbracket.test:[[ has no word splitting
 dbracket.test:[[ has quote joining
 dbracket.test:Hex literals with -eq
+dbracket.test:\(\) in pattern (regression)
 dbracket.test:[[ && ]] is syntax error
 dbracket.test:[[ ]] is syntax error
 dbracket.test:[[ '(' ]] is treated as literal
@@ -874,8 +938,11 @@ dbracket.test:[[ regex matching
 dbracket.test:[[ regex syntax error
 dbracket.test:special chars
 dbracket.test:tilde expansion in [[
+dbracket.test:tilde expansion with =~ (confusing)
 dbracket.test:User array compared to "$@" (broken unless shopt -s strict_array)
+dbracket.test:[[ with env prefix doesn't work
 dbracket.test:[[ with op variable (compare with test-builtin.test.sh)
+dbracket.test:[[ ]] with redirect
 dbracket.test:[[ with unquoted empty var (compare with test-builtin.test.sh)
 dbracket.test:[[ -z '>' ]]
 dbracket.test:[[ -z '>' a ]] is syntax error
@@ -899,6 +966,7 @@ empty-bodies.test:Empty case/esac
 empty-bodies.test:Empty do/done
 empty-bodies.test:Empty then/fi
 errexit.test:background processes respect errexit
+errexit.test:bash atoms [[ (( - redir failure checked
 errexit.test:errexit aborts early
 errexit.test:errexit aborts early on pipeline
 errexit.test:errexit and loop
@@ -914,6 +982,7 @@ errexit.test:errexit with ||
 errexit.test:errexit with if and { }
 errexit.test:errexit with subshell
 errexit.test:errexit with while/until
+errexit.test:pipeline process respects errexit
 errexit.test:set -e enabled in function (regression)
 errexit.test:set +o errexit while it's being ignored (moot with strict_errexit)
 errexit.test:set -o errexit while it's being ignored (moot with strict_errexit)
@@ -929,11 +998,11 @@ exit-status.test:If subshell true WITH OUTPUT is different
 exit-status.test:More test cases with empty argv
 exit-status.test:Truncating 'exit' status
 exit-status.test:Truncating 'return' status
+extglob-files.test:Escaping of pipe (glibc bug, see demo/glibc_fnmatch.c)
 extglob-files.test:Extended glob as argument to ${undef:-} (dynamic globbing)
 extglob-files.test:Extended glob in same word as array
 extglob-files.test:Extended glob patterns with spaces
 extglob-files.test:Extended glob with word splitting
-extglob-files.test:Escaping of pipe (glibc bug, see demo/glibc_fnmatch.c)
 extglob-files.test:failglob
 extglob-files.test:Filenames with spaces
 extglob-files.test:Glob other punctuation chars (lexer mode)
@@ -966,6 +1035,7 @@ extglob-match.test:* matches 0 or more
 extglob-match.test:+ matches 1 or more
 extglob-match.test:@ matches exactly one
 extglob-match.test:! matches none
+extglob-match.test:Matching literal '@(cc)'
 extglob-match.test:match is anchored
 extglob-match.test:nested @()
 extglob-match.test:nested extglob
@@ -977,11 +1047,11 @@ extglob-match.test:repetition with glob
 extglob-match.test:simple repetition with *(foo) and +(Foo)
 extglob-match.test:With extglob on, !($str) on the left or right of == has different meanings
 extglob-match.test:@() with variable arms
+fatal-errors.test:${undef} with nounset
 fatal-errors.test:Unrecoverable: ${undef?message}
 fatal-errors.test:Unrecoverable: divide by zero in case
 fatal-errors.test:Unrecoverable: divide by zero in conditional word
 fatal-errors.test:Unrecoverable: divide by zero in redirect word
-fatal-errors.test:${undef} with nounset
 for-expr.test:Accepts { } syntax too
 for-expr.test:Arith lexer mode
 for-expr.test:Condition that's greater than 32 bits
@@ -1119,8 +1189,8 @@ loop.test:break in condition of nested loop
 loop.test:builtin,command break,continue,return,exit
 loop.test:continue
 loop.test:continue at top level
-loop.test:continue in subshell aborts with errexit
 loop.test:continue in subshell
+loop.test:continue in subshell aborts with errexit
 loop.test:for loop with invalid identifier
 loop.test:implicit for loop
 loop.test:multi-level break with argument
@@ -1186,13 +1256,18 @@ parse-errors.test:} is a parse error
 parse-errors.test:{ is its own word, needs a space
 parse-errors.test:misplaced ;;
 parse-errors.test:misplaced parentheses are not a subshell
+pipeline.test:bash/dash/mksh run the last command is run in its own process
 pipeline.test:Brace group in pipeline
+pipeline.test:Evaluation of argv[0] in pipeline occurs in child
 pipeline.test:Exit code is last status
 pipeline.test:For loop starts pipeline
 pipeline.test:! in if
 pipeline.test:! is not a command
 pipeline.test:Nested pipelines
 pipeline.test:Pipeline comments
+pipeline.test:PIPESTATUS
+pipeline.test:PIPESTATUS is set on simple commands
+pipeline.test:PIPESTATUS with shopt -s lastpipe
 pipeline.test:Redirect in Pipeline
 pipeline.test:shopt -s lastpipe (always on in OSH)#1
 pipeline.test:shopt -s lastpipe (always on in OSH)#2
@@ -1250,6 +1325,7 @@ redirect-command.test:< file in pipeline and subshell doesn't work
 redirect-command.test:Leading redirect in a simple command
 redirect-command.test:Nested function stdout redirect
 redirect-command.test:Prefix redirect for loop -- not allowed
+redirect-command.test:redirect bash extensions:   [[  ((  for ((
 redirect-command.test:redirect case
 redirect-command.test:redirect for loop
 redirect-command.test:Redirect function stdout
@@ -1262,17 +1338,17 @@ redirect-command.test:Redirect in the middle of a simple command
 redirect-command.test:Redirect in the middle of two assignments
 redirect-command.test:redirect subshell
 redirect-command.test:redirect while
-redirect-multi.test:File redirect without matching any file
-redirect-multi.test:File redirect without matching any file, with failglob
-redirect-multi.test:File redirect that globs to more than one file (bash and zsh only)
-redirect-multi.test:File redirect with extended glob
+redirect-multi.test:Extended glob that doesn't match anything
 redirect-multi.test:File redirects have word splitting too!
 redirect-multi.test:File redirects with glob args (bash and zsh only)
-redirect-multi.test:Extended glob that doesn't match anything
+redirect-multi.test:File redirect that globs to more than one file (bash and zsh only)
+redirect-multi.test:File redirect with extended glob
+redirect-multi.test:File redirect without matching any file
+redirect-multi.test:File redirect without matching any file, with failglob
 redirect-multi.test:Non-file redirects don't respect glob args (we differe from bash)
-redirect-multi.test:Redirect with brace expansion isn't allowed
 redirect-multi.test:Redirect to ''
 redirect-multi.test:Redirect to $empty (in function body)
+redirect-multi.test:Redirect with brace expansion isn't allowed
 redirect-multi.test:ysh behavior when glob doesn't match
 redirect.test:<&
 redirect.test:1>&2- (Bash bug: fail to restore closed fd)
@@ -1294,6 +1370,7 @@ redirect.test:echo foo >&N where N is first unused fd
 redirect.test:exec {fd}>&- (OSH regression: fails to close fd)
 redirect.test:exec redirect then various builtins
 redirect.test:Filename redirect with spaces
+redirect.test:<> for read/write
 redirect.test:Named file descriptor
 redirect.test:noclobber can still write to non-regular files like /dev/null
 redirect.test:Nonexistent file
@@ -1361,21 +1438,30 @@ sh-func.test:Return without args gives previous
 sh-func.test:Scope of global variable when sourced in function (Shell Functions aren't Closures)
 sh-func.test:Subshell function
 sh-options-bash.test:If shopt --set xtrace is allowed, it should update SHELLOPTS, not BASHOPTS
+sh-options-bash.test:OSH calling bash with SHELLOPTS does not change braceexpand
 sh-options-bash.test:SHELLOPTS and BASHOPTS are non-empty
 sh-options-bash.test:SHELLOPTS is readonly
 sh-options-bash.test:SHELLOPTS is updated when options are changed
-sh-options-bash.test:OSH calling bash with SHELLOPTS does not change braceexpand
+sh-options-bash.test:SHELLOPTS reflects flags like sh -x
 sh-options-bash.test:shopt -s progcomp hostcomplete are stubs (bash-completion)
 sh-options.test:$- and more options
+sh-options.test:$- with -c
+sh-options.test:$- with interactive shell
 sh-options.test:$- with pipefail
+sh-options.test:interactive shell starts with emacs mode on
 sh-options.test:-n for no execution (useful with --ast-output)
 sh-options.test:noclobber off
 sh-options.test:noclobber on
 sh-options.test:noclobber on &> >
 sh-options.test:noclobber on &>> >>
+sh-options.test:noclobber on <>
 sh-options.test:noclobber on >>
 sh-options.test:no-ops not shown by shopt -p
 sh-options.test:nounset
+sh-options.test:pass long options like sh -o errexit
+sh-options.test:pass shopt options like sh -O nullglob
+sh-options.test:pass short options like sh -e
+sh-options.test:pipefail
 sh-options.test:set -o vi/emacs
 sh-options.test:set without args and array variables
 sh-options.test:set without args and assoc array variables (not in OSH)
@@ -1384,8 +1470,10 @@ sh-options.test:shopt allows for backward compatibility like bash
 sh-options.test:shopt -p exit code (regression)
 sh-options.test:shopt -p -o validates option names
 sh-options.test:shopt -p prints 'shopt' options
+sh-options.test:shopt -p validates option names
 sh-options.test:shopt -q
 sh-options.test:shopt -q invalid
+sh-options.test:shopt -s nounset works in YSH, not in bash
 sh-options.test:shopt -s strict:all
 sh-options.test:shopt with no flags prints options
 sh-options.test:stubbed out bash options
@@ -1415,10 +1503,10 @@ smoke.test:command sub
 smoke.test:command sub with builtin
 smoke.test:failed command
 smoke.test:for loop
-smoke.test:here doc with var
 smoke.test:here doc with builtin
 smoke.test:here doc without var
 smoke.test:Here doc with redirect
+smoke.test:here doc with var
 smoke.test:pipeline
 smoke.test:pipeline with builtin
 smoke.test:Redirect external command
@@ -1433,6 +1521,7 @@ strict-options.test:continue at top level is NOT an error
 strict-options.test:empty argv WITH strict_argv
 strict-options.test:return at top level is an error
 strict-options.test:shopt -s strict_binding: Persistent prefix bindings not allowed on special builtins
+strict-options.test:shopt -s strict_control_flow
 strict-options.test:simple_eval_builtin
 strict-options.test:strict_arith option
 strict-options.test:strict_parse_slice means you need explicit  length
@@ -1453,6 +1542,7 @@ tilde.test:temp assignment x=~ env
 tilde.test:tilde expansion an assignment keyword
 tilde.test:tilde expansion of word after redirect
 tilde.test:x=${undef-~:~}
+unicode.test:Unicode escapes \u03bc \U000003bc in $'', echo -e, printf
 var-num.test:$0 with -c
 var-num.test:$0 with filename
 var-num.test:$0 with -i
@@ -1691,8 +1781,8 @@ var-sub-quote.test:The string to strip is space sensitive
 var-sub-quote.test:Var substitution with newlines (#2492)
 var-sub-quote.test:Var substitution with \n in value
 var-sub-quote.test:Var with multiple words: no quotes
-var-sub.test:Braced block inside ${}
 var-sub.test:Bad var sub
+var-sub.test:Braced block inside ${}
 var-sub.test:Descriptor redirect to bad "$@"
 var-sub.test:Filename redirect with "$@"
 var-sub.test:Here doc with bad "$@" delimiter
@@ -1705,8 +1795,8 @@ whitespace.test:whitespace in string to integer conversion
 word-eval.test:Default values -- more cases
 word-eval.test:Evaluation of constant parts
 word-eval.test:Evaluation of each part
-word-eval.test:Globbing escaping
 word-eval.test:Globbing after splitting
+word-eval.test:Globbing escaping
 word-eval.test:Word elision
 word-eval.test:Word joining
 word-eval.test:Word splitting

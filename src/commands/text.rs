@@ -3,7 +3,9 @@
 use super::CommandMeta;
 use crate::commands::{CommandContext, CommandResult};
 use crate::interpreter::pattern::glob_match;
+use chrono::{Local, TimeZone, Utc};
 use regex::Regex;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 fn resolve_path(path_str: &str, cwd: &str) -> PathBuf {
@@ -1817,6 +1819,7 @@ impl super::VirtualCommand for OdCommand {
             data
         };
         let mut stdout = String::new();
+        let align_x1_with_char_columns = formats.iter().any(|format| format == "c");
 
         // Format bytes according to type specifier
         let mut offset = 0;
@@ -1828,7 +1831,10 @@ impl super::VirtualCommand for OdCommand {
             for format in &formats {
                 for b in &bytes[offset..end] {
                     match format.as_str() {
-                        "x1" => stdout.push_str(&format!("{:>4}", format!("{:02x}", b))),
+                        "x1" if align_x1_with_char_columns => {
+                            stdout.push_str(&format!("{:>4}", format!("{:02x}", b)))
+                        }
+                        "x1" => stdout.push_str(&format!(" {:02x}", b)),
                         "c" => stdout.push_str(&format!("{:>4}", od_c_field(*b))),
                         _ => stdout.push_str(&format!(" {:03o}", b)),
                     }
@@ -1913,6 +1919,10 @@ impl super::VirtualCommand for WcCommand {
         for arg in args {
             if !opts_done && arg == "--" {
                 opts_done = true;
+                continue;
+            }
+            if !opts_done && arg == "--bytes" {
+                show_bytes = true;
                 continue;
             }
             if !opts_done && arg.starts_with("--") {
@@ -2447,7 +2457,7 @@ impl super::VirtualCommand for PrintfCommand {
         Some(&PRINTF_CMD_META)
     }
 
-    fn execute(&self, args: &[String], _ctx: &CommandContext) -> CommandResult {
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
         if args.is_empty() {
             return CommandResult {
                 stderr: "printf: usage: printf format [arguments]\n".into(),
@@ -2458,13 +2468,22 @@ impl super::VirtualCommand for PrintfCommand {
 
         let format_str = &args[0];
         let arguments = &args[1..];
-        let result = run_printf_format(format_str, arguments);
+        let result = run_printf_format(
+            format_str,
+            arguments,
+            PrintfContext {
+                shell_vars: ctx.variables,
+                env: Some(ctx.env),
+            },
+        );
+        let stdout_bytes = crate::shell_bytes::contains_markers(&result.stdout)
+            .then(|| crate::shell_bytes::encode_shell_string(&result.stdout));
 
         CommandResult {
             stdout: result.stdout,
             stderr: result.stderr,
             exit_code: if result.had_error { 1 } else { 0 },
-            ..Default::default()
+            stdout_bytes,
         }
     }
 }
@@ -2476,8 +2495,18 @@ pub(crate) struct PrintfResult {
     pub had_error: bool,
 }
 
+#[derive(Clone, Copy, Default)]
+pub(crate) struct PrintfContext<'a> {
+    pub shell_vars: Option<&'a HashMap<String, crate::interpreter::Variable>>,
+    pub env: Option<&'a HashMap<String, String>>,
+}
+
 /// Run printf formatting with argument cycling (shared between command and builtin).
-pub(crate) fn run_printf_format(format_str: &str, arguments: &[String]) -> PrintfResult {
+pub(crate) fn run_printf_format(
+    format_str: &str,
+    arguments: &[String],
+    context: PrintfContext<'_>,
+) -> PrintfResult {
     let mut stdout = String::new();
     let mut stderr = String::new();
     let mut had_error = false;
@@ -2488,7 +2517,7 @@ pub(crate) fn run_printf_format(format_str: &str, arguments: &[String]) -> Print
 
     loop {
         let start_arg_idx = arg_idx;
-        let (result, terminate, err) = format_printf(format_str, arguments, &mut arg_idx);
+        let (result, terminate, err) = format_printf(format_str, arguments, &mut arg_idx, context);
         stdout.push_str(&result);
         if let Some(e) = err {
             stderr.push_str(&e);
@@ -2522,49 +2551,30 @@ fn parse_printf_int(s: &str) -> (i64, Option<String>) {
     }
     // 'c or "c → character code; bare ' or " → 0
     if trimmed.starts_with('\'') || trimmed.starts_with('"') {
-        if trimmed.len() >= 2 {
-            return (
-                trimmed[1..].chars().next().map(|c| c as i64).unwrap_or(0),
-                None,
-            );
-        }
-        return (0, None);
+        return (
+            trimmed
+                .get(1..)
+                .map(parse_printf_char_constant)
+                .unwrap_or_default() as i64,
+            None,
+        );
     }
 
-    // Strip trailing whitespace but remember if there was any
     let clean = trimmed.trim_end();
     let has_trailing_space = clean.len() != trimmed.len();
-
-    // Handle optional leading sign
-    let (negative, rest) = if let Some(r) = clean.strip_prefix('-') {
-        (true, r)
-    } else if let Some(r) = clean.strip_prefix('+') {
-        (false, r)
-    } else {
-        (false, clean)
-    };
+    let (negative, rest) = split_printf_sign(clean);
 
     // Reject base-N# notation (e.g., 64#a) — parse the number before #
     if let Some(hash_pos) = rest.find('#') {
         let before_hash = &rest[..hash_pos];
-        let val = before_hash.parse::<i64>().unwrap_or(0);
-        let val = if negative { -val } else { val };
+        let magnitude = before_hash.parse::<u128>().unwrap_or(0);
+        let val = clamp_printf_signed(magnitude, negative);
         return (val, Some(format!("printf: {clean}: invalid number\n")));
     }
 
-    let parsed = if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
-        i64::from_str_radix(hex, 16)
-    } else if rest.starts_with('0')
-        && rest.len() > 1
-        && rest[1..].chars().all(|c| c.is_ascii_digit())
-    {
-        i64::from_str_radix(rest, 8)
-    } else {
-        rest.parse::<i64>()
-    };
-    match parsed {
-        Ok(val) => {
-            let val = if negative { -val } else { val };
+    match parse_printf_prefixed_magnitude(rest) {
+        Ok(magnitude) => {
+            let val = clamp_printf_signed(magnitude, negative);
             if has_trailing_space {
                 (val, Some(format!("printf: {clean}: invalid number\n")))
             } else {
@@ -2572,21 +2582,12 @@ fn parse_printf_int(s: &str) -> (i64, Option<String>) {
             }
         }
         Err(_) => {
-            // Try parsing as u64 for overflow cases (e.g., 18446744073709551615)
-            if !negative && let Ok(uval) = rest.parse::<u64>() {
-                let err = if has_trailing_space {
-                    Some(format!("printf: {clean}: invalid number\n"))
-                } else {
-                    None
-                };
-                return (uval as i64, err);
-            }
-            // Try partial parse: extract leading digits
+            // Try partial parse: extract leading decimal digits
             let leading_digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
             if !leading_digits.is_empty()
-                && let Ok(val) = leading_digits.parse::<i64>()
+                && let Ok(magnitude) = leading_digits.parse::<u128>()
             {
-                let val = if negative { -val } else { val };
+                let val = clamp_printf_signed(magnitude, negative);
                 return (val, Some(format!("printf: {clean}: invalid number\n")));
             }
             (0, Some(format!("printf: {clean}: invalid number\n")))
@@ -2594,10 +2595,163 @@ fn parse_printf_int(s: &str) -> (i64, Option<String>) {
     }
 }
 
+fn parse_printf_uint(s: &str) -> (u64, Option<String>) {
+    let trimmed = s.trim_start();
+    if trimmed.is_empty() {
+        return (0, None);
+    }
+    if trimmed.starts_with('\'') || trimmed.starts_with('"') {
+        return (
+            trimmed
+                .get(1..)
+                .map(parse_printf_char_constant)
+                .unwrap_or_default(),
+            None,
+        );
+    }
+
+    let clean = trimmed.trim_end();
+    let has_trailing_space = clean.len() != trimmed.len();
+    let (negative, rest) = split_printf_sign(clean);
+
+    if let Some(hash_pos) = rest.find('#') {
+        let before_hash = &rest[..hash_pos];
+        let magnitude = before_hash.parse::<u128>().unwrap_or(0);
+        let val = clamp_printf_unsigned(magnitude, negative);
+        return (val, Some(format!("printf: {clean}: invalid number\n")));
+    }
+
+    match parse_printf_prefixed_magnitude(rest) {
+        Ok(magnitude) => {
+            let val = clamp_printf_unsigned(magnitude, negative);
+            if has_trailing_space {
+                (val, Some(format!("printf: {clean}: invalid number\n")))
+            } else {
+                (val, None)
+            }
+        }
+        Err(_) => {
+            let leading_digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if !leading_digits.is_empty()
+                && let Ok(magnitude) = leading_digits.parse::<u128>()
+            {
+                let val = clamp_printf_unsigned(magnitude, negative);
+                return (val, Some(format!("printf: {clean}: invalid number\n")));
+            }
+            (0, Some(format!("printf: {clean}: invalid number\n")))
+        }
+    }
+}
+
+fn split_printf_sign(clean: &str) -> (bool, &str) {
+    if let Some(rest) = clean.strip_prefix('-') {
+        (true, rest)
+    } else if let Some(rest) = clean.strip_prefix('+') {
+        (false, rest)
+    } else {
+        (false, clean)
+    }
+}
+
+fn parse_printf_prefixed_magnitude(rest: &str) -> Result<u128, ()> {
+    if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
+        return u128::from_str_radix(hex, 16).map_err(|_| ());
+    }
+    if rest.starts_with('0') && rest.len() > 1 && rest[1..].chars().all(|c| c.is_ascii_digit()) {
+        return u128::from_str_radix(rest, 8).map_err(|_| ());
+    }
+    rest.parse::<u128>().map_err(|_| ())
+}
+
+fn clamp_printf_signed(magnitude: u128, negative: bool) -> i64 {
+    if negative {
+        if magnitude > i64::MAX as u128 {
+            i64::MIN
+        } else {
+            -(magnitude as i64)
+        }
+    } else if magnitude > i64::MAX as u128 {
+        i64::MAX
+    } else {
+        magnitude as i64
+    }
+}
+
+fn clamp_printf_unsigned(magnitude: u128, negative: bool) -> u64 {
+    if magnitude > u64::MAX as u128 {
+        u64::MAX
+    } else {
+        let val = magnitude as u64;
+        if negative {
+            0u64.wrapping_sub(val)
+        } else {
+            val
+        }
+    }
+}
+
+fn parse_printf_char_constant(rest: &str) -> u64 {
+    let bytes = crate::shell_bytes::encode_shell_string(rest);
+    decode_printf_leading_codepoint(&bytes) as u64
+}
+
+fn decode_printf_leading_codepoint(bytes: &[u8]) -> u32 {
+    let Some(&first) = bytes.first() else {
+        return 0;
+    };
+    if first < 0x80 {
+        return first as u32;
+    }
+
+    let width = match first {
+        0xC0..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF7 => 4,
+        _ => return first as u32,
+    };
+    if bytes.len() < width {
+        return first as u32;
+    }
+    if !bytes[1..width]
+        .iter()
+        .all(|byte| (byte & 0b1100_0000) == 0b1000_0000)
+    {
+        return first as u32;
+    }
+
+    let codepoint = match width {
+        2 => ((first & 0x1F) as u32) << 6 | (bytes[1] & 0x3F) as u32,
+        3 => {
+            ((first & 0x0F) as u32) << 12
+                | ((bytes[1] & 0x3F) as u32) << 6
+                | (bytes[2] & 0x3F) as u32
+        }
+        4 => {
+            ((first & 0x07) as u32) << 18
+                | ((bytes[1] & 0x3F) as u32) << 12
+                | ((bytes[2] & 0x3F) as u32) << 6
+                | (bytes[3] & 0x3F) as u32
+        }
+        _ => unreachable!(),
+    };
+    let min_codepoint = match width {
+        2 => 0x80,
+        3 => 0x800,
+        4 => 0x10000,
+        _ => 0,
+    };
+    if codepoint < min_codepoint {
+        first as u32
+    } else {
+        codepoint
+    }
+}
+
 pub(crate) fn format_printf(
     fmt: &str,
     args: &[String],
     arg_idx: &mut usize,
+    context: PrintfContext<'_>,
 ) -> (String, bool, Option<String>) {
     let mut result = String::new();
     let mut terminate = false;
@@ -2633,6 +2787,42 @@ pub(crate) fn format_printf(
                         if hex.is_empty() {
                             result.push('\\');
                             result.push('x');
+                        } else if let Ok(value) = u32::from_str_radix(&hex, 16)
+                            && let Some(c) = shell_char_from_byte_escape(value)
+                        {
+                            result.push(c);
+                        }
+                    }
+                    'u' => {
+                        let mut hex = String::new();
+                        while hex.len() < 4
+                            && i + 1 < chars.len()
+                            && chars[i + 1].is_ascii_hexdigit()
+                        {
+                            i += 1;
+                            hex.push(chars[i]);
+                        }
+                        if hex.is_empty() {
+                            result.push('\\');
+                            result.push('u');
+                        } else if let Some(c) =
+                            u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
+                        {
+                            result.push(c);
+                        }
+                    }
+                    'U' => {
+                        let mut hex = String::new();
+                        while hex.len() < 8
+                            && i + 1 < chars.len()
+                            && chars[i + 1].is_ascii_hexdigit()
+                        {
+                            i += 1;
+                            hex.push(chars[i]);
+                        }
+                        if hex.is_empty() {
+                            result.push('\\');
+                            result.push('U');
                         } else if let Some(c) =
                             u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
                         {
@@ -2643,10 +2833,8 @@ pub(crate) fn format_printf(
                         let mut val = 0u32;
                         let mut count = 0;
                         while i + 1 < chars.len()
-                            && count < 3
-                            && chars[i + 1].is_ascii_digit()
-                            && chars[i + 1] != '8'
-                            && chars[i + 1] != '9'
+                            && count < 2
+                            && ('0'..='7').contains(&chars[i + 1])
                         {
                             i += 1;
                             val = val * 8 + chars[i].to_digit(8).unwrap_or(0);
@@ -2654,8 +2842,23 @@ pub(crate) fn format_printf(
                         }
                         if count == 0 {
                             result.push('\0');
-                        } else if let Some(c) = char::from_u32(val) {
+                        } else if let Some(c) = shell_char_from_byte_escape(val) {
                             result.push(c);
+                        }
+                    }
+                    c @ '1'..='7' => {
+                        let mut val = c.to_digit(8).unwrap_or(0);
+                        let mut count = 1;
+                        while i + 1 < chars.len()
+                            && count < 3
+                            && ('0'..='7').contains(&chars[i + 1])
+                        {
+                            i += 1;
+                            val = val * 8 + chars[i].to_digit(8).unwrap_or(0);
+                            count += 1;
+                        }
+                        if let Some(ch) = shell_char_from_byte_escape(val) {
+                            result.push(ch);
                         }
                     }
                     other => {
@@ -2739,6 +2942,19 @@ pub(crate) fn format_printf(
                 continue;
             }
 
+            let mut strftime_format: Option<String> = None;
+            if chars[i] == '(' {
+                let start = i + 1;
+                let mut end = start;
+                while end < chars.len() && chars[end] != ')' {
+                    end += 1;
+                }
+                if end < chars.len() && end + 1 < chars.len() && chars[end + 1] == 'T' {
+                    strftime_format = Some(chars[start..end].iter().collect());
+                    i = end + 1;
+                }
+            }
+
             let conv = chars[i];
             let left_align = flags.contains('-');
             let zero_pad = flags.contains('0') && !left_align;
@@ -2799,8 +3015,7 @@ pub(crate) fn format_printf(
                         if *arg_idx < args.len() {
                             let a = &args[*arg_idx];
                             *arg_idx += 1;
-                            let (v, e) = parse_printf_int(a);
-                            (v as u64, e)
+                            parse_printf_uint(a)
                         } else {
                             (0u64, None)
                         }
@@ -2827,18 +3042,16 @@ pub(crate) fn format_printf(
                         if *arg_idx < args.len() {
                             let a = &args[*arg_idx];
                             *arg_idx += 1;
-                            parse_printf_int(a)
+                            parse_printf_uint(a)
                         } else {
-                            (0, None)
+                            (0u64, None)
                         }
                     };
                     if let Some(e) = err {
                         error_msg = Some(e);
                     }
-                    // Unsigned format: use two's complement representation
-                    let uval = val as u64;
-                    let prefix = if alt_form && uval != 0 { "0" } else { "" };
-                    let digits = format!("{:o}", uval);
+                    let prefix = if alt_form && val != 0 { "0" } else { "" };
+                    let digits = format!("{:o}", val);
                     let formatted = format_int_padded(&IntFmtOpts {
                         prefix,
                         digits: &digits,
@@ -2857,25 +3070,23 @@ pub(crate) fn format_printf(
                         if *arg_idx < args.len() {
                             let a = &args[*arg_idx];
                             *arg_idx += 1;
-                            parse_printf_int(a)
+                            parse_printf_uint(a)
                         } else {
-                            (0, None)
+                            (0u64, None)
                         }
                     };
                     if let Some(e) = err {
                         error_msg = Some(e);
                     }
-                    // Unsigned format: use two's complement representation
-                    let uval = val as u64;
-                    let prefix = if alt_form && uval != 0 {
+                    let prefix = if alt_form && val != 0 {
                         if conv == 'x' { "0x" } else { "0X" }
                     } else {
                         ""
                     };
                     let digits = if conv == 'x' {
-                        format!("{:x}", uval)
+                        format!("{:x}", val)
                     } else {
-                        format!("{:X}", uval)
+                        format!("{:X}", val)
                     };
                     let formatted = format_int_padded(&IntFmtOpts {
                         prefix,
@@ -2947,11 +3158,50 @@ pub(crate) fn format_printf(
                         result.push_str(&format!("{:>width$}", full, width = w));
                     }
                 }
+                'T' if strftime_format.is_some() => {
+                    let (seconds, err) = {
+                        if *arg_idx < args.len() {
+                            let a = &args[*arg_idx];
+                            *arg_idx += 1;
+                            parse_printf_int(a)
+                        } else {
+                            (-1, None)
+                        }
+                    };
+                    if let Some(e) = err {
+                        error_msg = Some(e);
+                    }
+                    let timestamp = if seconds == -1 {
+                        Utc::now().timestamp()
+                    } else {
+                        seconds
+                    };
+                    let formatted = format_printf_strftime(
+                        strftime_format.as_deref().unwrap_or_default(),
+                        timestamp,
+                        context,
+                    );
+                    let truncated = if let Some(p) = precision {
+                        formatted.chars().take(p).collect::<String>()
+                    } else {
+                        formatted
+                    };
+                    let w = width.unwrap_or(0);
+                    if left_align {
+                        result.push_str(&format!("{:<width$}", truncated, width = w));
+                    } else {
+                        result.push_str(&format!("{:>width$}", truncated, width = w));
+                    }
+                }
                 'c' => {
                     let arg = if *arg_idx < args.len() {
                         let a = &args[*arg_idx];
                         *arg_idx += 1;
-                        a.chars().next().unwrap_or('\0')
+                        crate::shell_bytes::encode_shell_string(a)
+                            .first()
+                            .copied()
+                            .and_then(|byte| shell_char_from_byte_escape(byte as u32))
+                            .unwrap_or('\0')
                     } else {
                         '\0'
                     };
@@ -3060,6 +3310,52 @@ fn format_int_padded(opts: &IntFmtOpts) -> String {
         } else {
             full
         }
+    }
+}
+
+fn shell_char_from_byte_escape(value: u32) -> Option<char> {
+    if value <= 0x7f {
+        char::from_u32(value)
+    } else if value <= 0xff {
+        crate::shell_bytes::decode_shell_bytes(&[value as u8])
+            .chars()
+            .next()
+    } else {
+        char::from_u32(value)
+    }
+}
+
+fn format_printf_strftime(format: &str, timestamp: i64, context: PrintfContext<'_>) -> String {
+    let formatted = exported_printf_tz(context)
+        .and_then(|tz_name| tz_name.parse::<chrono_tz::Tz>().ok())
+        .and_then(|tz| {
+            Utc.timestamp_opt(timestamp, 0)
+                .single()
+                .map(|dt| dt.with_timezone(&tz).format(format).to_string())
+        })
+        .or_else(|| {
+            Local
+                .timestamp_opt(timestamp, 0)
+                .single()
+                .map(|dt| dt.format(format).to_string())
+        })
+        .unwrap_or_default();
+    if formatted.len() >= 128 {
+        String::new()
+    } else {
+        formatted
+    }
+}
+
+fn exported_printf_tz<'a>(context: PrintfContext<'a>) -> Option<&'a str> {
+    if let Some(vars) = context.shell_vars {
+        vars.get("TZ")
+            .filter(|var| var.exported())
+            .map(|var| var.value.as_scalar())
+    } else {
+        context
+            .env
+            .and_then(|env| env.get("TZ").map(String::as_str))
     }
 }
 
@@ -3177,7 +3473,7 @@ fn expand_printf_backslash_escapes(s: &str) -> (String, bool) {
                         result.push('\\');
                         result.push('x');
                     } else if let Ok(val) = u32::from_str_radix(&hex, 16)
-                        && let Some(c) = char::from_u32(val)
+                        && let Some(c) = shell_char_from_byte_escape(val)
                     {
                         result.push(c);
                     }
@@ -3229,7 +3525,7 @@ fn expand_printf_backslash_escapes(s: &str) -> (String, bool) {
                     }
                     if count == 0 {
                         result.push('\0');
-                    } else if let Some(c) = char::from_u32(val) {
+                    } else if let Some(c) = shell_char_from_byte_escape(val) {
                         result.push(c);
                     }
                 }
@@ -3246,7 +3542,7 @@ fn expand_printf_backslash_escapes(s: &str) -> (String, bool) {
                         val = val * 8 + chars[i].to_digit(8).unwrap_or(0);
                         count += 1;
                     }
-                    if let Some(c) = char::from_u32(val) {
+                    if let Some(c) = shell_char_from_byte_escape(val) {
                         result.push(c);
                     }
                 }
@@ -6143,6 +6439,71 @@ mod tests {
         let c = ctx(&*fs, &env, &limits, &np);
         let r = PrintfCommand.execute(&["%*d".into(), "8".into(), "42".into()], &c);
         assert_eq!(r.stdout, "      42");
+    }
+
+    #[test]
+    fn printf_char_constant_decodes_invalid_utf8_as_first_byte() {
+        let arg = format!("'{}", crate::shell_bytes::decode_shell_bytes(&[0xCE, 0xCE]));
+        assert_eq!(parse_printf_int(&arg), (0xCE, None));
+    }
+
+    #[test]
+    fn printf_char_constant_decodes_too_large_sequence() {
+        let arg = format!(
+            "'{}",
+            crate::shell_bytes::decode_shell_bytes(&[0xF4, 0x91, 0x84, 0x91])
+        );
+        assert_eq!(parse_printf_int(&arg), (0x111111, None));
+    }
+
+    #[test]
+    fn printf_unsigned_parsing_matches_bash_overflow_behavior() {
+        assert_eq!(parse_printf_uint("18446744073709551615"), (u64::MAX, None));
+        assert_eq!(parse_printf_uint("18446744073709551616"), (u64::MAX, None));
+        assert_eq!(parse_printf_uint("-18446744073709551615"), (1, None));
+        assert_eq!(parse_printf_uint("-18446744073709551616"), (u64::MAX, None));
+    }
+
+    #[test]
+    fn printf_percent_c_uses_first_byte_of_utf8_string() {
+        let (fs, env, limits, np) = setup();
+        let c = ctx(&*fs, &env, &limits, &np);
+        let r = PrintfCommand.execute(&["%c".into(), "μμ".into()], &c);
+        assert_eq!(
+            crate::shell_bytes::encode_shell_string(&r.stdout),
+            vec![0xCE]
+        );
+        assert_eq!(r.stdout_bytes, Some(vec![0xCE]));
+    }
+
+    #[test]
+    fn printf_strftime_looks_only_at_exported_tz() {
+        let mut vars = HashMap::new();
+        vars.insert(
+            "TZ".into(),
+            crate::interpreter::Variable {
+                value: crate::interpreter::VariableValue::Scalar("Portugal".into()),
+                attrs: crate::interpreter::VariableAttrs::EXPORTED,
+            },
+        );
+        assert_eq!(
+            exported_printf_tz(PrintfContext {
+                shell_vars: Some(&vars),
+                env: None,
+            }),
+            Some("Portugal")
+        );
+        vars.get_mut("TZ")
+            .unwrap()
+            .attrs
+            .remove(crate::interpreter::VariableAttrs::EXPORTED);
+        assert_eq!(
+            exported_printf_tz(PrintfContext {
+                shell_vars: Some(&vars),
+                env: None,
+            }),
+            None
+        );
     }
 
     // ── paste tests ──────────────────────────────────────────────────

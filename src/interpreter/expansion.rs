@@ -425,6 +425,8 @@ fn execute_command_substitution(
         control_flow: None,
         positional_params: state.positional_params.clone(),
         shell_name: state.shell_name.clone(),
+        interactive_shell: state.interactive_shell,
+        invoked_with_c: state.invoked_with_c,
         random_seed: state.random_seed,
         local_scopes: Vec::new(),
         temp_binding_scopes: Vec::new(),
@@ -433,6 +435,7 @@ fn execute_command_substitution(
         in_trap: false,
         errexit_suppressed: 0,
         stdin_offset: 0,
+        current_stdin_persistent_fd: None,
         dir_stack: state.dir_stack.clone(),
         command_hash: state.command_hash.clone(),
         aliases: state.aliases.clone(),
@@ -445,6 +448,7 @@ fn execute_command_substitution(
         machtype: state.machtype.clone(),
         hosttype: state.hosttype.clone(),
         persistent_fds: state.persistent_fds.clone(),
+        persistent_fd_offsets: state.persistent_fd_offsets.clone(),
         next_auto_fd: state.next_auto_fd,
         proc_sub_counter: state.proc_sub_counter,
         proc_sub_prealloc: HashMap::new(),
@@ -1755,6 +1759,21 @@ fn finalize_no_split(words: Vec<WordInProgress>) -> Vec<String> {
         .collect()
 }
 
+fn finalize_no_split_pattern(words: Vec<WordInProgress>) -> Vec<String> {
+    words
+        .into_iter()
+        .map(|segments| {
+            let mut pattern = String::new();
+            for segment in segments {
+                for ch in segment.text.chars() {
+                    append_glob_pattern_char(&mut pattern, ch, segment.glob_protected);
+                }
+            }
+            pattern
+        })
+        .collect()
+}
+
 /// Check whether a character is a glob metacharacter.
 fn is_glob_meta(c: char) -> bool {
     matches!(c, '*' | '?' | '[')
@@ -1987,6 +2006,22 @@ fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
             may_glob: false,
         });
     }
+}
+
+pub(crate) fn split_ifs_quoted_chars(chars: &[(char, bool)], ifs: &str) -> Vec<String> {
+    let word: Vec<Segment> = chars
+        .iter()
+        .map(|(c, quoted)| Segment {
+            text: c.to_string(),
+            quoted: *quoted,
+            glob_protected: *quoted,
+            synthetic_empty: false,
+        })
+        .collect();
+
+    let mut result = Vec::new();
+    ifs_split_word(&word, ifs, &mut result);
+    result.into_iter().map(|word| word.text).collect()
 }
 
 fn word_is_synthetic_only(word: &[Segment]) -> bool {
@@ -3652,8 +3687,7 @@ fn resolve_special(sp: &SpecialParameter, state: &InterpreterState) -> String {
         SpecialParameter::LastBackgroundProcessId => String::new(),
         SpecialParameter::ShellName => state.shell_name.clone(),
         SpecialParameter::CurrentOptionFlags => {
-            // Bash emits flags in canonical order: a e f h n u v x B C
-            let mut flags = String::new();
+            let mut flags = String::from("h");
             if state.shell_opts.allexport {
                 flags.push('a');
             }
@@ -3663,8 +3697,9 @@ fn resolve_special(sp: &SpecialParameter, state: &InterpreterState) -> String {
             if state.shell_opts.noglob {
                 flags.push('f');
             }
-            // hashall (h) is always on in bash by default
-            flags.push('h');
+            if state.interactive_shell {
+                flags.push('i');
+            }
             if state.shell_opts.noexec {
                 flags.push('n');
             }
@@ -3677,13 +3712,15 @@ fn resolve_special(sp: &SpecialParameter, state: &InterpreterState) -> String {
             if state.shell_opts.xtrace {
                 flags.push('x');
             }
-            // braceexpand (B) is always on by default
             flags.push('B');
             if state.shell_opts.noclobber {
                 flags.push('C');
             }
-            // 's' means read from stdin — always set for non-interactive shells
-            flags.push('s');
+            if state.invoked_with_c {
+                flags.push('c');
+            } else {
+                flags.push('s');
+            }
             flags
         }
     }
@@ -4460,141 +4497,16 @@ fn expand_default_piece_mut(
 /// Characters from inside quotes that are pattern-special (`?`, `*`, `[`, `]`)
 /// are backslash-escaped so the pattern matcher treats them as literal.
 /// Backslash escapes outside quotes are preserved for the pattern matcher.
-fn expand_pattern_string(pat: &str, state: &InterpreterState) -> Result<String, RustBashError> {
-    let mut result = String::new();
-    let mut chars = pat.chars().peekable();
-    let mut at_word_start = true;
-
-    while let Some(c) = chars.next() {
-        match c {
-            '~' if at_word_start => {
-                let home = get_var(state, "HOME").unwrap_or_default();
-                if home.is_empty() {
-                    result.push('~');
-                } else {
-                    result.push_str(&home);
-                }
-                at_word_start = false;
-            }
-            '\\' => {
-                if let Some(&next) = chars.peek() {
-                    chars.next();
-                    if matches!(
-                        next,
-                        '?' | '*' | '[' | ']' | '\\' | '(' | ')' | '|' | '!' | '+' | '@'
-                    ) {
-                        result.push('\\');
-                    }
-                    result.push(next);
-                } else {
-                    result.push('\\');
-                }
-                at_word_start = false;
-            }
-            '\'' => {
-                // Single quote: take content literally, escape glob chars
-                for ch in chars.by_ref() {
-                    if ch == '\'' {
-                        break;
-                    }
-                    if matches!(ch, '?' | '*' | '[' | ']' | '\\') {
-                        result.push('\\');
-                    }
-                    result.push(ch);
-                }
-                at_word_start = false;
-            }
-            '$' if chars.peek() == Some(&'\'') => {
-                // ANSI-C quote $'...' — escape glob chars in result
-                chars.next(); // skip opening '
-                while let Some(ch) = chars.next() {
-                    if ch == '\'' {
-                        break;
-                    }
-                    if ch == '\\' {
-                        if let Some(esc) = chars.next() {
-                            let decoded = match esc {
-                                'n' => '\n',
-                                't' => '\t',
-                                'r' => '\r',
-                                '\\' => '\\',
-                                '\'' => '\'',
-                                'a' => '\x07',
-                                'b' => '\x08',
-                                'e' | 'E' => '\x1b',
-                                'f' => '\x0c',
-                                'v' => '\x0b',
-                                _ => {
-                                    // Unknown escape — push both chars.
-                                    // Backslash is glob-special, so always escape it.
-                                    result.push('\\');
-                                    result.push('\\');
-                                    if matches!(esc, '?' | '*' | '[' | ']' | '\\') {
-                                        result.push('\\');
-                                    }
-                                    result.push(esc);
-                                    continue;
-                                }
-                            };
-                            if matches!(decoded, '?' | '*' | '[' | ']' | '\\') {
-                                result.push('\\');
-                            }
-                            result.push(decoded);
-                        }
-                    } else {
-                        if matches!(ch, '?' | '*' | '[' | ']' | '\\') {
-                            result.push('\\');
-                        }
-                        result.push(ch);
-                    }
-                }
-                at_word_start = false;
-            }
-            '"' => {
-                // Double quote: expand variables inside, remove quote delimiters.
-                // Escape glob chars in expanded content.
-                let mut inner = String::new();
-                while let Some(ch) = chars.next() {
-                    if ch == '"' {
-                        break;
-                    }
-                    if ch == '\\' {
-                        if let Some(&next) = chars.peek()
-                            && matches!(next, '$' | '`' | '"' | '\\')
-                        {
-                            inner.push(next);
-                            chars.next();
-                            continue;
-                        }
-                        inner.push('\\');
-                    } else {
-                        inner.push(ch);
-                    }
-                }
-                let expanded = expand_raw_string_ctx(&inner, state, true)?;
-                for ch in expanded.chars() {
-                    if matches!(ch, '?' | '*' | '[' | ']' | '\\') {
-                        result.push('\\');
-                    }
-                    result.push(ch);
-                }
-                at_word_start = false;
-            }
-            '$' => {
-                if let Some(expanded) = expand_simple_parameter_reference(&mut chars, state) {
-                    result.push_str(&expanded);
-                } else {
-                    result.push('$');
-                }
-                at_word_start = false;
-            }
-            _ => {
-                result.push(c);
-                at_word_start = false;
-            }
-        }
-    }
-    Ok(result)
+pub(crate) fn expand_pattern_string(
+    pat: &str,
+    state: &InterpreterState,
+) -> Result<String, RustBashError> {
+    let word = ast::Word {
+        value: pat.to_string(),
+        loc: None,
+    };
+    let words = expand_word_segments(&word, state)?;
+    Ok(finalize_no_split_pattern(words).join(" "))
 }
 
 /// Expand a replacement string from a `${var//pattern/replacement}` operator.
@@ -4856,6 +4768,8 @@ mod tests {
             control_flow: None,
             positional_params: Vec::new(),
             shell_name: "rust-bash".to_string(),
+            interactive_shell: false,
+            invoked_with_c: false,
             random_seed: 42,
             local_scopes: Vec::new(),
             temp_binding_scopes: Vec::new(),
@@ -4864,6 +4778,7 @@ mod tests {
             in_trap: false,
             errexit_suppressed: 0,
             stdin_offset: 0,
+            current_stdin_persistent_fd: None,
             dir_stack: Vec::new(),
             command_hash: HashMap::new(),
             aliases: HashMap::new(),
@@ -4876,6 +4791,7 @@ mod tests {
             machtype: "x86_64-pc-linux-gnu".to_string(),
             hosttype: "x86_64".to_string(),
             persistent_fds: HashMap::new(),
+            persistent_fd_offsets: HashMap::new(),
             next_auto_fd: 10,
             proc_sub_counter: 0,
             proc_sub_prealloc: HashMap::new(),

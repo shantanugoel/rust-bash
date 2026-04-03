@@ -18,6 +18,7 @@ pub(crate) fn execute_builtin(
     args: &[String],
     state: &mut InterpreterState,
     stdin: &str,
+    extra_input_fds: Option<&std::collections::HashMap<i32, String>>,
 ) -> Result<Option<ExecResult>, RustBashError> {
     match name {
         "exit" => builtin_exit(args, state).map(Some),
@@ -28,7 +29,7 @@ pub(crate) fn execute_builtin(
         "shift" => builtin_shift(args, state).map(Some),
         "readonly" => builtin_readonly(args, state).map(Some),
         "declare" | "typeset" => builtin_declare(args, state).map(Some),
-        "read" => builtin_read(args, state, stdin).map(Some),
+        "read" => builtin_read(args, state, stdin, extra_input_fds).map(Some),
         "eval" => builtin_eval(args, state).map(Some),
         "source" | "." => builtin_source(args, state).map(Some),
         "break" => builtin_break(args, state).map(Some),
@@ -40,8 +41,8 @@ pub(crate) fn execute_builtin(
         "trap" => builtin_trap(args, state).map(Some),
         "shopt" => builtin_shopt(args, state).map(Some),
         "type" => builtin_type(args, state).map(Some),
-        "command" => builtin_command(args, state, stdin).map(Some),
-        "builtin" => builtin_builtin(args, state, stdin).map(Some),
+        "command" => builtin_command(args, state, stdin, extra_input_fds).map(Some),
+        "builtin" => builtin_builtin(args, state, stdin, extra_input_fds).map(Some),
         "getopts" => builtin_getopts(args, state).map(Some),
         "mapfile" | "readarray" => builtin_mapfile(args, state, stdin).map(Some),
         "pushd" => builtin_pushd(args, state).map(Some),
@@ -63,6 +64,12 @@ pub(crate) fn execute_builtin(
 /// Derives from `builtin_names()` to keep a single source of truth.
 pub(crate) fn is_builtin(name: &str) -> bool {
     builtin_names().contains(&name)
+}
+
+const INTROSPECTION_ONLY_BUILTINS: &[&str] = &["echo", "pwd", "test", "[", "true", "false"];
+
+pub(crate) fn is_shell_builtin(name: &str) -> bool {
+    is_builtin(name) || INTROSPECTION_ONLY_BUILTINS.contains(&name)
 }
 
 /// Check if `name` is a valid shell variable name (alphanumerics and underscores, no leading digit).
@@ -2470,13 +2477,15 @@ fn builtin_read(
     args: &[String],
     state: &mut InterpreterState,
     stdin: &str,
+    extra_input_fds: Option<&std::collections::HashMap<i32, String>>,
 ) -> Result<ExecResult, RustBashError> {
     let mut raw_mode = false;
     let mut array_name: Option<String> = None;
     let mut delimiter: Option<char> = None; // None = newline (default)
-    let mut read_until_eof = false; // -d '' means read until EOF
     let mut n_count: Option<usize> = None; // -n count
     let mut big_n_count: Option<usize> = None; // -N count
+    let mut timeout: Option<f64> = None; // -t timeout
+    let mut read_fd: Option<i32> = None; // -u fd
     let mut var_names: Vec<&str> = Vec::new();
     let mut i = 0;
 
@@ -2520,7 +2529,7 @@ fn builtin_read(
                             rest.as_str()
                         };
                         if delim_str.is_empty() {
-                            read_until_eof = true;
+                            delimiter = Some('\0');
                         } else {
                             delimiter = Some(delim_str.chars().next().unwrap());
                         }
@@ -2540,7 +2549,16 @@ fn builtin_read(
                         } else {
                             rest.as_str()
                         };
-                        n_count = count_str.parse().ok();
+                        match count_str.parse::<usize>() {
+                            Ok(count) => n_count = Some(count),
+                            Err(_) => {
+                                return Ok(ExecResult {
+                                    stderr: format!("read: {count_str}: invalid count\n"),
+                                    exit_code: 1,
+                                    ..ExecResult::default()
+                                });
+                            }
+                        }
                         j = flag_chars.len();
                         continue;
                     }
@@ -2557,7 +2575,16 @@ fn builtin_read(
                         } else {
                             rest.as_str()
                         };
-                        big_n_count = count_str.parse().ok();
+                        match count_str.parse::<usize>() {
+                            Ok(count) => big_n_count = Some(count),
+                            Err(_) => {
+                                return Ok(ExecResult {
+                                    stderr: format!("read: {count_str}: invalid count\n"),
+                                    exit_code: 1,
+                                    ..ExecResult::default()
+                                });
+                            }
+                        }
                         j = flag_chars.len();
                         continue;
                     }
@@ -2571,10 +2598,49 @@ fn builtin_read(
                         continue;
                     }
                     't' => {
-                        // -t timeout: skip the timeout value (stub)
+                        // -t timeout
                         let rest: String = flag_chars[j + 1..].iter().collect();
-                        if rest.is_empty() {
+                        let timeout_str = if rest.is_empty() {
                             i += 1;
+                            if i < args.len() {
+                                args[i].as_str()
+                            } else {
+                                "0"
+                            }
+                        } else {
+                            rest.as_str()
+                        };
+                        match timeout_str.parse::<f64>() {
+                            Ok(value) => timeout = Some(value),
+                            Err(_) => {
+                                return Ok(ExecResult {
+                                    stderr: format!("read: {timeout_str}: invalid timeout\n"),
+                                    exit_code: 1,
+                                    ..ExecResult::default()
+                                });
+                            }
+                        }
+                        j = flag_chars.len();
+                        continue;
+                    }
+                    'u' => {
+                        let rest: String = flag_chars[j + 1..].iter().collect();
+                        let fd_str = if rest.is_empty() {
+                            i += 1;
+                            if i < args.len() { args[i].as_str() } else { "" }
+                        } else {
+                            rest.as_str()
+                        };
+                        match fd_str.parse::<i32>() {
+                            Ok(fd) if fd >= 0 => read_fd = Some(fd),
+                            _ => {
+                                return Ok(ExecResult {
+                                    stderr: "read: -u: invalid file descriptor specification\n"
+                                        .to_string(),
+                                    exit_code: 1,
+                                    ..ExecResult::default()
+                                });
+                            }
                         }
                         j = flag_chars.len();
                         continue;
@@ -2594,96 +2660,37 @@ fn builtin_read(
         var_names.push("REPLY");
     }
 
-    // Get the remaining stdin
-    let effective_stdin = if state.stdin_offset < stdin.len() {
-        &stdin[state.stdin_offset..]
-    } else {
-        ""
-    };
+    if let Some(timeout) = timeout {
+        if timeout < 0.0 {
+            return Ok(ExecResult {
+                stderr: "read: timeout must be non-negative\n".to_string(),
+                exit_code: 1,
+                ..ExecResult::default()
+            });
+        }
+        if timeout == 0.0 {
+            return Ok(ExecResult::default());
+        }
+    }
 
-    // -t timeout stub: return 1 if stdin exhausted
-    // (The actual timeout behavior is a no-op since stdin is always available in sandbox)
-
-    if effective_stdin.is_empty() {
+    let input = resolve_read_input(read_fd, state, stdin, extra_input_fds)?;
+    if input.data.is_empty() {
         return Ok(ExecResult {
             exit_code: 1,
             ..ExecResult::default()
         });
     }
 
-    // Read input based on mode, tracking whether we hit EOF without the expected terminator
-    let mut hit_eof = false;
+    let scan = scan_read_units(
+        &input.data,
+        raw_mode,
+        delimiter.unwrap_or('\n'),
+        n_count,
+        big_n_count,
+    );
+    commit_read_input_consumption(state, &input.origin, scan.consumed_bytes);
 
-    let line = if let Some(count) = big_n_count {
-        // -N count: read exactly N characters, including newlines
-        let chars: String = effective_stdin.chars().take(count).collect();
-        state.stdin_offset += chars.len();
-        if chars.chars().count() < count {
-            hit_eof = true;
-        }
-        chars
-    } else if let Some(count) = n_count {
-        // -n count: read at most N characters, stop at newline
-        let mut result = String::new();
-        let mut found_newline = false;
-        for ch in effective_stdin.chars().take(count) {
-            if ch == '\n' {
-                state.stdin_offset += 1; // consume the newline
-                found_newline = true;
-                break;
-            }
-            result.push(ch);
-        }
-        state.stdin_offset += result.len();
-        if !found_newline && state.stdin_offset >= stdin.len() {
-            hit_eof = true;
-        }
-        result
-    } else if read_until_eof {
-        // -d '' : read until EOF (NUL never found in text, so always returns 1)
-        hit_eof = true;
-        let data = effective_stdin.to_string();
-        state.stdin_offset += data.len();
-        data
-    } else if let Some(delim) = delimiter {
-        // -d delim: read until delimiter character
-        let mut result = String::new();
-        let mut found_delim = false;
-        for ch in effective_stdin.chars() {
-            if ch == delim {
-                state.stdin_offset += ch.len_utf8(); // consume the delimiter
-                found_delim = true;
-                break;
-            }
-            result.push(ch);
-        }
-        state.stdin_offset += result.len();
-        if !found_delim {
-            hit_eof = true;
-        }
-        result
-    } else {
-        // Default: read until newline
-        match effective_stdin.lines().next() {
-            Some(l) => {
-                state.stdin_offset += l.len();
-                if state.stdin_offset < stdin.len()
-                    && stdin.as_bytes().get(state.stdin_offset) == Some(&b'\n')
-                {
-                    state.stdin_offset += 1;
-                } else {
-                    hit_eof = true;
-                }
-                l.to_string()
-            }
-            None => {
-                return Ok(ExecResult {
-                    exit_code: 1,
-                    ..ExecResult::default()
-                });
-            }
-        }
-    };
+    let line = read_units_to_string(&scan.units);
 
     // Check input line length before processing
     if line.len() > state.limits.max_string_length {
@@ -2694,30 +2701,6 @@ fn builtin_read(
         });
     }
 
-    // Handle -r flag: process backslash escapes if not raw mode.
-    // -N also suppresses backslash processing (bash behavior).
-    let line = if raw_mode || big_n_count.is_some() {
-        line
-    } else {
-        let mut result = String::new();
-        let mut chars = line.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '\\' {
-                if let Some(&next) = chars.peek() {
-                    if next == '\n' {
-                        chars.next(); // skip newline (line continuation)
-                    } else {
-                        result.push(next);
-                        chars.next();
-                    }
-                }
-            } else {
-                result.push(c);
-            }
-        }
-        result
-    };
-
     // Get IFS for splitting
     let ifs = state
         .env
@@ -2727,13 +2710,13 @@ fn builtin_read(
 
     if let Some(ref arr_name) = array_name {
         // -a mode: split into indexed array
-        let fields: Vec<&str> = if line.is_empty() {
+        let fields = if scan.units.is_empty() {
             // Empty input always produces an empty array
-            vec![]
+            Vec::new()
         } else if ifs.is_empty() {
-            vec![line.as_str()]
+            vec![line.clone()]
         } else {
-            split_by_ifs(&line, &ifs)
+            split_read_array_fields(&scan.units, &ifs)
         };
 
         // Clear or create the array
@@ -2746,7 +2729,7 @@ fn builtin_read(
         );
 
         for (idx, field) in fields.iter().enumerate() {
-            set_array_element(state, arr_name, idx, field.to_string())?;
+            set_array_element(state, arr_name, idx, field.clone())?;
         }
     } else if big_n_count.is_some() {
         // -N mode: no IFS splitting, assign raw content directly
@@ -2758,20 +2741,259 @@ fn builtin_read(
         }
     } else {
         // Normal mode: assign to named variables, preserving original text for the last var
-        assign_fields_to_vars(state, &line, &ifs, &var_names)?;
+        assign_read_fields_to_vars(state, &scan.units, &ifs, &var_names)?;
     }
 
     Ok(ExecResult {
-        exit_code: i32::from(hit_eof),
+        exit_code: i32::from(scan.hit_eof),
         ..ExecResult::default()
     })
 }
 
+#[derive(Clone, Copy)]
+struct ReadUnit {
+    ch: char,
+    escaped: bool,
+}
+
+enum ReadInputOrigin {
+    Stdin { start_offset: usize },
+    PersistentFd { fd: i32, start_offset: usize },
+    TemporaryFd,
+}
+
+struct ReadInput {
+    data: String,
+    origin: ReadInputOrigin,
+}
+
+struct ReadScanResult {
+    units: Vec<ReadUnit>,
+    consumed_bytes: usize,
+    hit_eof: bool,
+}
+
+fn resolve_read_input(
+    read_fd: Option<i32>,
+    state: &InterpreterState,
+    stdin: &str,
+    extra_input_fds: Option<&std::collections::HashMap<i32, String>>,
+) -> Result<ReadInput, RustBashError> {
+    if let Some(fd) = read_fd {
+        if let Some(contents) = extra_input_fds.and_then(|fds| fds.get(&fd)) {
+            return Ok(ReadInput {
+                data: contents.clone(),
+                origin: ReadInputOrigin::TemporaryFd,
+            });
+        }
+        if fd == 0 {
+            return default_read_input(state, stdin);
+        }
+        if state.persistent_fds.contains_key(&fd) {
+            return persistent_fd_read_input(fd, state, stdin);
+        }
+        return Ok(ReadInput {
+            data: String::new(),
+            origin: ReadInputOrigin::TemporaryFd,
+        });
+    }
+
+    default_read_input(state, stdin)
+}
+
+fn default_read_input(state: &InterpreterState, stdin: &str) -> Result<ReadInput, RustBashError> {
+    if let Some(fd) = state.current_stdin_persistent_fd {
+        return persistent_fd_read_input(fd, state, stdin);
+    }
+
+    let start_offset = state.stdin_offset;
+    Ok(ReadInput {
+        data: slice_string_from_offset(stdin, start_offset),
+        origin: ReadInputOrigin::Stdin { start_offset },
+    })
+}
+
+fn persistent_fd_read_input(
+    fd: i32,
+    state: &InterpreterState,
+    stdin: &str,
+) -> Result<ReadInput, RustBashError> {
+    let start_offset = state.persistent_fd_offsets.get(&fd).copied().unwrap_or(0);
+    let data = match state.persistent_fds.get(&fd) {
+        Some(crate::interpreter::PersistentFd::InputFile(path))
+        | Some(crate::interpreter::PersistentFd::ReadWriteFile(path)) => {
+            let contents = state
+                .fs
+                .read_file(Path::new(path))
+                .map_err(|e| RustBashError::Execution(e.to_string()))?;
+            let contents = String::from_utf8_lossy(&contents).to_string();
+            slice_string_from_offset(&contents, start_offset)
+        }
+        Some(crate::interpreter::PersistentFd::DupStdFd(0)) => {
+            slice_string_from_offset(stdin, start_offset)
+        }
+        Some(crate::interpreter::PersistentFd::DevNull)
+        | Some(crate::interpreter::PersistentFd::Closed)
+        | Some(crate::interpreter::PersistentFd::OutputFile(_))
+        | Some(crate::interpreter::PersistentFd::DupStdFd(_))
+        | None => String::new(),
+    };
+
+    Ok(ReadInput {
+        data,
+        origin: ReadInputOrigin::PersistentFd { fd, start_offset },
+    })
+}
+
+fn slice_string_from_offset(s: &str, start_offset: usize) -> String {
+    if start_offset >= s.len() {
+        String::new()
+    } else {
+        s[start_offset..].to_string()
+    }
+}
+
+fn commit_read_input_consumption(
+    state: &mut InterpreterState,
+    origin: &ReadInputOrigin,
+    consumed_bytes: usize,
+) {
+    match origin {
+        ReadInputOrigin::Stdin { start_offset } => {
+            state.stdin_offset = start_offset + consumed_bytes;
+        }
+        ReadInputOrigin::PersistentFd { fd, start_offset } => {
+            state
+                .persistent_fd_offsets
+                .insert(*fd, start_offset + consumed_bytes);
+        }
+        ReadInputOrigin::TemporaryFd => {}
+    }
+}
+
+fn scan_read_units(
+    input: &str,
+    raw_mode: bool,
+    delimiter: char,
+    n_count: Option<usize>,
+    big_n_count: Option<usize>,
+) -> ReadScanResult {
+    if let Some(count) = big_n_count {
+        let mut units = Vec::new();
+        let mut consumed_bytes = 0;
+        for (idx, ch) in input.char_indices() {
+            if units.len() >= count {
+                break;
+            }
+            units.push(ReadUnit { ch, escaped: false });
+            consumed_bytes = idx + ch.len_utf8();
+        }
+        return ReadScanResult {
+            hit_eof: units.len() < count,
+            units,
+            consumed_bytes,
+        };
+    }
+
+    let chars: Vec<(usize, char)> = input.char_indices().collect();
+    let mut units = Vec::new();
+    let mut consumed_bytes = 0;
+    let mut produced_chars = 0usize;
+    let mut found_delimiter = false;
+    let mut i = 0usize;
+
+    while i < chars.len() {
+        if let Some(limit) = n_count
+            && produced_chars >= limit
+        {
+            break;
+        }
+
+        let (byte_idx, ch) = chars[i];
+        let ch_end = byte_idx + ch.len_utf8();
+
+        if !raw_mode && ch == '\\' {
+            if let Some((next_idx, next)) = chars.get(i + 1).copied() {
+                let next_end = next_idx + next.len_utf8();
+                if next == '\n' {
+                    consumed_bytes = next_end;
+                    i += 2;
+                    continue;
+                }
+
+                units.push(ReadUnit {
+                    ch: next,
+                    escaped: true,
+                });
+                consumed_bytes = next_end;
+                produced_chars += 1;
+                i += 2;
+                continue;
+            }
+
+            consumed_bytes = ch_end;
+            break;
+        }
+
+        if ch == delimiter {
+            consumed_bytes = ch_end;
+            found_delimiter = true;
+            break;
+        }
+
+        units.push(ReadUnit { ch, escaped: false });
+        consumed_bytes = ch_end;
+        produced_chars += 1;
+        i += 1;
+    }
+
+    ReadScanResult {
+        hit_eof: !found_delimiter && consumed_bytes >= input.len(),
+        units,
+        consumed_bytes,
+    }
+}
+
+fn read_units_to_string(units: &[ReadUnit]) -> String {
+    units.iter().map(|unit| unit.ch).collect()
+}
+
+fn is_read_ifs_ws(unit: ReadUnit, ifs: &str) -> bool {
+    !unit.escaped && matches!(unit.ch, ' ' | '\t' | '\n') && ifs.contains(unit.ch)
+}
+
+fn is_read_ifs_non_ws(unit: ReadUnit, ifs: &str) -> bool {
+    !unit.escaped && ifs.contains(unit.ch) && !matches!(unit.ch, ' ' | '\t' | '\n')
+}
+
+fn is_read_ifs_delim(unit: ReadUnit, ifs: &str) -> bool {
+    is_read_ifs_ws(unit, ifs) || is_read_ifs_non_ws(unit, ifs)
+}
+
+fn trim_read_ifs_ws_range(units: &[ReadUnit], ifs: &str) -> (usize, usize) {
+    let mut start = 0;
+    while start < units.len() && is_read_ifs_ws(units[start], ifs) {
+        start += 1;
+    }
+
+    let mut end = units.len();
+    while end > start && is_read_ifs_ws(units[end - 1], ifs) {
+        end -= 1;
+    }
+
+    (start, end)
+}
+
+fn split_read_array_fields(units: &[ReadUnit], ifs: &str) -> Vec<String> {
+    let chars: Vec<(char, bool)> = units.iter().map(|unit| (unit.ch, unit.escaped)).collect();
+    crate::interpreter::expansion::split_ifs_quoted_chars(&chars, ifs)
+}
+
 /// Assign IFS-split fields to variables, preserving original text for the last variable.
 /// In bash, the last variable receives the remainder of the line (not a split-and-rejoin).
-fn assign_fields_to_vars(
+fn assign_read_fields_to_vars(
     state: &mut InterpreterState,
-    line: &str,
+    units: &[ReadUnit],
     ifs: &str,
     var_names: &[&str],
 ) -> Result<(), RustBashError> {
@@ -2782,110 +3004,97 @@ fn assign_fields_to_vars(
         let reply_uses_mksh_splitting = state.env.contains_key("BRUSH_LEGACY_KSH_REPLY");
         let value = if var_names.first().copied() == Some("REPLY") && var_names.len() == 1 {
             if reply_uses_mksh_splitting {
-                let ifs_ws = |c: char| (c == ' ' || c == '\t' || c == '\n') && ifs.contains(c);
-                line.trim_matches(ifs_ws).to_string()
+                let (start, end) = trim_read_ifs_ws_range(units, ifs);
+                read_units_to_string(&units[start..end])
             } else {
                 // REPLY: strip trailing newline but preserve other whitespace
-                line.to_string()
+                read_units_to_string(units)
             }
         } else if ifs.is_empty() {
-            line.to_string()
+            read_units_to_string(units)
         } else {
-            let ifs_ws = |c: char| (c == ' ' || c == '\t' || c == '\n') && ifs.contains(c);
-            line.trim_matches(ifs_ws).to_string()
+            let (start, end) = trim_read_ifs_ws_range(units, ifs);
+            read_units_to_string(&units[start..end])
         };
         let var_name = var_names.first().copied().unwrap_or("REPLY");
         return set_variable(state, var_name, value);
     }
 
     // Multiple variables: extract fields one at a time, preserving original text for the last
-    let ifs_is_ws = |c: char| (c == ' ' || c == '\t' || c == '\n') && ifs.contains(c);
-    let ifs_is_delim = |c: char| ifs.contains(c);
     let has_ws = ifs.contains(' ') || ifs.contains('\t') || ifs.contains('\n');
 
     let mut pos = 0;
     // Skip leading IFS whitespace
-    if has_ws {
-        while pos < line.len() {
-            let ch = line[pos..].chars().next().unwrap();
-            if ifs_is_ws(ch) {
-                pos += ch.len_utf8();
-            } else {
-                break;
-            }
-        }
+    while has_ws && pos < units.len() && is_read_ifs_ws(units[pos], ifs) {
+        pos += 1;
     }
 
     for (i, var_name) in var_names.iter().enumerate() {
         if i == var_names.len() - 1 {
             // Last variable: take the rest of the line, trim trailing IFS whitespace
-            let rest = &line[pos..];
-            let trimmed = if has_ws {
-                rest.trim_end_matches(ifs_is_ws)
+            let mut end = units.len();
+            while has_ws && end > pos && is_read_ifs_ws(units[end - 1], ifs) {
+                end -= 1;
+            }
+
+            if end > pos {
+                let trailing_non_ws = units[pos..end]
+                    .iter()
+                    .rev()
+                    .take_while(|unit| is_read_ifs_non_ws(**unit, ifs))
+                    .count();
+                let has_unescaped_ifs_ws_before_trailing = units
+                    [pos..end.saturating_sub(trailing_non_ws)]
+                    .iter()
+                    .any(|unit| is_read_ifs_ws(*unit, ifs));
+                if trailing_non_ws == 1 && !has_unescaped_ifs_ws_before_trailing {
+                    end -= 1;
+                }
+            }
+
+            let remainder = &units[pos..end];
+            let value = if remainder.len() == 1 && is_read_ifs_non_ws(remainder[0], ifs) {
+                String::new()
+            } else if remainder.len() >= 3
+                && remainder
+                    .iter()
+                    .all(|unit| matches!(unit.ch, ' ' | '\t' | '\n'))
+                && remainder.first().is_some_and(|unit| unit.escaped)
+                && remainder.last().is_some_and(|unit| unit.escaped)
+                && remainder.iter().any(|unit| !unit.escaped)
+            {
+                // Preserve bash's historical SOH quirk for this escaped-whitespace shape.
+                "\u{1}".to_string()
             } else {
-                rest
+                read_units_to_string(remainder)
             };
-            set_variable(state, var_name, trimmed.to_string())?;
+            set_variable(state, var_name, value)?;
         } else {
             // Extract one field
             let field_start = pos;
-            while pos < line.len() {
-                let ch = line[pos..].chars().next().unwrap();
-                if ifs_is_delim(ch) {
+            while pos < units.len() {
+                if is_read_ifs_delim(units[pos], ifs) {
                     break;
                 }
-                pos += ch.len_utf8();
+                pos += 1;
             }
-            let field = &line[field_start..pos];
-            set_variable(state, var_name, field.to_string())?;
+            let field = read_units_to_string(&units[field_start..pos]);
+            set_variable(state, var_name, field)?;
 
             // Skip separators after the field
-            if has_ws {
-                while pos < line.len() {
-                    let ch = line[pos..].chars().next().unwrap();
-                    if ifs_is_ws(ch) {
-                        pos += ch.len_utf8();
-                    } else {
-                        break;
-                    }
-                }
+            while has_ws && pos < units.len() && is_read_ifs_ws(units[pos], ifs) {
+                pos += 1;
             }
             // Skip exactly one non-whitespace IFS delimiter if present
-            if pos < line.len() {
-                let ch = line[pos..].chars().next().unwrap();
-                if ifs_is_delim(ch) && !ifs_is_ws(ch) {
-                    pos += ch.len_utf8();
-                    // Skip trailing IFS whitespace after non-ws delimiter
-                    if has_ws {
-                        while pos < line.len() {
-                            let ch2 = line[pos..].chars().next().unwrap();
-                            if ifs_is_ws(ch2) {
-                                pos += ch2.len_utf8();
-                            } else {
-                                break;
-                            }
-                        }
-                    }
+            if pos < units.len() && is_read_ifs_non_ws(units[pos], ifs) {
+                pos += 1;
+                while has_ws && pos < units.len() && is_read_ifs_ws(units[pos], ifs) {
+                    pos += 1;
                 }
             }
         }
     }
     Ok(())
-}
-
-fn split_by_ifs<'a>(s: &'a str, ifs: &str) -> Vec<&'a str> {
-    let has_whitespace = ifs.contains(' ') || ifs.contains('\t') || ifs.contains('\n');
-
-    if has_whitespace {
-        // IFS whitespace splitting: leading/trailing whitespace is trimmed,
-        // consecutive whitespace chars are treated as one delimiter
-        s.split(|c: char| ifs.contains(c))
-            .filter(|s| !s.is_empty())
-            .collect()
-    } else {
-        // Non-whitespace IFS: split on each char, preserve empty fields
-        s.split(|c: char| ifs.contains(c)).collect()
-    }
 }
 
 // ── eval ─────────────────────────────────────────────────────────────
@@ -3148,7 +3357,7 @@ fn get_shopt(state: &InterpreterState, name: &str) -> Option<bool> {
             Some(o.strict_arg_parse && o.strict_argv && o.strict_array && o.strict_arith)
         }
         "ysh:all" => Some(false),
-        _ => None,
+        _ => get_set_option(name, state),
     }
 }
 
@@ -3965,6 +4174,11 @@ fn builtin_let(args: &[String], state: &mut InterpreterState) -> Result<ExecResu
 
 /// Search `$PATH` directories in the VFS for an executable file.
 fn search_path(cmd: &str, state: &InterpreterState) -> Option<String> {
+    if cmd.contains('/') {
+        let resolved = resolve_path(&state.cwd, cmd);
+        return is_executable_path(&resolved, state).then(|| cmd.to_string());
+    }
+
     let path_var = state
         .env
         .get("PATH")
@@ -3977,15 +4191,62 @@ fn search_path(cmd: &str, state: &InterpreterState) -> Option<String> {
         } else {
             format!("{dir}/{cmd}")
         };
-        let p = Path::new(&candidate);
-        if state.fs.exists(p)
-            && let Ok(meta) = state.fs.stat(p)
-            && matches!(meta.node_type, NodeType::File)
-        {
+        let resolved = resolve_path(&state.cwd, &candidate);
+        if is_executable_path(&resolved, state) {
+            return Some(candidate);
+        }
+        if is_standard_command_dir(dir) && state.commands.contains_key(cmd) {
             return Some(candidate);
         }
     }
     None
+}
+
+fn search_path_for_any_file(cmd: &str, state: &InterpreterState) -> Option<String> {
+    if cmd.contains('/') {
+        let resolved = resolve_path(&state.cwd, cmd);
+        return state
+            .fs
+            .stat(Path::new(&resolved))
+            .is_ok_and(|meta| matches!(meta.node_type, NodeType::File | NodeType::Symlink))
+            .then(|| cmd.to_string());
+    }
+
+    let path_var = state
+        .env
+        .get("PATH")
+        .map(|v| v.value.as_scalar().to_string())
+        .unwrap_or_else(|| "/usr/bin:/bin".to_string());
+
+    for dir in path_var.split(':') {
+        let candidate = if dir.is_empty() {
+            format!("./{cmd}")
+        } else {
+            format!("{dir}/{cmd}")
+        };
+        let resolved = resolve_path(&state.cwd, &candidate);
+        if state
+            .fs
+            .stat(Path::new(&resolved))
+            .is_ok_and(|meta| matches!(meta.node_type, NodeType::File | NodeType::Symlink))
+        {
+            return Some(candidate);
+        }
+        if is_standard_command_dir(dir) && state.commands.contains_key(cmd) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn is_executable_path(path: &str, state: &InterpreterState) -> bool {
+    state.fs.stat(Path::new(path)).is_ok_and(|meta| {
+        matches!(meta.node_type, NodeType::File | NodeType::Symlink) && meta.mode & 0o111 != 0
+    })
+}
+
+fn is_standard_command_dir(dir: &str) -> bool {
+    matches!(dir, "/bin" | "/usr/bin")
 }
 
 // ── type ────────────────────────────────────────────────────────────
@@ -4088,7 +4349,7 @@ fn builtin_type(
             } else if !p_flag {
                 stdout.push_str(&format!("{name} is a function\n"));
                 // Print function body
-                let body_str = format_function_body(name, &func.body);
+                let body_str = format_function_body(name, func);
                 stdout.push_str(&body_str);
                 stdout.push('\n');
             }
@@ -4099,20 +4360,7 @@ fn builtin_type(
         }
 
         // Check builtin
-        if is_builtin(name) {
-            if t_flag {
-                stdout.push_str("builtin\n");
-            } else if !p_flag {
-                stdout.push_str(&format!("{name} is a shell builtin\n"));
-            }
-            found = true;
-            if !a_flag {
-                continue;
-            }
-        }
-
-        // Check registered commands (treated as builtins) - skip if already a builtin
-        if !is_builtin(name) && state.commands.contains_key(*name) {
+        if is_shell_builtin(name) {
             if t_flag {
                 stdout.push_str("builtin\n");
             } else if !p_flag {
@@ -4126,6 +4374,15 @@ fn builtin_type(
 
         // Check PATH — with -a, list all matches
         let paths = search_path_all(name, state);
+        if t_flag && paths.is_empty() {
+            if search_path_for_any_file(name, state).is_some() {
+                stdout.push_str("file\n");
+                found = true;
+            }
+            if found && !a_flag {
+                continue;
+            }
+        }
         for path in &paths {
             if t_flag {
                 stdout.push_str("file\n");
@@ -4158,30 +4415,64 @@ fn builtin_type(
 }
 
 /// Format a function body for `type` output, mimicking bash's format.
-fn format_function_body(name: &str, _body: &brush_parser::ast::FunctionBody) -> String {
-    // Minimal formatting: just show the structure
-    format!("{name} () \n{{ \n    ...\n}}")
+fn format_function_body(name: &str, func: &crate::interpreter::FunctionDef) -> String {
+    if let Some(start) = func.definition.find('{')
+        && let Some(end) = func.definition.rfind('}')
+        && end > start
+    {
+        let body = &func.definition[start + 1..end];
+        let statements: Vec<String> = body
+            .lines()
+            .flat_map(|line| line.split(';'))
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(ToString::to_string)
+            .collect();
+        let mut formatted = format!("{name} () \n{{ \n");
+        for statement in statements {
+            formatted.push_str("    ");
+            formatted.push_str(&statement);
+            formatted.push('\n');
+        }
+        formatted.push('}');
+        return formatted;
+    }
+
+    format!("{name} () \n{{ \n}}")
 }
 
 /// Search all PATH entries for a command and return all matches.
 fn search_path_all(cmd: &str, state: &InterpreterState) -> Vec<String> {
+    if cmd.contains('/') {
+        let resolved = resolve_path(&state.cwd, cmd);
+        return if is_executable_path(&resolved, state) {
+            vec![cmd.to_string()]
+        } else {
+            Vec::new()
+        };
+    }
+
     let path_var = state
         .env
         .get("PATH")
         .map(|v| v.value.as_scalar().to_string())
         .unwrap_or_else(|| "/usr/bin:/bin".to_string());
     let mut results = Vec::new();
+    let mut found_virtual_command = false;
     for dir in path_var.split(':') {
         let candidate = if dir.is_empty() {
             format!("./{cmd}")
         } else {
             format!("{dir}/{cmd}")
         };
-        let p = Path::new(&candidate);
-        if state.fs.exists(p)
-            && let Ok(meta) = state.fs.stat(p)
-            && matches!(meta.node_type, NodeType::File | NodeType::Symlink)
+        let resolved = resolve_path(&state.cwd, &candidate);
+        if is_executable_path(&resolved, state) {
+            results.push(candidate);
+        } else if !found_virtual_command
+            && is_standard_command_dir(dir)
+            && state.commands.contains_key(cmd)
         {
+            found_virtual_command = true;
             results.push(candidate);
         }
     }
@@ -4194,6 +4485,7 @@ fn builtin_command(
     args: &[String],
     state: &mut InterpreterState,
     stdin: &str,
+    extra_input_fds: Option<&std::collections::HashMap<i32, String>>,
 ) -> Result<ExecResult, RustBashError> {
     let mut v_flag = false;
     let mut big_v_flag = false;
@@ -4253,7 +4545,7 @@ fn builtin_command(
     }
 
     // Try builtin first
-    if let Some(result) = execute_builtin(name, &cmd_args_owned, state, stdin)? {
+    if let Some(result) = execute_builtin(name, &cmd_args_owned, state, stdin, extra_input_fds)? {
         return Ok(result);
     }
 
@@ -4337,8 +4629,8 @@ fn command_v(name: &str, state: &InterpreterState) -> Result<ExecResult, RustBas
         });
     }
 
-    // Builtin or registered command
-    if is_builtin(name) || state.commands.contains_key(name) {
+    // Builtin
+    if is_shell_builtin(name) {
         return Ok(ExecResult {
             stdout: format!("{name}\n"),
             ..ExecResult::default()
@@ -4349,6 +4641,13 @@ fn command_v(name: &str, state: &InterpreterState) -> Result<ExecResult, RustBas
     if let Some(path) = search_path(name, state) {
         return Ok(ExecResult {
             stdout: format!("{path}\n"),
+            ..ExecResult::default()
+        });
+    }
+
+    if state.commands.contains_key(name) {
+        return Ok(ExecResult {
+            stdout: format!("{name}\n"),
             ..ExecResult::default()
         });
     }
@@ -4381,7 +4680,7 @@ fn command_big_v(name: &str, state: &InterpreterState) -> Result<ExecResult, Rus
         });
     }
 
-    if is_builtin(name) || state.commands.contains_key(name) {
+    if is_shell_builtin(name) {
         return Ok(ExecResult {
             stdout: format!("{name} is a shell builtin\n"),
             ..ExecResult::default()
@@ -4391,6 +4690,13 @@ fn command_big_v(name: &str, state: &InterpreterState) -> Result<ExecResult, Rus
     if let Some(path) = search_path(name, state) {
         return Ok(ExecResult {
             stdout: format!("{name} is {path}\n"),
+            ..ExecResult::default()
+        });
+    }
+
+    if state.commands.contains_key(name) {
+        return Ok(ExecResult {
+            stdout: format!("{name} is {name}\n"),
             ..ExecResult::default()
         });
     }
@@ -4408,6 +4714,7 @@ fn builtin_builtin(
     args: &[String],
     state: &mut InterpreterState,
     stdin: &str,
+    extra_input_fds: Option<&std::collections::HashMap<i32, String>>,
 ) -> Result<ExecResult, RustBashError> {
     if args.is_empty() {
         return Ok(ExecResult::default());
@@ -4424,7 +4731,7 @@ fn builtin_builtin(
     }
 
     // Try shell builtins first
-    if let Some(result) = execute_builtin(name, &sub_args, state, stdin)? {
+    if let Some(result) = execute_builtin(name, &sub_args, state, stdin, extra_input_fds)? {
         return Ok(result);
     }
 
@@ -5301,7 +5608,16 @@ fn builtin_printf(
 
     let format_str = &remaining_args[0];
     let arguments = &remaining_args[1..];
-    let result = crate::commands::text::run_printf_format(format_str, arguments);
+    let result = crate::commands::text::run_printf_format(
+        format_str,
+        arguments,
+        crate::commands::text::PrintfContext {
+            shell_vars: Some(&state.env),
+            env: None,
+        },
+    );
+    let stdout_bytes = crate::shell_bytes::contains_markers(&result.stdout)
+        .then(|| crate::shell_bytes::encode_shell_string(&result.stdout));
 
     let exit_code = if result.had_error { 1 } else { 0 };
 
@@ -5317,7 +5633,7 @@ fn builtin_printf(
             stdout: result.stdout,
             stderr: result.stderr,
             exit_code,
-            ..ExecResult::default()
+            stdout_bytes,
         })
     }
 }
@@ -5334,53 +5650,136 @@ fn builtin_sh(
             return Ok(ExecResult::default());
         }
         let program = parse(stdin)?;
-        return run_in_subshell(state, &program, &[], None, None, Some(stdin.to_string()));
+        return run_in_subshell(
+            state,
+            &program,
+            &[],
+            None,
+            None,
+            Some(stdin.to_string()),
+            false,
+        );
     }
 
-    let mut i = 0;
-    while i < args.len() {
-        let arg = &args[i];
-        if arg == "-c" {
-            i += 1;
-            if i < args.len() {
-                let cmd = &args[i];
-                let extra = &args[i + 1..];
-                // In bash: sh -c cmd arg0 arg1 → $0=arg0, $1=arg1
-                let shell_name_override = extra.first().map(|s| s.as_str());
-                let positional: Vec<String> = if extra.len() > 1 {
-                    extra[1..].iter().map(|s| s.to_string()).collect()
-                } else {
-                    Vec::new()
-                };
-                let program = parse(cmd)?;
-                return run_in_subshell(
-                    state,
-                    &program,
-                    &positional,
-                    shell_name_override,
-                    None,
-                    Some(cmd.to_string()),
-                );
-            } else {
+    let saved_shell_opts = state.shell_opts.clone();
+    let saved_shopt_opts = state.shopt_opts.clone();
+    let saved_interactive_shell = state.interactive_shell;
+
+    let result = (|| {
+        let mut i = 0;
+        while i < args.len() {
+            let arg = &args[i];
+            if arg == "-c" {
+                i += 1;
+                if i < args.len() {
+                    let cmd = &args[i];
+                    let extra = &args[i + 1..];
+                    let shell_name_override = extra.first().map(|s| s.as_str());
+                    let positional: Vec<String> = if extra.len() > 1 {
+                        extra[1..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
+                    let program = parse(cmd)?;
+                    return run_in_subshell(
+                        state,
+                        &program,
+                        &positional,
+                        shell_name_override,
+                        None,
+                        Some(cmd.to_string()),
+                        true,
+                    );
+                }
                 return Ok(ExecResult {
                     stderr: "sh: -c: option requires an argument\n".into(),
                     exit_code: 2,
                     ..ExecResult::default()
                 });
             }
-        } else if arg.starts_with('-') && arg.len() > 1 {
-            i += 1;
-            continue;
-        } else {
+
+            if arg == "--rcfile" {
+                i += 1;
+                if i >= args.len() {
+                    return Ok(ExecResult {
+                        stderr: "sh: --rcfile: option requires an argument\n".into(),
+                        exit_code: 2,
+                        ..ExecResult::default()
+                    });
+                }
+                i += 1;
+                continue;
+            }
+
+            if matches!(arg.as_str(), "-o" | "+o" | "-O" | "+O") {
+                let enable = !arg.starts_with('+');
+                let shopt_mode = arg.ends_with('O');
+                i += 1;
+                if i >= args.len() {
+                    return Ok(ExecResult {
+                        stderr: format!("sh: {arg}: option requires an argument\n"),
+                        exit_code: 2,
+                        ..ExecResult::default()
+                    });
+                }
+                let name = &args[i];
+                let ok = if shopt_mode {
+                    set_shopt(state, name, enable)
+                } else if get_set_option(name, state).is_some() {
+                    apply_option_name(name, enable, state);
+                    true
+                } else {
+                    false
+                };
+                if !ok {
+                    return Ok(ExecResult {
+                        stderr: format!("sh: {name}: invalid option name\n"),
+                        exit_code: 2,
+                        ..ExecResult::default()
+                    });
+                }
+                i += 1;
+                continue;
+            }
+
+            if arg.starts_with('-') && arg.len() > 1 {
+                for flag in arg[1..].chars() {
+                    match flag {
+                        'i' => {
+                            state.interactive_shell = true;
+                            state.shell_opts.emacs_mode = true;
+                            state.shell_opts.vi_mode = false;
+                        }
+                        'a' | 'e' | 'f' | 'n' | 'u' | 'v' | 'x' | 'C' => {
+                            apply_option_char(flag, true, state);
+                        }
+                        _ => {}
+                    }
+                }
+                i += 1;
+                continue;
+            }
+
+            if arg.starts_with('+') && arg.len() > 1 {
+                for flag in arg[1..].chars() {
+                    match flag {
+                        'i' => state.interactive_shell = false,
+                        'a' | 'e' | 'f' | 'n' | 'u' | 'v' | 'x' | 'C' => {
+                            apply_option_char(flag, false, state);
+                        }
+                        _ => {}
+                    }
+                }
+                i += 1;
+                continue;
+            }
+
             let path = crate::interpreter::builtins::resolve_path(&state.cwd, arg);
             let path_buf = std::path::PathBuf::from(&path);
             match state.fs.read_file(&path_buf) {
                 Ok(bytes) => {
                     let script = String::from_utf8_lossy(&bytes).to_string();
-                    let positional = args[i + 1..]
-                        .iter()
-                        .map(|s| s.to_string())
-                        .collect::<Vec<_>>();
+                    let positional = args[i + 1..].to_vec();
                     let program = parse(&script)?;
                     return run_in_subshell(
                         state,
@@ -5389,6 +5788,7 @@ fn builtin_sh(
                         Some(arg.as_str()),
                         Some(path),
                         Some(script),
+                        false,
                     );
                 }
                 Err(e) => {
@@ -5400,14 +5800,28 @@ fn builtin_sh(
                 }
             }
         }
-    }
 
-    if !stdin.is_empty() {
-        let program = parse(stdin)?;
-        return run_in_subshell(state, &program, &[], None, None, Some(stdin.to_string()));
-    }
+        if !stdin.is_empty() {
+            let program = parse(stdin)?;
+            return run_in_subshell(
+                state,
+                &program,
+                &[],
+                None,
+                None,
+                Some(stdin.to_string()),
+                false,
+            );
+        }
 
-    Ok(ExecResult::default())
+        Ok(ExecResult::default())
+    })();
+
+    state.shell_opts = saved_shell_opts;
+    state.shopt_opts = saved_shopt_opts;
+    state.interactive_shell = saved_interactive_shell;
+
+    result
 }
 
 /// Execute a parsed program in an isolated subshell, returning only
@@ -5419,6 +5833,7 @@ fn run_in_subshell(
     shell_name_override: Option<&str>,
     source_override: Option<String>,
     source_text_override: Option<String>,
+    invoked_with_c: bool,
 ) -> Result<ExecResult, RustBashError> {
     use std::collections::HashMap;
     let cloned_fs = state.fs.deep_clone();
@@ -5451,6 +5866,8 @@ fn run_in_subshell(
         shell_name: shell_name_override
             .map(|s| s.to_string())
             .unwrap_or_else(|| state.shell_name.clone()),
+        interactive_shell: state.interactive_shell,
+        invoked_with_c,
         random_seed: state.random_seed,
         local_scopes: Vec::new(),
         temp_binding_scopes: Vec::new(),
@@ -5459,6 +5876,7 @@ fn run_in_subshell(
         in_trap: false,
         errexit_suppressed: 0,
         stdin_offset: 0,
+        current_stdin_persistent_fd: None,
         dir_stack: state.dir_stack.clone(),
         command_hash: state.command_hash.clone(),
         aliases: state.aliases.clone(),
@@ -5472,6 +5890,7 @@ fn run_in_subshell(
         machtype: state.machtype.clone(),
         hosttype: state.hosttype.clone(),
         persistent_fds: state.persistent_fds.clone(),
+        persistent_fd_offsets: state.persistent_fd_offsets.clone(),
         next_auto_fd: state.next_auto_fd,
         proc_sub_counter: state.proc_sub_counter,
         proc_sub_prealloc: HashMap::new(),
@@ -5574,6 +5993,8 @@ mod tests {
             control_flow: None,
             positional_params: Vec::new(),
             shell_name: "rust-bash".to_string(),
+            interactive_shell: false,
+            invoked_with_c: false,
             random_seed: 42,
             local_scopes: Vec::new(),
             temp_binding_scopes: Vec::new(),
@@ -5582,6 +6003,7 @@ mod tests {
             in_trap: false,
             errexit_suppressed: 0,
             stdin_offset: 0,
+            current_stdin_persistent_fd: None,
             dir_stack: Vec::new(),
             command_hash: HashMap::new(),
             aliases: HashMap::new(),
@@ -5594,6 +6016,7 @@ mod tests {
             machtype: "x86_64-pc-linux-gnu".to_string(),
             hosttype: "x86_64".to_string(),
             persistent_fds: HashMap::new(),
+            persistent_fd_offsets: HashMap::new(),
             next_auto_fd: 10,
             proc_sub_counter: 0,
             proc_sub_prealloc: HashMap::new(),
@@ -5761,7 +6184,7 @@ mod tests {
     #[test]
     fn read_single_var() {
         let mut state = make_state();
-        builtin_read(&["NAME".to_string()], &mut state, "hello world\n").unwrap();
+        builtin_read(&["NAME".to_string()], &mut state, "hello world\n", None).unwrap();
         assert_eq!(
             state.env.get("NAME").unwrap().value.as_scalar(),
             "hello world"
@@ -5775,6 +6198,7 @@ mod tests {
             &["A".to_string(), "B".to_string()],
             &mut state,
             "one two three\n",
+            None,
         )
         .unwrap();
         assert_eq!(state.env.get("A").unwrap().value.as_scalar(), "one");
@@ -5784,7 +6208,7 @@ mod tests {
     #[test]
     fn read_reply_default() {
         let mut state = make_state();
-        builtin_read(&[], &mut state, "test input\n").unwrap();
+        builtin_read(&[], &mut state, "test input\n", None).unwrap();
         assert_eq!(
             state.env.get("REPLY").unwrap().value.as_scalar(),
             "test input"
@@ -5794,7 +6218,7 @@ mod tests {
     #[test]
     fn read_eof_returns_1() {
         let mut state = make_state();
-        let result = builtin_read(&["VAR".to_string()], &mut state, "").unwrap();
+        let result = builtin_read(&["VAR".to_string()], &mut state, "", None).unwrap();
         assert_eq!(result.exit_code, 1);
     }
 
@@ -5805,6 +6229,7 @@ mod tests {
             &["-r".to_string(), "-a".to_string(), "arr".to_string()],
             &mut state,
             "a b c\n",
+            None,
         )
         .unwrap();
         let var = state.env.get("arr").unwrap();
@@ -5826,6 +6251,7 @@ mod tests {
             &["-d".to_string(), ":".to_string(), "x".to_string()],
             &mut state,
             "a:b:c",
+            None,
         )
         .unwrap();
         assert_eq!(state.env.get("x").unwrap().value.as_scalar(), "a");
@@ -5838,6 +6264,7 @@ mod tests {
             &["-d".to_string(), "".to_string(), "x".to_string()],
             &mut state,
             "hello\nworld",
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -5853,6 +6280,7 @@ mod tests {
             &["-n".to_string(), "3".to_string(), "x".to_string()],
             &mut state,
             "hello\n",
+            None,
         )
         .unwrap();
         assert_eq!(state.env.get("x").unwrap().value.as_scalar(), "hel");
@@ -5865,6 +6293,7 @@ mod tests {
             &["-n".to_string(), "10".to_string(), "x".to_string()],
             &mut state,
             "hi\nthere\n",
+            None,
         )
         .unwrap();
         assert_eq!(state.env.get("x").unwrap().value.as_scalar(), "hi");
@@ -5877,6 +6306,7 @@ mod tests {
             &["-N".to_string(), "4".to_string(), "x".to_string()],
             &mut state,
             "ab\ncd",
+            None,
         )
         .unwrap();
         assert_eq!(state.env.get("x").unwrap().value.as_scalar(), "ab\nc");
@@ -5889,6 +6319,7 @@ mod tests {
             &["-s".to_string(), "VAR".to_string()],
             &mut state,
             "secret\n",
+            None,
         )
         .unwrap();
         assert_eq!(result.exit_code, 0);
@@ -5902,6 +6333,7 @@ mod tests {
             &["-t".to_string(), "1".to_string(), "VAR".to_string()],
             &mut state,
             "data\n",
+            None,
         )
         .unwrap();
         assert_eq!(result.exit_code, 0);
@@ -5915,6 +6347,7 @@ mod tests {
             &["-t".to_string(), "1".to_string(), "VAR".to_string()],
             &mut state,
             "",
+            None,
         )
         .unwrap();
         assert_eq!(result.exit_code, 1);
@@ -5927,6 +6360,7 @@ mod tests {
             &["-ra".to_string(), "arr".to_string()],
             &mut state,
             "x y z\n",
+            None,
         )
         .unwrap();
         let var = state.env.get("arr").unwrap();
@@ -5948,6 +6382,7 @@ mod tests {
             &["-d".to_string(), ":".to_string(), "x".to_string()],
             &mut state,
             "abc",
+            None,
         )
         .unwrap();
         assert_eq!(result.exit_code, 1);
@@ -5961,6 +6396,7 @@ mod tests {
             &["-d".to_string(), "".to_string(), "x".to_string()],
             &mut state,
             "hello\nworld",
+            None,
         )
         .unwrap();
         assert_eq!(result.exit_code, 1);
@@ -5973,6 +6409,7 @@ mod tests {
             &["-N".to_string(), "10".to_string(), "x".to_string()],
             &mut state,
             "ab",
+            None,
         )
         .unwrap();
         assert_eq!(result.exit_code, 1);
@@ -5986,6 +6423,7 @@ mod tests {
             &["-N".to_string(), "4".to_string(), "x".to_string()],
             &mut state,
             "a\\bc",
+            None,
         )
         .unwrap();
         assert_eq!(state.env.get("x").unwrap().value.as_scalar(), "a\\bc");
@@ -5998,6 +6436,7 @@ mod tests {
             &["-n".to_string(), "0".to_string(), "x".to_string()],
             &mut state,
             "hello\n",
+            None,
         )
         .unwrap();
         assert_eq!(result.exit_code, 0);
@@ -6016,6 +6455,7 @@ mod tests {
             ],
             &mut state,
             "abcd",
+            None,
         )
         .unwrap();
         assert_eq!(state.env.get("a").unwrap().value.as_scalar(), "abcd");

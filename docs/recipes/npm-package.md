@@ -254,7 +254,7 @@ interface ExecutionLimits {
   maxExecutionTimeSecs?: number;        // default: 30
   maxLoopIterations?: number;           // default: 10,000
   maxOutputSize?: number;               // default: 10 MB
-  maxCallDepth?: number;                // default: 100
+  maxCallDepth?: number;                // default: 25
   maxStringLength?: number;             // default: 10 MB
   maxGlobResults?: number;              // default: 100,000
   maxSubstitutionDepth?: number;        // default: 50

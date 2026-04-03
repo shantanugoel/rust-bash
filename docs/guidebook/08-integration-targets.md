@@ -165,7 +165,7 @@ Config is passed as a JSON string to `rust_bash_create`. All fields are optional
     "max_execution_time_secs": 30,
     "max_loop_iterations": 10000,
     "max_output_size": 10485760,
-    "max_call_depth": 100,
+    "max_call_depth": 25,
     "max_string_length": 10485760,
     "max_glob_results": 100000,
     "max_substitution_depth": 50,

@@ -1209,10 +1209,14 @@ fn read_var(state: &mut InterpreterState, name: &str) -> Result<i64, RustBashErr
             "{name}: unbound variable"
         )));
     }
-    Ok(resolve_var_recursive(state, name, 0))
+    resolve_var_recursive(state, name, 0)
 }
 
-fn resolve_var_recursive(state: &mut InterpreterState, name: &str, depth: usize) -> i64 {
+fn resolve_var_recursive(
+    state: &mut InterpreterState,
+    name: &str,
+    depth: usize,
+) -> Result<i64, RustBashError> {
     const MAX_DEPTH: usize = 10;
     let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
     let val_str = state
@@ -1221,10 +1225,10 @@ fn resolve_var_recursive(state: &mut InterpreterState, name: &str, depth: usize)
         .map(|v| v.value.as_scalar().to_string())
         .unwrap_or_default();
     if val_str.is_empty() {
-        return 0;
+        return Ok(0);
     }
     if let Ok(n) = val_str.parse::<i64>() {
-        return n;
+        return Ok(n);
     }
     // If the value looks like a valid variable name, resolve recursively.
     if depth < MAX_DEPTH
@@ -1236,12 +1240,10 @@ fn resolve_var_recursive(state: &mut InterpreterState, name: &str, depth: usize)
         return resolve_var_recursive(state, &val_str, depth + 1);
     }
     // Bash evaluates the variable's string value as an arithmetic expression.
-    if depth < MAX_DEPTH
-        && let Ok(n) = eval_arithmetic(&val_str, state)
-    {
-        return n;
+    if depth < MAX_DEPTH {
+        return eval_arithmetic(&val_str, state);
     }
-    0
+    Ok(0)
 }
 
 /// Strip surrounding single or double quotes from an associative array key.
@@ -1527,6 +1529,8 @@ mod tests {
             control_flow: None,
             positional_params: Vec::new(),
             shell_name: "rust-bash".to_string(),
+            interactive_shell: false,
+            invoked_with_c: false,
             random_seed: 42,
             local_scopes: Vec::new(),
             temp_binding_scopes: Vec::new(),
@@ -1535,6 +1539,7 @@ mod tests {
             in_trap: false,
             errexit_suppressed: 0,
             stdin_offset: 0,
+            current_stdin_persistent_fd: None,
             dir_stack: Vec::new(),
             command_hash: HashMap::new(),
             aliases: HashMap::new(),
@@ -1547,6 +1552,7 @@ mod tests {
             machtype: "x86_64-pc-linux-gnu".to_string(),
             hosttype: "x86_64".to_string(),
             persistent_fds: HashMap::new(),
+            persistent_fd_offsets: HashMap::new(),
             next_auto_fd: 10,
             proc_sub_counter: 0,
             proc_sub_prealloc: HashMap::new(),

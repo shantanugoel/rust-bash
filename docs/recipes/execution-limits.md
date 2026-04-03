@@ -10,7 +10,7 @@ Every `RustBash` instance starts with these defaults:
 
 | Limit | Default | What it caps |
 |-------|---------|--------------|
-| `max_call_depth` | 100 | Recursive function call nesting |
+| `max_call_depth` | 25 | Recursive function call nesting |
 | `max_command_count` | 10,000 | Total commands executed per `exec()` call |
 | `max_loop_iterations` | 10,000 | Iterations per loop (`for`, `while`, `until`) |
 | `max_execution_time` | 30 s | Wall-clock time per `exec()` call |

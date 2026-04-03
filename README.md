@@ -431,7 +431,7 @@ let mut shell = RustBashBuilder::new()
 
 | Limit | Default |
 |-------|---------|
-| `max_call_depth` | 100 |
+| `max_call_depth` | 25 |
 | `max_command_count` | 10,000 |
 | `max_loop_iterations` | 10,000 |
 | `max_execution_time` | 30 s |

@@ -297,7 +297,8 @@ fn byte_offset_of_nth_token(s: &str, n: usize) -> usize {
 }
 
 /// Parse a multiline `## STDOUT:` / `## STDERR:` block.
-/// Reads lines until `## END` and returns the collected text plus the number of lines consumed
+/// Reads lines until `## END` or `# END` and returns the collected text plus the number of lines
+/// consumed
 /// (including the `## END` line).  A `## ` line that is *not* `## END` also terminates the block
 /// (without being consumed) — this handles adjacent override blocks such as
 /// `## STDOUT: ... ## N-I mksh STDOUT: ... ## END`.
@@ -306,7 +307,7 @@ fn parse_multiline_block(lines: &[&str]) -> (String, usize) {
     let mut consumed = 0;
     let mut line_count = 0;
     for line in lines {
-        if *line == "## END" {
+        if *line == "## END" || *line == "# END" {
             consumed += 1; // consume the terminator
             break;
         }
@@ -441,6 +442,16 @@ pub fn run_parser_unit_tests() {
         assert_eq!(
             file.cases[0].expected_stdout,
             Some("override\n".to_string())
+        );
+    }
+
+    // Multiline override blocks may terminate with a single-hash END marker.
+    {
+        let input = "#### test\necho hi\n## OK bash STDOUT:\nstatus=1\nnounset off\n# END\n";
+        let file = parse_oils_file(input);
+        assert_eq!(
+            file.cases[0].expected_stdout,
+            Some("status=1\nnounset off\n".to_string())
         );
     }
 
