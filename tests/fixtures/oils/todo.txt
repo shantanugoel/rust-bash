@@ -1,6 +1,6 @@
-# Ordered Oils fix queue as of 2026-04-02.
+# Ordered Oils fix queue as of 2026-04-03.
 # Source of truth: current live Oils run (`cargo test --test oils_spec -- --nocapture --test-threads=1`).
-# Current totals: 1603 pass / 555 xfail / 79 skip, with 46 whole-file skips in `tests/oils_spec.rs`.
+# Current totals: 1742 pass / 457 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
 #
 # ── How the Oils test infra works ──
 # Runner:      tests/oils_spec.rs (datatest_stable harness, discovers .test.sh files)
@@ -25,11 +25,6 @@
 # `builtin-cd.test` and `redirect.test` stay on the queue, but expect a small VFS/symlink/fd tail to remain until M9.
 
 ## Parser, Expansion, Quoting, Assignment
-- var-op-slice.test (xfail=7) slicing semantics
-- var-num.test (xfail=2) numeric special variables / expansions
-- func-parsing.test (xfail=2) function-definition parse edge cases
-- brace-expansion.test (xfail=5) brace expansion tail
-- shell-grammar.test (xfail=4) grammar fidelity beyond current parser happy path
 - whitespace.test (xfail=3) whitespace-sensitive parsing / execution
 - var-sub.test (xfail=3) remaining unquoted parameter expansion cases
 - command-sub-ksh.test (xfail=4) legacy command-sub syntax tail
@@ -44,7 +39,7 @@
 - subshell.test (xfail=1) small subshell semantic tail tied to core parsing/execution
 
 ## Builtins, Shell State, Options, Control, Tracing
-- builtin-read.test (xfail=33) `read` / `mapfile` semantics remain the biggest builtin gap
+- builtin-read.test (xfail=26) `read` / `mapfile` semantics remain the biggest builtin gap
 - builtin-printf.test (xfail=14) format handling, escapes, integer conversion, `%T`, `%b`, `-v`
 - sh-options.test (xfail=10) shell option state, invocation flags, `$-`, `shopt`
 - builtin-type-bash.test (xfail=14) `type` / PATH / alias / function precedence
@@ -73,9 +68,9 @@
 - builtin-dirs.test (xfail=1) directory-stack builtin tail
 - vars-bash.test (xfail=1) bash-specific variable tail
 ## Arrays, Indirection, Regex, Introspection
-- array-sparse.test (xfail=13) sparse-array semantics and negative-index handling
-- var-ref.test (xfail=17) indirect expansion and guarded expansion semantics
-- array.test (xfail=12) array assignment / env-binding / strict-array behavior
+- array-sparse.test (xfail=12) sparse-array semantics and negative-index handling
+- var-ref.test (xfail=15) indirect expansion and guarded expansion semantics
+- array.test (xfail=10) array assignment / env-binding / strict-array behavior
 - nameref.test (xfail=13) `declare -n` and reference semantics
 - regex.test (xfail=7) `[[ ... =~ ... ]]` parse/runtime regex behavior
 - array-assign.test (xfail=10) assignment forms for arrays
@@ -90,7 +85,7 @@
 - builtin-cd.test (xfail=7) `cd` / `pwd` semantics; leave the final symlink/PWD fidelity tail for M9
 - redirect-multi.test (xfail=8) multi-redirect word expansion and ambiguity
 - glob.test (xfail=5) remaining glob semantics and locale/order edge cases
-- tilde.test (xfail=4) tilde expansion tail
+- tilde.test (xfail=3) tilde expansion tail
 - globignore.test (xfail=4) `GLOBIGNORE` interaction semantics
 - process-sub.test (xfail=3) process substitution semantics
 - serialize.test (xfail=5) shell state serialization / `%q` / `set` output fidelity

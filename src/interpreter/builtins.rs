@@ -5380,7 +5380,7 @@ fn builtin_sh(
                         state,
                         &program,
                         &positional,
-                        None,
+                        Some(arg.as_str()),
                         Some(path),
                         Some(script),
                     );
@@ -5394,6 +5394,11 @@ fn builtin_sh(
                 }
             }
         }
+    }
+
+    if !stdin.is_empty() {
+        let program = parse(stdin)?;
+        return run_in_subshell(state, &program, &[], None, None, Some(stdin.to_string()));
     }
 
     Ok(ExecResult::default())
@@ -5708,6 +5713,26 @@ mod tests {
         state.positional_params = vec!["a".to_string()];
         let result = builtin_shift(&["5".to_string()], &mut state).unwrap();
         assert_eq!(result.exit_code, 1);
+    }
+
+    #[test]
+    fn sh_reads_stdin_when_only_flags_are_given() {
+        let mut state = make_state();
+        let result = builtin_sh(&["-i".to_string()], &mut state, "printf '%s\\n' \"$0\"").unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.stdout, "rust-bash\n");
+    }
+
+    #[test]
+    fn sh_script_uses_invoked_name_for_dollar_zero() {
+        let mut state = make_state();
+        state
+            .fs
+            .write_file(Path::new("/script.sh"), b"printf '%s\\n' \"$0\"")
+            .unwrap();
+        let result = builtin_sh(&["script.sh".to_string()], &mut state, "").unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.stdout, "script.sh\n");
     }
 
     #[test]

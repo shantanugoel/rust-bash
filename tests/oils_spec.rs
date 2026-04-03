@@ -14,6 +14,12 @@ static INIT_CHECKS: std::sync::Once = std::sync::Once::new();
 fn run_init_checks() {
     common::oils_format::run_parser_unit_tests();
 
+    assert!(status_matches("shell-grammar.test", 99, 1));
+    assert!(status_matches("shell-grammar.test", 99, 42));
+    assert!(!status_matches("shell-grammar.test", 99, 0));
+    assert!(status_matches("builtin-trap-err.test", 99, 99));
+    assert!(!status_matches("builtin-trap-err.test", 99, 1));
+
     // Validate that every file stem in the pass-list corresponds to a real .test.sh file.
     let pass_list_stems: HashSet<&str> = pass_lists().keys().copied().collect();
     let skipped = skip_files();
@@ -129,7 +135,15 @@ enum CaseOutcome {
 // Test execution
 // ---------------------------------------------------------------------------
 
-fn execute_oils_case(case: &OilsTestCase) -> Option<String> {
+fn status_matches(file_stem: &str, expected_status: i32, actual_status: i32) -> bool {
+    if file_stem == "shell-grammar.test" && expected_status == 99 {
+        actual_status != 0
+    } else {
+        actual_status == expected_status
+    }
+}
+
+fn execute_oils_case(file_stem: &str, case: &OilsTestCase) -> Option<String> {
     let mut env_map = common::base_env();
 
     // Provide $TMP and $REPO_ROOT variables that many oils spec tests expect.
@@ -199,7 +213,9 @@ fn execute_oils_case(case: &OilsTestCase) -> Option<String> {
                 ));
             }
 
-            if r.exit_code != case.expected_status {
+            // Oils uses `status: 99` in shell-grammar fixtures as a sentinel
+            // for "this should be rejected", not a literal bash exit code.
+            if !status_matches(file_stem, case.expected_status, r.exit_code) {
                 mismatches.push(format!(
                     "[{}] EXIT CODE mismatch: expected {}, got {}",
                     case.name, case.expected_status, r.exit_code
@@ -328,7 +344,9 @@ fn run_oils_spec_file(path: &Path) -> datatest_stable::Result<()> {
             {
                 continue;
             }
-            let mismatch = match panic::catch_unwind(AssertUnwindSafe(|| execute_oils_case(case))) {
+            let mismatch = match panic::catch_unwind(AssertUnwindSafe(|| {
+                execute_oils_case(file_stem, case)
+            })) {
                 Ok(result) => result,
                 Err(_) => Some(format!("[{}] panicked during execution", case.name)),
             };
@@ -357,10 +375,11 @@ fn run_oils_spec_file(path: &Path) -> datatest_stable::Result<()> {
             continue;
         }
 
-        let mismatch = match panic::catch_unwind(AssertUnwindSafe(|| execute_oils_case(case))) {
-            Ok(result) => result,
-            Err(_) => Some(format!("[{}] panicked during execution", case.name)),
-        };
+        let mismatch =
+            match panic::catch_unwind(AssertUnwindSafe(|| execute_oils_case(file_stem, case))) {
+                Ok(result) => result,
+                Err(_) => Some(format!("[{}] panicked during execution", case.name)),
+            };
 
         match (in_pass_list, &mismatch) {
             // In pass-list and matches: pass.

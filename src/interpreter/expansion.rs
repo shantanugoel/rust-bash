@@ -119,6 +119,7 @@ fn expand_word_segments(
     state: &InterpreterState,
 ) -> Result<Vec<WordInProgress>, RustBashError> {
     validate_length_transform_syntax(&word.value)?;
+    validate_empty_slice_syntax(&word.value)?;
     let options = parser_options();
     let rewritten = rewrite_special_case_word_syntax(&word.value, state);
     let assignment_like = expand_assignment_like_tilde_bug(&rewritten, state);
@@ -137,6 +138,7 @@ fn expand_word_segments_mut(
     state: &mut InterpreterState,
 ) -> Result<Vec<WordInProgress>, RustBashError> {
     validate_length_transform_syntax(&word.value)?;
+    validate_empty_slice_syntax(&word.value)?;
     let options = parser_options();
     let rewritten = rewrite_special_case_word_syntax(&word.value, state);
     let assignment_like = expand_assignment_like_tilde_bug(&rewritten, state);
@@ -620,9 +622,13 @@ fn expand_tilde(
             push_segment(words, &oldpwd, true, true);
         }
         TildeExpr::UserHome(user) => {
-            // ~user → not supported in sandbox, output literally
-            push_segment(words, "~", true, true);
-            push_segment(words, user, true, true);
+            if user == "root" {
+                push_segment(words, "/root", true, true);
+            } else {
+                // ~user → not supported in sandbox, output literally
+                push_segment(words, "~", true, true);
+                push_segment(words, user, true, true);
+            }
         }
         TildeExpr::NthDirFromTopOfDirStack { .. }
         | TildeExpr::NthDirFromBottomOfDirStack { .. } => {
@@ -929,33 +935,47 @@ fn expand_parameter(
             offset,
             length,
         } => {
+            check_nounset(parameter, state)?;
             // Check if this is an array/positional parameter needing element-level slicing
-            if let Some((values, concatenate)) = get_vectorized_values(parameter, state, *indirect)
+            if let Parameter::Special(SpecialParameter::AllPositionalParameters { concatenate }) =
+                parameter
+            {
+                let off_raw = parse_arithmetic_value(&offset.value);
+                let (values, start) = positional_slice_values_and_start(state, off_raw);
+                let sliced: Vec<String> = if let Some(len_expr) = length {
+                    let len_raw = parse_arithmetic_value(&len_expr.value);
+                    if len_raw < 0 {
+                        return Err(negative_substring_length_error(&len_expr.value));
+                    }
+                    values
+                        .into_iter()
+                        .skip(start)
+                        .take(len_raw as usize)
+                        .collect()
+                } else {
+                    values.into_iter().skip(start).collect()
+                };
+                push_vectorized(sliced, *concatenate, words, state, in_dq);
+            } else if let Some((values, concatenate)) =
+                get_vectorized_values(parameter, state, *indirect)
             {
                 let elem_count = values.len() as i64;
-                // For positional params $@/$*, offset 0 means $0 (shell name) in some contexts,
-                // but in practice ${@:n:m} uses 0-based offset on the values array
-                let is_positional = matches!(
-                    parameter,
-                    Parameter::Special(SpecialParameter::AllPositionalParameters { .. })
-                );
                 let off_raw = parse_arithmetic_value(&offset.value);
-                let off = if is_positional && off_raw > 0 {
-                    // For $@, offset 1 means "start from $1" which is values[0]
-                    (off_raw - 1) as usize
-                } else if off_raw < 0 {
+                let off = if off_raw < 0 {
                     (elem_count + off_raw).max(0) as usize
                 } else {
                     off_raw as usize
                 };
                 let sliced: Vec<String> = if let Some(len_expr) = length {
-                    let len = parse_arithmetic_value(&len_expr.value);
-                    let len = if len < 0 {
-                        (elem_count - off as i64 + len).max(0) as usize
-                    } else {
-                        len as usize
-                    };
-                    values.into_iter().skip(off).take(len).collect()
+                    let len_raw = parse_arithmetic_value(&len_expr.value);
+                    if len_raw < 0 {
+                        return Err(negative_substring_length_error(&len_expr.value));
+                    }
+                    values
+                        .into_iter()
+                        .skip(off)
+                        .take(len_raw as usize)
+                        .collect()
                 } else {
                     values.into_iter().skip(off).collect()
                 };
@@ -1379,16 +1399,37 @@ fn expand_parameter_mut(
             offset,
             length,
         } => {
-            if let Some((_, concatenate)) = get_vectorized_values(parameter, state, *indirect) {
-                // Array/positional slicing with full arithmetic evaluation.
-                let is_positional = matches!(
-                    parameter,
-                    Parameter::Special(SpecialParameter::AllPositionalParameters { .. })
-                );
+            check_nounset(parameter, state)?;
+            if let Parameter::Special(SpecialParameter::AllPositionalParameters { concatenate }) =
+                parameter
+            {
+                let expanded_off = expand_arith_expression(&offset.value, state)?;
+                let off_raw =
+                    crate::interpreter::arithmetic::eval_arithmetic(&expanded_off, state)?;
+                let (values, start) = positional_slice_values_and_start(state, off_raw);
+                let sliced: Vec<String> = if let Some(len_expr) = length {
+                    let expanded_len = expand_arith_expression(&len_expr.value, state)?;
+                    let len_raw =
+                        crate::interpreter::arithmetic::eval_arithmetic(&expanded_len, state)?;
+                    if len_raw < 0 {
+                        return Err(negative_substring_length_error(&len_expr.value));
+                    }
+                    values
+                        .into_iter()
+                        .skip(start)
+                        .take(len_raw as usize)
+                        .collect()
+                } else {
+                    values.into_iter().skip(start).collect()
+                };
+                push_vectorized(sliced, *concatenate, words, state, in_dq);
+            } else if let Some((_, concatenate)) =
+                get_vectorized_values(parameter, state, *indirect)
+            {
+                // Array slicing with full arithmetic evaluation.
 
                 // Get key-value pairs for proper sparse-array handling.
                 let kv_pairs = get_array_kv_pairs(parameter, state);
-                let elem_count = kv_pairs.len() as i64;
                 let max_key = kv_pairs.last().map(|(k, _)| *k).unwrap_or(0) as i64;
 
                 // Evaluate offset as arithmetic.
@@ -1398,18 +1439,8 @@ fn expand_parameter_mut(
 
                 // Compute the key-based threshold for indexed arrays.
                 // For negative offsets: threshold = max_key + 1 + offset.
-                // For positional params, negative offsets use element count.
                 let compute_threshold = |raw: i64| -> Option<usize> {
-                    if is_positional {
-                        if raw > 0 {
-                            Some((raw - 1) as usize)
-                        } else if raw < 0 {
-                            let t = elem_count + raw;
-                            if t < 0 { None } else { Some(t as usize) }
-                        } else {
-                            Some(0)
-                        }
-                    } else if raw < 0 {
+                    if raw < 0 {
                         let t = max_key.checked_add(1).and_then(|v| v.checked_add(raw));
                         match t {
                             Some(v) if v >= 0 => Some(v as usize),
@@ -1425,21 +1456,11 @@ fn expand_parameter_mut(
                     let len_raw =
                         crate::interpreter::arithmetic::eval_arithmetic(&expanded_len, state)?;
                     if len_raw < 0 {
-                        return Err(RustBashError::ExpansionError {
-                            message: format!("{}: substring expression < 0", offset.value),
-                            exit_code: 1,
-                            should_exit: false,
-                        });
+                        return Err(negative_substring_length_error(&len_expr.value));
                     }
                     let len = len_raw as usize;
                     match compute_threshold(off_raw) {
                         None => Vec::new(),
-                        Some(threshold) if is_positional => kv_pairs
-                            .into_iter()
-                            .map(|(_, v)| v)
-                            .skip(threshold)
-                            .take(len)
-                            .collect(),
                         Some(threshold) => kv_pairs
                             .into_iter()
                             .filter(|(k, _)| *k >= threshold)
@@ -1451,11 +1472,6 @@ fn expand_parameter_mut(
                     // No length — take all from offset.
                     match compute_threshold(off_raw) {
                         None => Vec::new(),
-                        Some(threshold) if is_positional => kv_pairs
-                            .into_iter()
-                            .map(|(_, v)| v)
-                            .skip(threshold)
-                            .collect(),
                         Some(threshold) => kv_pairs
                             .into_iter()
                             .filter(|(k, _)| *k >= threshold)
@@ -2505,6 +2521,14 @@ fn check_nounset(parameter: &Parameter, state: &InterpreterState) -> Result<(), 
     Ok(())
 }
 
+fn negative_substring_length_error(expr: &str) -> RustBashError {
+    RustBashError::ExpansionError {
+        message: format!("{expr}: substring expression < 0"),
+        exit_code: 1,
+        should_exit: false,
+    }
+}
+
 /// Reject invalid parameter names like `${%}`.
 /// Bash reports "bad substitution" for these.
 fn validate_parameter_name(parameter: &Parameter) -> Result<(), RustBashError> {
@@ -2557,15 +2581,9 @@ fn validate_length_transform_syntax(word: &str) -> Result<(), RustBashError> {
             if j < bytes.len() {
                 let inner = &word[i + 3..j];
                 let inner_bytes = inner.as_bytes();
-                if inner_bytes.len() >= 2
-                    && inner_bytes[inner_bytes.len() - 2] == b'@'
-                    && inner_bytes[inner_bytes.len() - 1].is_ascii_alphabetic()
+                if let Some(end) = consume_parameter_reference_end(inner_bytes)
+                    && end != inner_bytes.len()
                 {
-                    return Err(RustBashError::Execution(format!(
-                        "${{#{inner}}}: bad substitution"
-                    )));
-                }
-                if length_inner_has_test_operator(inner_bytes) {
                     return Err(RustBashError::Execution(format!(
                         "${{#{inner}}}: bad substitution"
                     )));
@@ -2579,33 +2597,74 @@ fn validate_length_transform_syntax(word: &str) -> Result<(), RustBashError> {
     Ok(())
 }
 
-fn length_inner_has_test_operator(inner: &[u8]) -> bool {
+fn validate_empty_slice_syntax(word: &str) -> Result<(), RustBashError> {
     let mut i = 0usize;
-    while i < inner.len() && (inner[i].is_ascii_alphanumeric() || inner[i] == b'_') {
-        i += 1;
-    }
-    if i == 0 {
-        return false;
-    }
-
-    if i < inner.len() && inner[i] == b'[' {
-        let mut depth = 1usize;
-        i += 1;
-        while i < inner.len() && depth > 0 {
-            match inner[i] {
-                b'[' => depth += 1,
-                b']' => depth -= 1,
-                _ => {}
-            }
-            i += 1;
+    while let Some(rel_start) = word[i..].find("${") {
+        let start = i + rel_start;
+        let Some((body, end)) = take_parameter_body(word, start + 2) else {
+            break;
+        };
+        if parameter_body_has_empty_slice_offset(body.as_bytes()) {
+            return Err(RustBashError::Execution(format!(
+                "${{{body}}}: bad substitution"
+            )));
         }
+        i = end + 1;
     }
+    Ok(())
+}
 
-    matches!(
-        inner.get(i..),
-        Some([b':', b'-', ..] | [b':', b'=', ..] | [b':', b'?', ..] | [b':', b'+', ..])
-            | Some([b'-', ..] | [b'=', ..] | [b'?', ..] | [b'+', ..])
-    )
+fn parameter_body_has_empty_slice_offset(body: &[u8]) -> bool {
+    let Some(end) = consume_parameter_reference_end(body) else {
+        return false;
+    };
+    end + 1 == body.len() && body.get(end) == Some(&b':')
+}
+
+fn consume_parameter_reference_end(bytes: &[u8]) -> Option<usize> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let mut i = 0usize;
+    match bytes[i] {
+        b'@' | b'*' | b'#' | b'?' | b'-' | b'$' | b'!' => i += 1,
+        b'0'..=b'9' => {
+            i += 1;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+        }
+        b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
+            i += 1;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            if i < bytes.len() && bytes[i] == b'[' {
+                i = consume_balanced_brackets(bytes, i)?;
+            }
+        }
+        _ => return None,
+    }
+    Some(i)
+}
+
+fn consume_balanced_brackets(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut i = start + 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 fn validate_indirect_reference(
@@ -3185,6 +3244,25 @@ fn get_array_kv_pairs(parameter: &Parameter, state: &InterpreterState) -> Vec<(u
             .collect(),
         _ => Vec::new(),
     }
+}
+
+fn positional_slice_values_and_start(
+    state: &InterpreterState,
+    offset: i64,
+) -> (Vec<String>, usize) {
+    let mut values = state.positional_params.clone();
+    if offset == 0 {
+        values.insert(0, state.shell_name.clone());
+        return (values, 0);
+    }
+
+    let start = if offset > 0 {
+        (offset - 1) as usize
+    } else {
+        (values.len() as i64 + offset).max(0) as usize
+    };
+
+    (values, start)
 }
 
 /// Get keys/indices of an array variable.
@@ -4535,6 +4613,13 @@ fn expand_simple_parameter_reference(
         return Some(resolve_pattern_var(&name, state));
     }
 
+    if let Some(&ch) = chars.peek()
+        && matches!(ch, '@' | '*' | '#' | '?' | '-' | '$' | '!')
+    {
+        chars.next();
+        return Some(resolve_pattern_var(&ch.to_string(), state));
+    }
+
     let mut name = String::new();
     while let Some(&ch) = chars.peek() {
         if ch.is_ascii_alphanumeric() || ch == '_' {
@@ -4553,6 +4638,35 @@ fn expand_simple_parameter_reference(
 }
 
 fn resolve_pattern_var(name: &str, state: &InterpreterState) -> String {
+    if name.chars().all(|ch| ch.is_ascii_digit()) {
+        return if name == "0" {
+            state.shell_name.clone()
+        } else {
+            name.parse::<usize>()
+                .ok()
+                .and_then(|n| state.positional_params.get(n.saturating_sub(1)))
+                .cloned()
+                .unwrap_or_default()
+        };
+    }
+
+    match name {
+        "@" => return state.positional_params.join(" "),
+        "*" => {
+            let sep = match get_var(state, "IFS") {
+                Some(s) => s.chars().next().map(|c| c.to_string()).unwrap_or_default(),
+                None => " ".to_string(),
+            };
+            return state.positional_params.join(&sep);
+        }
+        "#" => return state.positional_params.len().to_string(),
+        "?" => return state.last_exit_code.to_string(),
+        "-" => return String::new(),
+        "$" => return "1".to_string(),
+        "!" => return String::new(),
+        _ => {}
+    }
+
     let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
     state
         .env
@@ -4617,7 +4731,7 @@ mod tests {
     use crate::network::NetworkPolicy;
     use crate::vfs::InMemoryFs;
     use brush_parser::word::{ParameterExpr, WordPiece};
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::sync::Arc;
 
     fn make_state() -> InterpreterState {
@@ -4728,5 +4842,125 @@ mod tests {
             other => panic!("unexpected suffix item: {other:?}"),
         };
         assert_eq!(third.value, "\"${foo%c  d}\"");
+    }
+
+    #[test]
+    fn length_slice_syntax_is_bad_substitution() {
+        let mut state = make_state();
+        let word = ast::Word {
+            value: "${#foo:1:3}".to_string(),
+            loc: None,
+        };
+        let err = expand_word_mut(&word, &mut state).unwrap_err();
+        assert!(matches!(
+            err,
+            RustBashError::Execution(msg) if msg.contains("bad substitution")
+        ));
+    }
+
+    #[test]
+    fn empty_slice_offset_is_bad_substitution() {
+        let mut state = make_state();
+        let word = ast::Word {
+            value: "${foo:}".to_string(),
+            loc: None,
+        };
+        let err = expand_word_mut(&word, &mut state).unwrap_err();
+        assert!(matches!(
+            err,
+            RustBashError::Execution(msg) if msg.contains("bad substitution")
+        ));
+    }
+
+    #[test]
+    fn slice_respects_nounset() {
+        let mut state = make_state();
+        state.shell_opts.nounset = true;
+        let word = ast::Word {
+            value: "${undef:1:2}".to_string(),
+            loc: None,
+        };
+        let err = expand_word_mut(&word, &mut state).unwrap_err();
+        assert!(matches!(
+            err,
+            RustBashError::Execution(msg) if msg.contains("undef: unbound variable")
+        ));
+    }
+
+    #[test]
+    fn positional_slice_zero_offset_includes_shell_name() {
+        let mut state = make_state();
+        state.shell_name = "shell".to_string();
+        state.positional_params = vec!["a 1".to_string(), "b 2".to_string()];
+        let word = ast::Word {
+            value: "\"${@:0:2}\"".to_string(),
+            loc: None,
+        };
+        assert_eq!(
+            expand_word_mut(&word, &mut state).unwrap(),
+            vec!["shell".to_string(), "a 1".to_string()]
+        );
+    }
+
+    #[test]
+    fn immutable_positional_slice_negative_length_is_an_error() {
+        let mut state = make_state();
+        state.positional_params = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let word = ast::Word {
+            value: "\"${@:2:-3}\"".to_string(),
+            loc: None,
+        };
+        let err = expand_word(&word, &state).unwrap_err();
+        assert!(matches!(
+            err,
+            RustBashError::ExpansionError { message, .. }
+                if message.contains("-3: substring expression < 0")
+        ));
+    }
+
+    #[test]
+    fn mutable_array_slice_negative_length_reports_length_expr() {
+        let mut state = make_state();
+        state.env.insert(
+            "arr".to_string(),
+            Variable {
+                value: VariableValue::IndexedArray(BTreeMap::from([
+                    (0, "a".to_string()),
+                    (1, "b".to_string()),
+                    (2, "c".to_string()),
+                ])),
+                attrs: VariableAttrs::empty(),
+            },
+        );
+        let word = ast::Word {
+            value: "\"${arr[@]:1:-2}\"".to_string(),
+            loc: None,
+        };
+        let err = expand_word_mut(&word, &mut state).unwrap_err();
+        assert!(matches!(
+            err,
+            RustBashError::ExpansionError { message, .. }
+                if message.contains("-2: substring expression < 0")
+        ));
+    }
+
+    #[test]
+    fn brace_expansion_precedes_tilde_for_root_home_mix() {
+        let mut state = make_state();
+        state.env.insert(
+            "HOME".to_string(),
+            Variable {
+                value: VariableValue::Scalar("/home/bob".to_string()),
+                attrs: VariableAttrs::empty(),
+            },
+        );
+        let word = ast::Word {
+            value: "~{/src,root}".to_string(),
+            loc: None,
+        };
+        assert_eq!(
+            expand_word_mut(&word, &mut state).unwrap(),
+            vec!["/home/bob/src".to_string(), "/root".to_string()]
+        );
     }
 }

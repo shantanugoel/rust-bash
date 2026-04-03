@@ -2480,6 +2480,22 @@ fn function_keyword_syntax() {
 }
 
 #[test]
+fn function_name_with_parameter_expansion_is_rejected() {
+    let mut sh = shell();
+    let r = sh.exec("$foo-bar() { echo bad; }").unwrap();
+    assert_eq!(r.exit_code, 1);
+    assert!(r.stderr.contains("not a valid function name"));
+}
+
+#[test]
+fn function_name_with_command_substitution_is_rejected() {
+    let mut sh = shell();
+    let r = sh.exec("foo-$(echo hi)() { echo bad; }").unwrap();
+    assert_eq!(r.exit_code, 1);
+    assert!(r.stderr.contains("not a valid function name"));
+}
+
+#[test]
 fn function_multiple_locals() {
     let mut sh = shell();
     let r = sh

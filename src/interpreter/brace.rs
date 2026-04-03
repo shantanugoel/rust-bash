@@ -27,7 +27,7 @@ fn expand_recursive(input: &str, max_results: usize) -> Result<Vec<String>, Rust
     let suffix = &input[close + 1..];
 
     // Try sequence expansion first: {a..b} or {a..b..c}
-    if let Some(seq) = try_sequence_expansion(body) {
+    if let Some(seq) = try_sequence_expansion(body)? {
         let mut results = Vec::new();
         for item in &seq {
             let expanded_suffixes = expand_recursive(suffix, max_results)?;
@@ -44,7 +44,13 @@ fn expand_recursive(input: &str, max_results: usize) -> Result<Vec<String>, Rust
 
     // Single item → no expansion (literal braces)
     if alternatives.len() < 2 {
-        return Ok(vec![input.to_string()]);
+        let literal_prefix = format!("{prefix}{{{body}}}");
+        let mut results = Vec::new();
+        for expanded_suffix in expand_recursive(suffix, max_results)? {
+            results.push(format!("{literal_prefix}{expanded_suffix}"));
+            check_limit(results.len(), max_results)?;
+        }
+        return Ok(results);
     }
 
     let mut results = Vec::new();
@@ -255,22 +261,22 @@ fn split_alternatives(body: &str) -> Vec<String> {
 }
 
 /// Try to parse and expand a sequence expression: `a..b` or `a..b..step`.
-fn try_sequence_expansion(body: &str) -> Option<Vec<String>> {
+fn try_sequence_expansion(body: &str) -> Result<Option<Vec<String>>, RustBashError> {
     let parts: Vec<&str> = body.split("..").collect();
     if parts.len() < 2 || parts.len() > 3 {
-        return None;
+        return Ok(None);
     }
 
     // Try numeric sequence
     if let (Ok(start), Ok(end)) = (parts[0].parse::<i64>(), parts[1].parse::<i64>()) {
         let step = if parts.len() == 3 {
-            parts[2].parse::<i64>().ok()?.unsigned_abs() as i64
+            match parts[2].parse::<i64>() {
+                Ok(step) => step.unsigned_abs().max(1) as i64,
+                Err(_) => return Ok(None),
+            }
         } else {
             1
         };
-        if step == 0 {
-            return None;
-        }
 
         let width = zero_pad_width(parts[0]).max(zero_pad_width(parts[1]));
 
@@ -294,25 +300,42 @@ fn try_sequence_expansion(body: &str) -> Option<Vec<String>> {
                 };
             }
         }
-        return Some(result);
+        return Ok(Some(result));
     }
 
     // Try character sequence
-    let start_ch = parse_single_char(parts[0])?;
-    let end_ch = parse_single_char(parts[1])?;
+    let Some(start_ch) = parse_single_char(parts[0]) else {
+        return Ok(None);
+    };
+    let Some(end_ch) = parse_single_char(parts[1]) else {
+        return Ok(None);
+    };
 
-    if !start_ch.is_ascii_alphanumeric() || !end_ch.is_ascii_alphanumeric() {
-        return None;
+    let same_digit_class = start_ch.is_ascii_digit() && end_ch.is_ascii_digit();
+    let same_lower_class = start_ch.is_ascii_lowercase() && end_ch.is_ascii_lowercase();
+    let same_upper_class = start_ch.is_ascii_uppercase() && end_ch.is_ascii_uppercase();
+    if start_ch.is_ascii_alphabetic()
+        && end_ch.is_ascii_alphabetic()
+        && start_ch.is_ascii_lowercase() != end_ch.is_ascii_lowercase()
+    {
+        return Err(RustBashError::ExpansionError {
+            message: format!("{{{body}}}: bad brace expansion"),
+            exit_code: 1,
+            should_exit: false,
+        });
+    }
+    if !(same_digit_class || same_lower_class || same_upper_class) {
+        return Ok(None);
     }
 
     let step = if parts.len() == 3 {
-        parts[2].parse::<i64>().ok()?.unsigned_abs() as usize
+        match parts[2].parse::<i64>() {
+            Ok(step) => step.unsigned_abs().max(1) as usize,
+            Err(_) => return Ok(None),
+        }
     } else {
         1
     };
-    if step == 0 {
-        return None;
-    }
 
     let start_u = start_ch as u32;
     let end_u = end_ch as u32;
@@ -342,7 +365,7 @@ fn try_sequence_expansion(body: &str) -> Option<Vec<String>> {
             };
         }
     }
-    Some(result)
+    Ok(Some(result))
 }
 
 fn parse_single_char(s: &str) -> Option<char> {
@@ -579,5 +602,33 @@ mod tests {
             brace_expand("{café,bar}", LIMIT).unwrap(),
             vec!["café", "bar"]
         );
+    }
+
+    #[test]
+    fn literal_brace_prefix_allows_later_group_expansion() {
+        assert_eq!(
+            brace_expand("{x}_{a,b}", LIMIT).unwrap(),
+            vec!["{x}_a", "{x}_b"]
+        );
+    }
+
+    #[test]
+    fn zero_step_matches_bash_behavior() {
+        assert_eq!(
+            brace_expand("{1..4..0}", LIMIT).unwrap(),
+            vec!["1", "2", "3", "4"]
+        );
+    }
+
+    #[test]
+    fn mixed_case_char_range_errors() {
+        let err = brace_expand("{z..A}", LIMIT).unwrap_err();
+        assert!(matches!(err, RustBashError::ExpansionError { .. }));
+    }
+
+    #[test]
+    fn mixed_numeric_char_ranges_are_literal() {
+        assert_eq!(brace_expand("{1..a}", LIMIT).unwrap(), vec!["{1..a}"]);
+        assert_eq!(brace_expand("{z..3}", LIMIT).unwrap(), vec!["{z..3}"]);
     }
 }

@@ -11,6 +11,7 @@ use crate::interpreter::{
 
 use brush_parser::ast;
 use brush_parser::ast::SourceLocation;
+use brush_parser::word::WordPiece;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -87,6 +88,28 @@ fn xtrace_quote(word: &str) -> String {
         // Bash puts literal tabs and newlines inside single quotes
         format!("'{word}'")
     }
+}
+
+fn validate_function_name_word(word: &ast::Word) -> Result<(), RustBashError> {
+    let pieces = brush_parser::word::parse(&word.value, &crate::interpreter::parser_options())
+        .map_err(|_| RustBashError::ExpansionError {
+            message: format!("{}: not a valid function name", word.value),
+            exit_code: 1,
+            should_exit: false,
+        })?;
+
+    if pieces
+        .iter()
+        .any(|piece| !matches!(piece.piece, WordPiece::Text(_)))
+    {
+        return Err(RustBashError::ExpansionError {
+            message: format!("{}: not a valid function name", word.value),
+            exit_code: 1,
+            should_exit: false,
+        });
+    }
+
+    Ok(())
 }
 
 /// Format an xtrace line for a simple command invocation.
@@ -502,8 +525,8 @@ fn execute_command(
         ast::Command::Compound(compound, redirects) => {
             execute_compound_command(compound, redirects.as_ref(), state, stdin)
         }
-        ast::Command::Function(func_def) => {
-            match expand_word_to_string_mut(&func_def.fname, state) {
+        ast::Command::Function(func_def) => match validate_function_name_word(&func_def.fname) {
+            Ok(()) => match expand_word_to_string_mut(&func_def.fname, state) {
                 Ok(name) => {
                     state.functions.insert(
                         name,
@@ -517,8 +540,9 @@ fn execute_command(
                     Ok(ExecResult::default())
                 }
                 Err(e) => Err(e),
-            }
-        }
+            },
+            Err(e) => Err(e),
+        },
         ast::Command::ExtendedTest(ext_test, _redirects) => {
             execute_extended_test(&ext_test.expr, state)
         }
