@@ -17,7 +17,7 @@ pub(crate) fn evaluate_test_args(args: &[String], ctx: &CommandContext) -> Comma
         return result(1);
     }
 
-    match eval_expr(args, ctx) {
+    match eval_expr(args, ctx, false) {
         Ok((value, consumed)) => {
             if consumed != args.len() {
                 error_result("too many arguments")
@@ -31,15 +31,23 @@ pub(crate) fn evaluate_test_args(args: &[String], ctx: &CommandContext) -> Comma
 
 /// Recursive-descent parser for test expressions.
 /// Returns (bool result, number of tokens consumed).
-fn eval_expr(args: &[String], ctx: &CommandContext) -> Result<(bool, usize), String> {
-    eval_or(args, ctx)
+fn eval_expr(
+    args: &[String],
+    ctx: &CommandContext,
+    prefer_parenthesized: bool,
+) -> Result<(bool, usize), String> {
+    eval_or(args, ctx, prefer_parenthesized)
 }
 
 /// Parse: expr_or := expr_and ( '-o' expr_and )*
-fn eval_or(args: &[String], ctx: &CommandContext) -> Result<(bool, usize), String> {
-    let (mut val, mut pos) = eval_and(args, ctx)?;
+fn eval_or(
+    args: &[String],
+    ctx: &CommandContext,
+    prefer_parenthesized: bool,
+) -> Result<(bool, usize), String> {
+    let (mut val, mut pos) = eval_and(args, ctx, prefer_parenthesized)?;
     while pos < args.len() && args[pos] == "-o" {
-        let (right, consumed) = eval_and(&args[pos + 1..], ctx)?;
+        let (right, consumed) = eval_and(&args[pos + 1..], ctx, true)?;
         val = val || right;
         pos += 1 + consumed;
     }
@@ -47,10 +55,14 @@ fn eval_or(args: &[String], ctx: &CommandContext) -> Result<(bool, usize), Strin
 }
 
 /// Parse: expr_and := expr_not ( '-a' expr_not )*
-fn eval_and(args: &[String], ctx: &CommandContext) -> Result<(bool, usize), String> {
-    let (mut val, mut pos) = eval_not(args, ctx)?;
+fn eval_and(
+    args: &[String],
+    ctx: &CommandContext,
+    prefer_parenthesized: bool,
+) -> Result<(bool, usize), String> {
+    let (mut val, mut pos) = eval_not(args, ctx, prefer_parenthesized)?;
     while pos < args.len() && args[pos] == "-a" {
-        let (right, consumed) = eval_not(&args[pos + 1..], ctx)?;
+        let (right, consumed) = eval_not(&args[pos + 1..], ctx, true)?;
         val = val && right;
         pos += 1 + consumed;
     }
@@ -58,7 +70,11 @@ fn eval_and(args: &[String], ctx: &CommandContext) -> Result<(bool, usize), Stri
 }
 
 /// Parse: expr_not := '!' expr_not | primary
-fn eval_not(args: &[String], ctx: &CommandContext) -> Result<(bool, usize), String> {
+fn eval_not(
+    args: &[String],
+    ctx: &CommandContext,
+    prefer_parenthesized: bool,
+) -> Result<(bool, usize), String> {
     if args.is_empty() {
         return Err("argument expected".to_string());
     }
@@ -67,22 +83,25 @@ fn eval_not(args: &[String], ctx: &CommandContext) -> Result<(bool, usize), Stri
             // Single "!" → non-empty string → true (POSIX 1-arg rule)
             return Ok((true, 1));
         }
-        let (val, consumed) = eval_not(&args[1..], ctx)?;
+        let (val, consumed) = eval_not(&args[1..], ctx, true)?;
         Ok((!val, 1 + consumed))
     } else {
-        eval_primary(args, ctx)
+        eval_primary(args, ctx, prefer_parenthesized)
     }
 }
 
 /// Parse a primary test expression.
-fn eval_primary(args: &[String], ctx: &CommandContext) -> Result<(bool, usize), String> {
+fn eval_primary(
+    args: &[String],
+    ctx: &CommandContext,
+    prefer_parenthesized: bool,
+) -> Result<(bool, usize), String> {
     if args.is_empty() {
         return Err("argument expected".to_string());
     }
 
-    // Parenthesized expression: ( expr )
-    if args[0] == "(" {
-        let (val, consumed) = eval_expr(&args[1..], ctx)?;
+    if prefer_parenthesized && args[0] == "(" {
+        let (val, consumed) = eval_expr(&args[1..], ctx, true)?;
         if 1 + consumed >= args.len() || args[1 + consumed] != ")" {
             return Err("missing ')'".to_string());
         }
@@ -94,6 +113,15 @@ fn eval_primary(args: &[String], ctx: &CommandContext) -> Result<(bool, usize), 
         && let Some(val) = try_binary(&args[0], &args[1], &args[2], ctx)
     {
         return Ok((val, 3));
+    }
+
+    // Parenthesized expression: ( expr )
+    if args[0] == "(" {
+        let (val, consumed) = eval_expr(&args[1..], ctx, true)?;
+        if 1 + consumed >= args.len() || args[1 + consumed] != ")" {
+            return Err("missing ')'".to_string());
+        }
+        return Ok((val, 2 + consumed)); // ( + consumed + )
     }
 
     // Unary operators (2-token): OP operand

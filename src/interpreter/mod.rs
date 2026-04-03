@@ -416,6 +416,8 @@ pub struct InterpreterState {
     pub(crate) pending_cmdsub_stderr: String,
     /// Set when a fatal parameter expansion error terminates the current shell.
     pub(crate) fatal_expansion_error: bool,
+    /// Distinguishes shell/runtime errors from ordinary non-zero command exits.
+    pub(crate) last_command_had_error: bool,
 }
 
 // ── Parsing ──────────────────────────────────────────────────────────
@@ -433,7 +435,8 @@ pub(crate) fn parser_options() -> brush_parser::ParserOptions {
 
 /// Parse a shell input string into an AST.
 pub fn parse(input: &str) -> Result<ast::Program, RustBashError> {
-    let mut parse_input = input.to_string();
+    let mut parse_input =
+        rewrite_legacy_ksh_command_substitutions(input).unwrap_or_else(|| input.to_string());
     let raw_tokens = match brush_parser::tokenize_str(&parse_input) {
         Ok(tokens) => tokens,
         Err(err) => {
@@ -468,9 +471,129 @@ pub fn parse(input: &str) -> Result<ast::Program, RustBashError> {
                     return Ok(program);
                 }
             }
+            if let Some(rewritten) = rewrite_extended_test_unary_literal_operands(&parse_input) {
+                let retry_raw_tokens = brush_parser::tokenize_str(&rewritten)
+                    .map_err(|e| RustBashError::Parse(e.to_string()))?;
+                let retry_tokens = rebuild_tokens_from_source(&rewritten, &retry_raw_tokens);
+                if let Ok(program) = brush_parser::parse_tokens(&retry_tokens, &options) {
+                    return Ok(program);
+                }
+            }
             Err(RustBashError::Parse(err.to_string()))
         }
     }
+}
+
+fn rewrite_legacy_ksh_command_substitutions(input: &str) -> Option<String> {
+    if !input.contains("${") {
+        return None;
+    }
+
+    let chars: Vec<char> = input.chars().collect();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0usize;
+    let mut changed = false;
+    let mut quote: Option<char> = None;
+
+    while i < chars.len() {
+        let ch = chars[i];
+        if let Some(active_quote) = quote {
+            out.push(ch);
+            if ch == active_quote {
+                quote = None;
+            } else if ch == '\\' && active_quote == '"' && i + 1 < chars.len() {
+                i += 1;
+                out.push(chars[i]);
+            }
+            i += 1;
+            continue;
+        }
+
+        if matches!(ch, '\'' | '"') {
+            quote = Some(ch);
+            out.push(ch);
+            i += 1;
+            continue;
+        }
+
+        if ch == '$'
+            && i + 1 < chars.len()
+            && chars[i + 1] == '{'
+            && let Some((token, next_idx)) = take_heredoc_delimiter_token(&chars, i)
+            && let Some(rewritten) = rewrite_single_legacy_ksh_token(&token)
+        {
+            out.push_str(&rewritten);
+            changed = true;
+            i = next_idx;
+            continue;
+        }
+
+        out.push(ch);
+        i += 1;
+    }
+
+    changed.then_some(out)
+}
+
+fn rewrite_single_legacy_ksh_token(token: &str) -> Option<String> {
+    if !(token.starts_with("${") && token.ends_with('}')) {
+        return None;
+    }
+
+    let inner = &token[2..token.len() - 1];
+    if let Some(rest) = inner.strip_prefix('|') {
+        if rest.chars().next().is_none_or(|ch| ch.is_whitespace()) {
+            return None;
+        }
+        let body = normalize_legacy_ksh_command_body(trim_legacy_ksh_command_body(rest)?);
+        return Some(format!(
+            "$( {{ BRUSH_LEGACY_KSH_REPLY=1; {body}; printf '%s' \"$REPLY\"; }} )"
+        ));
+    }
+
+    if !inner.chars().next().is_some_and(|ch| ch.is_whitespace()) {
+        return None;
+    }
+
+    let trimmed = inner.trim_start();
+    if trimmed.starts_with('|') {
+        return None;
+    }
+
+    let body = normalize_legacy_ksh_command_body(trim_legacy_ksh_command_body(trimmed)?);
+    Some(format!("$({body})"))
+}
+
+fn trim_legacy_ksh_command_body(body: &str) -> Option<String> {
+    let mut trimmed = body.trim_end();
+    if let Some(stripped) = trimmed.strip_suffix(';') {
+        trimmed = stripped.trim_end();
+    }
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn normalize_legacy_ksh_command_body(body: String) -> String {
+    if !body.trim_start().starts_with("case ") {
+        return body;
+    }
+
+    if let Some(in_pos) = body.find(" in ") {
+        let clause_start = in_pos + 4;
+        if body
+            .get(clause_start..)
+            .is_some_and(|rest| !rest.starts_with('('))
+        {
+            let mut normalized = body;
+            normalized.insert(clause_start, '(');
+            return normalized;
+        }
+    }
+
+    body
 }
 
 fn rewrite_expansion_like_heredoc_delimiters(input: &str) -> Option<String> {
@@ -647,6 +770,141 @@ fn rewrite_assignment_prefixed_keyword(
     rewritten.push('\\');
     rewritten.push_str(&input[start..]);
     Some(rewritten)
+}
+
+fn rewrite_extended_test_unary_literal_operands(input: &str) -> Option<String> {
+    if !input.contains("[[") {
+        return None;
+    }
+
+    let chars: Vec<char> = input.chars().collect();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0usize;
+    let mut changed = false;
+    let mut quote: Option<char> = None;
+
+    while i < chars.len() {
+        let ch = chars[i];
+        if let Some(active_quote) = quote {
+            out.push(ch);
+            if ch == active_quote {
+                quote = None;
+            } else if ch == '\\' && active_quote == '"' && i + 1 < chars.len() {
+                i += 1;
+                out.push(chars[i]);
+            }
+            i += 1;
+            continue;
+        }
+
+        if matches!(ch, '\'' | '"') {
+            quote = Some(ch);
+            out.push(ch);
+            i += 1;
+            continue;
+        }
+
+        if ch == '['
+            && i + 1 < chars.len()
+            && chars[i + 1] == '['
+            && let Some(end) = find_extended_test_end(&chars, i + 2)
+        {
+            let segment: String = chars[i..end + 2].iter().collect();
+            if let Some(rewritten) = rewrite_single_extended_test_segment(&segment) {
+                out.push_str(&rewritten);
+                changed = true;
+            } else {
+                out.push_str(&segment);
+            }
+            i = end + 2;
+            continue;
+        }
+
+        out.push(ch);
+        i += 1;
+    }
+
+    changed.then_some(out)
+}
+
+fn find_extended_test_end(chars: &[char], start: usize) -> Option<usize> {
+    let mut i = start;
+    let mut quote: Option<char> = None;
+
+    while i + 1 < chars.len() {
+        let ch = chars[i];
+        if let Some(active_quote) = quote {
+            if ch == active_quote {
+                quote = None;
+            } else if ch == '\\' && active_quote == '"' {
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+
+        if matches!(ch, '\'' | '"') {
+            quote = Some(ch);
+            i += 1;
+            continue;
+        }
+
+        if ch == ']' && chars[i + 1] == ']' {
+            return Some(i);
+        }
+
+        i += 1;
+    }
+
+    None
+}
+
+fn rewrite_single_extended_test_segment(segment: &str) -> Option<String> {
+    if !segment.starts_with("[[") || !segment.ends_with("]]") {
+        return None;
+    }
+
+    let inner = &segment[2..segment.len() - 2];
+    let tokens: Vec<&str> = inner.split_whitespace().collect();
+    if tokens.len() == 2
+        && is_extended_test_unary_predicate(tokens[0])
+        && matches!(tokens[1], "=" | "==")
+    {
+        return Some(format!("[[ {} '{}' ]]", tokens[0], tokens[1]));
+    }
+
+    None
+}
+
+fn is_extended_test_unary_predicate(token: &str) -> bool {
+    matches!(
+        token,
+        "-a" | "-b"
+            | "-c"
+            | "-d"
+            | "-e"
+            | "-f"
+            | "-g"
+            | "-h"
+            | "-k"
+            | "-n"
+            | "-o"
+            | "-p"
+            | "-r"
+            | "-s"
+            | "-t"
+            | "-u"
+            | "-v"
+            | "-w"
+            | "-x"
+            | "-z"
+            | "-G"
+            | "-L"
+            | "-N"
+            | "-O"
+            | "-R"
+            | "-S"
+    )
 }
 
 fn is_simple_assignment_word_token(token: &brush_parser::Token) -> bool {
@@ -1160,6 +1418,7 @@ mod tests {
             pipe_stdin_bytes: None,
             pending_cmdsub_stderr: String::new(),
             fatal_expansion_error: false,
+            last_command_had_error: false,
         }
     }
 }

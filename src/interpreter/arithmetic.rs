@@ -108,7 +108,7 @@ fn tokenize_with_offset(
     let mut i = 0;
 
     while i < bytes.len() {
-        if bytes[i].is_ascii_whitespace() {
+        if is_arithmetic_whitespace(bytes[i]) {
             i += 1;
             continue;
         }
@@ -435,6 +435,10 @@ fn tokenize_with_offset(
     }
 
     Ok(tokens)
+}
+
+fn is_arithmetic_whitespace(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n')
 }
 
 fn parse_number(bytes: &[u8], i: &mut usize) -> Result<i64, RustBashError> {
@@ -1549,6 +1553,7 @@ mod tests {
             pipe_stdin_bytes: None,
             pending_cmdsub_stderr: String::new(),
             fatal_expansion_error: false,
+            last_command_had_error: false,
         }
     }
 

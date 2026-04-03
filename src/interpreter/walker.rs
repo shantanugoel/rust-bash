@@ -258,6 +258,7 @@ fn execute_compound_list(
             Ok(r) => r,
             Err(RustBashError::Execution(msg)) if msg.contains("unbound variable") => {
                 // nounset errors: print to stderr, exit with code 1
+                state.last_command_had_error = true;
                 state.should_exit = true;
                 state.last_exit_code = 1;
                 ExecResult {
@@ -268,6 +269,7 @@ fn execute_compound_list(
             }
             Err(RustBashError::Execution(msg)) if msg.contains("arithmetic:") => {
                 // Arithmetic errors are non-fatal: print to stderr, set $?=1, continue
+                state.last_command_had_error = true;
                 state.last_exit_code = 1;
                 ExecResult {
                     stderr: format!("rust-bash: {msg}\n"),
@@ -277,6 +279,7 @@ fn execute_compound_list(
             }
             Err(RustBashError::Execution(msg)) if msg.contains("bad substitution") => {
                 // Bad substitution errors are non-fatal: print to stderr, set $?=1
+                state.last_command_had_error = true;
                 state.last_exit_code = 1;
                 ExecResult {
                     stderr: format!("rust-bash: {msg}\n"),
@@ -285,6 +288,7 @@ fn execute_compound_list(
                 }
             }
             Err(RustBashError::Execution(msg)) if msg.contains("invalid indirect expansion") => {
+                state.last_command_had_error = true;
                 state.last_exit_code = 1;
                 ExecResult {
                     stderr: format!("rust-bash: {msg}\n"),
@@ -293,6 +297,7 @@ fn execute_compound_list(
                 }
             }
             Err(RustBashError::Execution(msg)) if msg.contains("bad array subscript") => {
+                state.last_command_had_error = true;
                 state.last_exit_code = 1;
                 ExecResult {
                     stderr: format!("rust-bash: {msg}\n"),
@@ -549,11 +554,16 @@ fn execute_command(
     };
 
     match result {
+        Ok(exec_result) => {
+            state.last_command_had_error = false;
+            Ok(exec_result)
+        }
         Err(RustBashError::ExpansionError {
             message,
             exit_code,
             should_exit,
         }) => {
+            state.last_command_had_error = true;
             state.last_exit_code = exit_code;
             if should_exit {
                 state.should_exit = true;
@@ -566,6 +576,7 @@ fn execute_command(
             })
         }
         Err(RustBashError::FailGlob { pattern }) => {
+            state.last_command_had_error = true;
             state.last_exit_code = 1;
             Ok(ExecResult {
                 stderr: format!("rust-bash: no match: {pattern}\n"),
@@ -573,7 +584,10 @@ fn execute_command(
                 ..Default::default()
             })
         }
-        other => other,
+        Err(err) => {
+            state.last_command_had_error = true;
+            Err(err)
+        }
     }
 }
 
@@ -1967,8 +1981,13 @@ fn execute_if(
     state.errexit_suppressed += 1;
     let cond = execute_compound_list(&if_clause.condition, state, stdin)?;
     state.errexit_suppressed -= 1;
+    let cond_had_error = state.last_command_had_error;
     result.stdout.push_str(&cond.stdout);
     result.stderr.push_str(&cond.stderr);
+    if cond_had_error {
+        result.exit_code = cond.exit_code;
+        return Ok(result);
+    }
 
     if cond.exit_code == 0 {
         let body = execute_compound_list(&if_clause.then, state, stdin)?;
@@ -1986,8 +2005,13 @@ fn execute_if(
                 state.errexit_suppressed += 1;
                 let cond = execute_compound_list(condition, state, stdin)?;
                 state.errexit_suppressed -= 1;
+                let cond_had_error = state.last_command_had_error;
                 result.stdout.push_str(&cond.stdout);
                 result.stderr.push_str(&cond.stderr);
+                if cond_had_error {
+                    result.exit_code = cond.exit_code;
+                    return Ok(result);
+                }
                 if cond.exit_code == 0 {
                     let body = execute_compound_list(&else_clause.body, state, stdin)?;
                     result.stdout.push_str(&body.stdout);
@@ -2420,8 +2444,13 @@ fn execute_while_until(
         state.errexit_suppressed += 1;
         let cond = execute_compound_list(&clause.0, state, stdin)?;
         state.errexit_suppressed -= 1;
+        let cond_had_error = state.last_command_had_error;
         result.stdout.push_str(&cond.stdout);
         result.stderr.push_str(&cond.stderr);
+        if cond_had_error {
+            result.exit_code = cond.exit_code;
+            break;
+        }
 
         let should_continue = if is_until {
             cond.exit_code != 0
@@ -2521,6 +2550,7 @@ fn execute_subshell(
         pipe_stdin_bytes: None,
         pending_cmdsub_stderr: String::new(),
         fatal_expansion_error: false,
+        last_command_had_error: false,
     };
 
     let result = execute_compound_list(list, &mut sub_state, stdin);
@@ -2699,6 +2729,7 @@ fn make_exec_callback(
             pipe_stdin_bytes: None,
             pending_cmdsub_stderr: String::new(),
             fatal_expansion_error: false,
+            last_command_had_error: false,
         };
 
         let result = execute_program(&program, &mut sub_state)?;
@@ -3787,7 +3818,23 @@ fn apply_duplicate_output(
     state: &mut InterpreterState,
 ) -> Result<bool, RustBashError> {
     let dup_target_str = match target {
-        ast::IoFileRedirectTarget::Duplicate(word) => expand_word_to_string_mut(word, state)?,
+        ast::IoFileRedirectTarget::Duplicate(word) => {
+            let words = expand_word_mut(word, state)?;
+            match words.as_slice() {
+                [single] => single.clone(),
+                _ => {
+                    if fd_num == 1 {
+                        result.stdout.clear();
+                    }
+                    result.stderr.push_str(&format!(
+                        "rust-bash: {}: ambiguous redirect\n",
+                        words.join(" ")
+                    ));
+                    result.exit_code = 1;
+                    return Ok(false);
+                }
+            }
+        }
         ast::IoFileRedirectTarget::Fd(target_fd) => target_fd.to_string(),
         _ => return Ok(true),
     };
@@ -3837,6 +3884,15 @@ fn apply_duplicate_output(
             return Ok(false);
         }
         apply_dup_fd(fd_num, target_fd, result, state)?;
+    } else {
+        if fd_num == 1 {
+            result.stdout.clear();
+        }
+        result.stderr.push_str(&format!(
+            "rust-bash: {dup_target_str}: ambiguous redirect\n"
+        ));
+        result.exit_code = 1;
+        return Ok(false);
     }
     Ok(true)
 }
@@ -3926,22 +3982,34 @@ fn expand_process_substitution<'a>(
     }
 }
 
+fn expand_redirect_word(
+    word: &ast::Word,
+    state: &mut InterpreterState,
+) -> Result<String, RustBashError> {
+    let words = expand_word_mut(word, state)?;
+    match words.as_slice() {
+        [] => Err(RustBashError::RedirectFailed(
+            ": No such file or directory".to_string(),
+        )),
+        [single] if single.is_empty() => Err(RustBashError::RedirectFailed(
+            ": No such file or directory".to_string(),
+        )),
+        [single] => Ok(single.clone()),
+        _ => Err(RustBashError::RedirectFailed(format!(
+            "{}: ambiguous redirect",
+            words.join(" ")
+        ))),
+    }
+}
+
 fn redirect_target_filename(
     target: &ast::IoFileRedirectTarget,
     state: &mut InterpreterState,
 ) -> Result<String, RustBashError> {
     match target {
-        ast::IoFileRedirectTarget::Filename(word) => {
-            let filename = expand_word_to_string_mut(word, state)?;
-            if filename.is_empty() {
-                return Err(RustBashError::RedirectFailed(
-                    ": No such file or directory".to_string(),
-                ));
-            }
-            Ok(filename)
-        }
+        ast::IoFileRedirectTarget::Filename(word) => expand_redirect_word(word, state),
         ast::IoFileRedirectTarget::Fd(fd) => Ok(fd.to_string()),
-        ast::IoFileRedirectTarget::Duplicate(word) => expand_word_to_string_mut(word, state),
+        ast::IoFileRedirectTarget::Duplicate(word) => expand_redirect_word(word, state),
         // Only valid when called from within execute_simple_command's closure,
         // where proc_sub_prealloc has been populated in step 5b.
         ast::IoFileRedirectTarget::ProcessSubstitution(_, _) => {
@@ -4051,6 +4119,7 @@ fn make_proc_sub_state(state: &mut InterpreterState) -> InterpreterState {
         pipe_stdin_bytes: None,
         pending_cmdsub_stderr: String::new(),
         fatal_expansion_error: false,
+        last_command_had_error: false,
     }
 }
 

@@ -2779,9 +2779,15 @@ fn assign_fields_to_vars(
         // Single variable: assign whole line
         // For REPLY (no named vars), don't trim leading/trailing whitespace
         // For a single named var, only trim IFS whitespace from edges
+        let reply_uses_mksh_splitting = state.env.contains_key("BRUSH_LEGACY_KSH_REPLY");
         let value = if var_names.first().copied() == Some("REPLY") && var_names.len() == 1 {
-            // REPLY: strip trailing newline but preserve other whitespace
-            line.to_string()
+            if reply_uses_mksh_splitting {
+                let ifs_ws = |c: char| (c == ' ' || c == '\t' || c == '\n') && ifs.contains(c);
+                line.trim_matches(ifs_ws).to_string()
+            } else {
+                // REPLY: strip trailing newline but preserve other whitespace
+                line.to_string()
+            }
         } else if ifs.is_empty() {
             line.to_string()
         } else {
@@ -5472,6 +5478,7 @@ fn run_in_subshell(
         pipe_stdin_bytes: None,
         pending_cmdsub_stderr: String::new(),
         fatal_expansion_error: false,
+        last_command_had_error: false,
     };
 
     let result = execute_program(program, &mut sub_state).map(|mut result| {
@@ -5593,6 +5600,7 @@ mod tests {
             pipe_stdin_bytes: None,
             pending_cmdsub_stderr: String::new(),
             fatal_expansion_error: false,
+            last_command_had_error: false,
         }
     }
 

@@ -1,6 +1,7 @@
 # Ordered Oils fix queue as of 2026-04-03.
-# Source of truth: current live Oils run (`cargo test --test oils_spec -- --nocapture --test-threads=1`).
-# Current totals: 1742 pass / 457 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
+# Source of truth: current `tests/fixtures/oils/pass-list.txt` plus `tests/oils_spec.rs`
+# skip rules and `tests/common/oils_format.rs` case parsing.
+# Current totals: 2024 pass / 435 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
 #
 # ── How the Oils test infra works ──
 # Runner:      tests/oils_spec.rs (datatest_stable harness, discovers .test.sh files)
@@ -25,11 +26,6 @@
 # `builtin-cd.test` and `redirect.test` stay on the queue, but expect a small VFS/symlink/fd tail to remain until M9.
 
 ## Parser, Expansion, Quoting, Assignment
-- whitespace.test (xfail=3) whitespace-sensitive parsing / execution
-- var-sub.test (xfail=3) remaining unquoted parameter expansion cases
-- command-sub-ksh.test (xfail=4) legacy command-sub syntax tail
-- bool-parse.test (xfail=3) boolean / conditional parse rules
-- fatal-errors.test (xfail=2) fatal parse/runtime error behavior
 - sh-func.test (xfail=2) shell-function parsing / invocation tail
 - word-eval.test (xfail=1) word evaluation corner cases
 - temp-binding.test (xfail=1) temporary binding semantics
@@ -83,7 +79,7 @@
 - bugs.test (xfail=7) mixed regression bucket; sweep after core semantics are stable
 - redirect.test (xfail=7) redirection semantics; leave the final fd/VFS tail for M9
 - builtin-cd.test (xfail=7) `cd` / `pwd` semantics; leave the final symlink/PWD fidelity tail for M9
-- redirect-multi.test (xfail=8) multi-redirect word expansion and ambiguity
+- redirect-multi.test (xfail=1) multi-redirect word expansion and ambiguity tail
 - glob.test (xfail=5) remaining glob semantics and locale/order edge cases
 - tilde.test (xfail=3) tilde expansion tail
 - globignore.test (xfail=4) `GLOBIGNORE` interaction semantics

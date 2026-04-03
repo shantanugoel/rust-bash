@@ -429,6 +429,7 @@ impl RustBashBuilder {
             pipe_stdin_bytes: None,
             pending_cmdsub_stderr: String::new(),
             fatal_expansion_error: false,
+            last_command_had_error: false,
         };
 
         // Set SHELLOPTS and BASHOPTS as readonly variables

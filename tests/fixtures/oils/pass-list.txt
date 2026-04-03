@@ -393,7 +393,10 @@ bool-parse.test:Allowed: [[ = ]] and [[ == ]]
 bool-parse.test:[ -f = ] and [ -f == ]
 bool-parse.test:Not allowed: [[ ) ]] and [[ ( ]]
 bool-parse.test:test builtin - Unexpected trailing word '--' (#2409)
+bool-parse.test:test builtin: ( = ) is confusing: equality test or non-empty string test
+bool-parse.test:test builtin: ( == ) is confusing: equality test or non-empty string test
 bool-parse.test:test builtin: ( x ) behavior is the same in both cases
+bool-parse.test:[[ -f -f ]] and [[ -f == ]]
 brace-expansion.test:Adjacent comma and range works
 brace-expansion.test:Ascending number range expansion with negative step is invalid
 brace-expansion.test:Char range expansion
@@ -824,6 +827,10 @@ command-sub.test:Here doc with pipeline
 command-sub.test:Making command out of command sub should work
 command-sub.test:Making keyword out of command sub should NOT work
 command-sub.test:Quoting " within ``
+command-sub-ksh.test:${ echo hi;}
+command-sub-ksh.test:${ echo hi }  without semi-colon
+command-sub-ksh.test:${|REPLY=hi}
+command-sub-ksh.test:for loop / case
 command_.test:Command block
 command_.test:External programs don't have _OVM in environment
 command_.test:hash -r doesn't allow additional args
@@ -970,7 +977,9 @@ extglob-match.test:With extglob on, !($str) on the left or right of == has diffe
 extglob-match.test:@() with variable arms
 fatal-errors.test:Unrecoverable: ${undef?message}
 fatal-errors.test:Unrecoverable: divide by zero in case
+fatal-errors.test:Unrecoverable: divide by zero in conditional word
 fatal-errors.test:Unrecoverable: divide by zero in redirect word
+fatal-errors.test:${undef} with nounset
 for-expr.test:Accepts { } syntax too
 for-expr.test:Arith lexer mode
 for-expr.test:Condition that's greater than 32 bits
@@ -1247,7 +1256,14 @@ redirect-command.test:Redirect in the middle of two assignments
 redirect-command.test:redirect subshell
 redirect-command.test:redirect while
 redirect-multi.test:File redirect without matching any file
+redirect-multi.test:File redirect without matching any file, with failglob
+redirect-multi.test:File redirect that globs to more than one file (bash and zsh only)
+redirect-multi.test:File redirect with extended glob
+redirect-multi.test:File redirects have word splitting too!
+redirect-multi.test:File redirects with glob args (bash and zsh only)
+redirect-multi.test:Extended glob that doesn't match anything
 redirect-multi.test:Non-file redirects don't respect glob args (we differe from bash)
+redirect-multi.test:Redirect with brace expansion isn't allowed
 redirect-multi.test:Redirect to ''
 redirect-multi.test:Redirect to $empty (in function body)
 redirect-multi.test:ysh behavior when glob doesn't match
@@ -1661,8 +1677,14 @@ var-sub-quote.test:Var substitution with newlines (#2492)
 var-sub-quote.test:Var substitution with \n in value
 var-sub-quote.test:Var with multiple words: no quotes
 var-sub.test:Braced block inside ${}
+var-sub.test:Bad var sub
+var-sub.test:Descriptor redirect to bad "$@"
+var-sub.test:Filename redirect with "$@"
 var-sub.test:Here doc with bad "$@" delimiter
 var-sub.test:Nested ${}
+whitespace.test:Default IFS does not include \r \v \f
+whitespace.test:Parsing shell words \r \v
+whitespace.test:\r at end of line is not special
 whitespace.test:\r in arith expression is allowed by some shells, but not most!
 whitespace.test:whitespace in string to integer conversion
 word-eval.test:Default values -- more cases

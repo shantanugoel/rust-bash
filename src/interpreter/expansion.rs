@@ -125,6 +125,14 @@ fn expand_word_segments(
     let assignment_like = expand_assignment_like_tilde_bug(&rewritten, state);
     let pieces = brush_parser::word::parse(&assignment_like, &options)
         .map_err(|e| RustBashError::Parse(e.to_string()))?;
+    if pieces
+        .iter()
+        .all(|piece| matches!(piece.piece, WordPiece::Text(_)))
+        && assignment_like.starts_with("${")
+        && assignment_like.ends_with('}')
+    {
+        validate_unparsed_dollar_brace_word(&assignment_like)?;
+    }
 
     let mut words: Vec<WordInProgress> = vec![Vec::new()];
     for piece_ws in &pieces {
@@ -144,6 +152,14 @@ fn expand_word_segments_mut(
     let assignment_like = expand_assignment_like_tilde_bug(&rewritten, state);
     let pieces = brush_parser::word::parse(&assignment_like, &options)
         .map_err(|e| RustBashError::Parse(e.to_string()))?;
+    if pieces
+        .iter()
+        .all(|piece| matches!(piece.piece, WordPiece::Text(_)))
+        && assignment_like.starts_with("${")
+        && assignment_like.ends_with('}')
+    {
+        validate_unparsed_dollar_brace_word(&assignment_like)?;
+    }
 
     let mut words: Vec<WordInProgress> = vec![Vec::new()];
     for piece_ws in &pieces {
@@ -435,6 +451,7 @@ fn execute_command_substitution(
         pipe_stdin_bytes: None,
         pending_cmdsub_stderr: String::new(),
         fatal_expansion_error: false,
+        last_command_had_error: false,
     };
 
     let result = execute_program(&program, &mut sub_state);
@@ -468,6 +485,34 @@ fn execute_command_substitution(
     output.truncate(trimmed_len);
 
     Ok(output)
+}
+
+fn validate_unparsed_dollar_brace_word(word: &str) -> Result<(), RustBashError> {
+    if !(word.starts_with("${") && word.ends_with('}')) {
+        return Ok(());
+    }
+
+    let body = &word[2..word.len() - 1];
+    if body.starts_with('|') {
+        return Err(bad_substitution_error(word));
+    }
+    let Some(end) = consume_parameter_reference_end(body.as_bytes()) else {
+        return Ok(());
+    };
+    let rest = &body[end..];
+    if rest.starts_with('&') || rest.starts_with(';') || rest.starts_with('|') {
+        return Err(bad_substitution_error(word));
+    }
+
+    Ok(())
+}
+
+fn bad_substitution_error(word: &str) -> RustBashError {
+    RustBashError::ExpansionError {
+        message: format!("{word}: bad substitution"),
+        exit_code: 1,
+        should_exit: true,
+    }
 }
 
 // ── Piece expansion ─────────────────────────────────────────────────
@@ -2514,9 +2559,11 @@ fn check_nounset(parameter: &Parameter, state: &InterpreterState) -> Result<(), 
     }
     if is_unset(state, parameter) {
         let name = parameter_name(parameter);
-        return Err(RustBashError::Execution(format!(
-            "{name}: unbound variable"
-        )));
+        return Err(RustBashError::ExpansionError {
+            message: format!("{name}: unbound variable"),
+            exit_code: 1,
+            should_exit: true,
+        });
     }
     Ok(())
 }
@@ -4784,6 +4831,7 @@ mod tests {
             pipe_stdin_bytes: None,
             pending_cmdsub_stderr: String::new(),
             fatal_expansion_error: false,
+            last_command_had_error: false,
         }
     }
 
@@ -4883,7 +4931,8 @@ mod tests {
         let err = expand_word_mut(&word, &mut state).unwrap_err();
         assert!(matches!(
             err,
-            RustBashError::Execution(msg) if msg.contains("undef: unbound variable")
+            RustBashError::ExpansionError { message, .. }
+                if message.contains("undef: unbound variable")
         ));
     }
 

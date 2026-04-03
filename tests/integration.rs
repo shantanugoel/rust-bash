@@ -6753,3 +6753,151 @@ fn agents_npm_md_documented_builtins_exist() {
         "Builtins documented in packages/core/AGENTS.md but not in builtin_names(): {missing:?}",
     );
 }
+
+// ── Oils regression coverage ──────────────────────────────────────────
+
+#[test]
+fn bad_substitution_aborts_before_following_command() {
+    let mut sh = shell();
+    let r = sh.exec("x=${a&}; echo after").unwrap();
+    assert_eq!(r.exit_code, 1);
+    assert_eq!(r.stdout, "");
+    assert!(
+        r.stderr.contains("bad substitution"),
+        "stderr: {}",
+        r.stderr
+    );
+}
+
+#[test]
+fn redirect_with_multiword_dollar_at_is_ambiguous() {
+    let mut sh = shell();
+    let r = sh
+        .exec("set -- /var-sub1 /var-sub2; echo hi > \"$@\"")
+        .unwrap();
+    assert_eq!(r.exit_code, 1);
+    assert!(
+        r.stderr.contains("ambiguous redirect"),
+        "stderr: {}",
+        r.stderr
+    );
+
+    let r = sh.exec("cat /var-sub1").unwrap();
+    assert_ne!(r.exit_code, 0);
+}
+
+#[test]
+fn duplicate_redirect_with_multiword_dollar_at_is_ambiguous() {
+    let mut sh = shell();
+    let r = sh.exec("set -- '2 3' 'c d'; echo hi 1>& \"$@\"").unwrap();
+    assert_eq!(r.exit_code, 1);
+    assert_eq!(r.stdout, "");
+    assert!(
+        r.stderr.contains("ambiguous redirect"),
+        "stderr: {}",
+        r.stderr
+    );
+}
+
+#[test]
+fn legacy_ksh_command_substitution_captures_stdout() {
+    let mut sh = shell();
+    let r = sh.exec("x=${ echo hi; }; echo \"[$x]\"").unwrap();
+    assert_eq!(r.stdout, "[hi]\n");
+}
+
+#[test]
+fn legacy_ksh_reply_substitution_reads_reply() {
+    let mut sh = shell();
+    let r = sh
+        .exec("x=${|y=' reply var '; REPLY=$y}; echo \"[$x]\"")
+        .unwrap();
+    assert_eq!(r.stdout, "[ reply var ]\n");
+}
+
+#[test]
+fn legacy_ksh_command_substitution_supports_compound_commands() {
+    let mut sh = shell();
+    let r = sh
+        .exec(
+            "x=${ for i in a b; do echo -$i-; done; }; \
+             y=${|for i in a b; do REPLY+=\"-$i-\"; done; }; \
+             printf '%s\n%s\n' \"$x\" \"$y\"",
+        )
+        .unwrap();
+    assert_eq!(r.stdout, "-a-\n-b-\n-a--b-\n");
+}
+
+#[test]
+fn invalid_legacy_ksh_command_substitutions_are_bad_substitution() {
+    let mut sh = shell();
+    let r = sh.exec("x=${myfunc;}; echo after").unwrap();
+    assert_eq!(r.exit_code, 1);
+    assert_eq!(r.stdout, "");
+    assert!(
+        r.stderr.contains("bad substitution"),
+        "stderr: {}",
+        r.stderr
+    );
+
+    let r = sh.exec("x=${ |REPLY=zz}; echo after").unwrap();
+    assert_eq!(r.exit_code, 1);
+    assert_eq!(r.stdout, "");
+    assert!(
+        r.stderr.contains("bad substitution"),
+        "stderr: {}",
+        r.stderr
+    );
+}
+
+#[test]
+fn test_treats_parenthesized_strings_as_binary_comparisons() {
+    let mut sh = shell();
+    let r = sh
+        .exec("test '(' = ')'; echo status:$?; test 0 -eq 0 -a '(' = ')'; echo status:$?")
+        .unwrap();
+    assert_eq!(r.stdout, "status:1\nstatus:0\n");
+
+    let r = sh
+        .exec("test '(' == ')'; echo status:$?; test 0 -eq 0 -a '(' == ')'; echo status:$?")
+        .unwrap();
+    assert_eq!(r.stdout, "status:1\nstatus:0\n");
+}
+
+#[test]
+fn extended_test_unary_literal_operand_rewrites_to_runtime_false() {
+    let mut sh = shell();
+    let r = sh.exec("[[ -f == ]]; echo status:$?").unwrap();
+    assert_eq!(r.stdout, "status:1\n");
+    assert_eq!(r.stderr, "");
+}
+
+#[test]
+fn arithmetic_error_in_if_condition_preserves_failure_status() {
+    let mut sh = shell();
+    let r = sh
+        .exec("bash -c 'if test foo$(( 42 / 0 )) = foo; then echo true; else echo false; fi; echo inside=$?'")
+        .unwrap();
+    assert_eq!(r.exit_code, 0);
+    assert_eq!(r.stdout, "inside=1\n");
+    assert!(
+        r.stderr.contains("division by zero"),
+        "stderr: {}",
+        r.stderr
+    );
+}
+
+#[test]
+fn nounset_in_bash_c_exits_127() {
+    let mut sh = shell();
+    let r = sh
+        .exec("bash -c 'set -o nounset; case ${undef} in (*) echo hi ;; esac; echo inside=$?'")
+        .unwrap();
+    assert_eq!(r.exit_code, 127);
+    assert_eq!(r.stdout, "");
+    assert!(
+        r.stderr.contains("unbound variable"),
+        "stderr: {}",
+        r.stderr
+    );
+}

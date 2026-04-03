@@ -332,6 +332,9 @@ fn process_python_escapes(s: &str) -> String {
             match chars.next() {
                 Some('n') => result.push('\n'),
                 Some('t') => result.push('\t'),
+                Some('r') => result.push('\r'),
+                Some('v') => result.push('\x0b'),
+                Some('f') => result.push('\x0c'),
                 Some('\\') => result.push('\\'),
                 Some('\'') => result.push('\''),
                 Some('"') => result.push('"'),
