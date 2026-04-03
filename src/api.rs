@@ -24,6 +24,7 @@ impl RustBash {
         self.state.counters.reset();
         self.state.should_exit = false;
         self.state.current_source_text = input.to_string();
+        self.state.last_verbose_line = 0;
 
         let program = match interpreter::parse(input) {
             Ok(p) => p,
@@ -238,6 +239,7 @@ impl RustBash {
 pub struct RustBashBuilder {
     files: HashMap<String, Vec<u8>>,
     env: HashMap<String, String>,
+    env_explicit: bool,
     cwd: Option<String>,
     custom_commands: Vec<Arc<dyn VirtualCommand>>,
     limits: Option<ExecutionLimits>,
@@ -257,6 +259,7 @@ impl RustBashBuilder {
         Self {
             files: HashMap::new(),
             env: HashMap::new(),
+            env_explicit: false,
             cwd: None,
             custom_commands: Vec::new(),
             limits: None,
@@ -274,6 +277,7 @@ impl RustBashBuilder {
     /// Set environment variables.
     pub fn env(mut self, env: HashMap<String, String>) -> Self {
         self.env = env;
+        self.env_explicit = true;
         self
     }
 
@@ -343,21 +347,25 @@ impl RustBashBuilder {
         // Insert default environment variables (caller-provided values take precedence)
         let mut env_map = self.env;
         let defaults: &[(&str, &str)] = &[
-            ("PATH", "/usr/bin:/bin"),
-            ("HOME", "/home/user"),
-            ("USER", "user"),
-            ("HOSTNAME", "rust-bash"),
-            ("OSTYPE", "linux-gnu"),
-            ("SHELL", "/bin/bash"),
-            ("BASH", "/bin/bash"),
-            ("BASH_VERSION", env!("CARGO_PKG_VERSION")),
+            ("PATH", interpreter::DEFAULT_PATH),
+            ("USER", interpreter::DEFAULT_USER),
+            ("HOSTNAME", interpreter::DEFAULT_HOSTNAME),
+            ("OSTYPE", interpreter::DEFAULT_OSTYPE),
+            ("SHELL", interpreter::DEFAULT_SHELL_PATH),
+            ("BASH", interpreter::DEFAULT_SHELL_PATH),
+            ("BASH_VERSION", interpreter::DEFAULT_BASH_VERSION),
             ("OLDPWD", ""),
-            ("TERM", "xterm-256color"),
+            ("TERM", interpreter::DEFAULT_TERM),
         ];
         for &(key, value) in defaults {
             env_map
                 .entry(key.to_string())
                 .or_insert_with(|| value.to_string());
+        }
+        if !self.env_explicit {
+            env_map
+                .entry("HOME".to_string())
+                .or_insert_with(|| interpreter::DEFAULT_HOME.to_string());
         }
         env_map
             .entry("PWD".to_string())
@@ -403,6 +411,12 @@ impl RustBashBuilder {
             control_flow: None,
             positional_params: Vec::new(),
             shell_name: "rust-bash".to_string(),
+            shell_pid: 1000,
+            bash_pid: 1000,
+            parent_pid: 1,
+            next_process_id: 1001,
+            last_background_pid: None,
+            last_background_status: None,
             interactive_shell: false,
             invoked_with_c: false,
             random_seed: 0,
@@ -412,6 +426,7 @@ impl RustBashBuilder {
             traps: HashMap::new(),
             in_trap: false,
             errexit_suppressed: 0,
+            errexit_bang_suppressed: 0,
             stdin_offset: 0,
             current_stdin_persistent_fd: None,
             dir_stack: Vec::new(),
@@ -420,6 +435,7 @@ impl RustBashBuilder {
             current_lineno: 0,
             current_source: "main".to_string(),
             current_source_text: String::new(),
+            last_verbose_line: 0,
             shell_start_time: Instant::now(),
             last_argument: String::new(),
             call_stack: Vec::new(),
@@ -434,33 +450,9 @@ impl RustBashBuilder {
             pending_cmdsub_stderr: String::new(),
             fatal_expansion_error: false,
             last_command_had_error: false,
+            last_status_immune_to_errexit: false,
         };
-
-        // Set SHELLOPTS and BASHOPTS as readonly variables
-        // They are computed dynamically on read, but must exist so `test -v` works.
-        state.env.insert(
-            "SHELLOPTS".to_string(),
-            Variable {
-                value: VariableValue::Scalar(String::new()),
-                attrs: VariableAttrs::READONLY,
-            },
-        );
-        state.env.insert(
-            "BASHOPTS".to_string(),
-            Variable {
-                value: VariableValue::Scalar(String::new()),
-                attrs: VariableAttrs::READONLY,
-            },
-        );
-
-        // PS4 defaults to "+ " (xtrace prefix); explicit `unset PS4` removes it.
-        state.env.insert(
-            "PS4".to_string(),
-            Variable {
-                value: VariableValue::Scalar("+ ".to_string()),
-                attrs: VariableAttrs::empty(),
-            },
-        );
+        interpreter::ensure_shell_internal_vars(&mut state);
 
         Ok(RustBash { state })
     }
@@ -494,26 +486,28 @@ fn setup_default_filesystem(
         }
     }
 
-    // Command stubs in /bin/ for each registered command
-    for name in commands.keys() {
-        let path_str = format!("/bin/{name}");
-        let p = Path::new(&path_str);
-        if !fs.exists(p) {
-            let content = format!("#!/bin/bash\n# built-in: {name}\n");
-            fs.write_file(p, content.as_bytes())?;
+    for prefix in ["/bin", "/usr/bin"] {
+        // Command stubs for each registered command
+        for name in commands.keys() {
+            let path_str = format!("{prefix}/{name}");
+            let p = Path::new(&path_str);
+            if !fs.exists(p) {
+                let content = format!("#!/bin/bash\n# built-in: {name}\n");
+                fs.write_file(p, content.as_bytes())?;
+            }
         }
-    }
 
-    // Builtin stubs in /bin/ (skip names unsuitable as filenames)
-    for &name in interpreter::builtins::builtin_names() {
-        if matches!(name, "." | ":" | "colon") {
-            continue;
-        }
-        let path_str = format!("/bin/{name}");
-        let p = Path::new(&path_str);
-        if !fs.exists(p) {
-            let content = format!("#!/bin/bash\n# built-in: {name}\n");
-            fs.write_file(p, content.as_bytes())?;
+        // Builtin stubs (skip names unsuitable as filenames)
+        for &name in interpreter::builtins::builtin_names() {
+            if matches!(name, "." | ":" | "colon") {
+                continue;
+            }
+            let path_str = format!("{prefix}/{name}");
+            let p = Path::new(&path_str);
+            if !fs.exists(p) {
+                let content = format!("#!/bin/bash\n# built-in: {name}\n");
+                fs.write_file(p, content.as_bytes())?;
+            }
         }
     }
 
@@ -1043,7 +1037,7 @@ mod tests {
     fn expand_dollar_dollar() {
         let mut shell = shell();
         let result = shell.exec("echo $$").unwrap();
-        assert_eq!(result.stdout, "1\n");
+        assert_eq!(result.stdout, "1000\n");
     }
 
     #[test]

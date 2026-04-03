@@ -401,6 +401,7 @@ fn execute_command_substitution(
 
     // Create an isolated subshell state
     let cloned_fs = state.fs.deep_clone();
+    let child_pid = crate::interpreter::next_child_pid(state);
 
     let mut sub_state = InterpreterState {
         fs: cloned_fs,
@@ -425,6 +426,12 @@ fn execute_command_substitution(
         control_flow: None,
         positional_params: state.positional_params.clone(),
         shell_name: state.shell_name.clone(),
+        shell_pid: state.shell_pid,
+        bash_pid: child_pid,
+        parent_pid: state.bash_pid,
+        next_process_id: state.next_process_id,
+        last_background_pid: None,
+        last_background_status: None,
         interactive_shell: state.interactive_shell,
         invoked_with_c: state.invoked_with_c,
         random_seed: state.random_seed,
@@ -433,7 +440,8 @@ fn execute_command_substitution(
         in_function_depth: 0,
         traps: HashMap::new(),
         in_trap: false,
-        errexit_suppressed: 0,
+        errexit_suppressed: state.errexit_suppressed,
+        errexit_bang_suppressed: state.errexit_bang_suppressed,
         stdin_offset: 0,
         current_stdin_persistent_fd: None,
         dir_stack: state.dir_stack.clone(),
@@ -442,6 +450,7 @@ fn execute_command_substitution(
         current_lineno: state.current_lineno,
         current_source: state.current_source.clone(),
         current_source_text: state.current_source_text.clone(),
+        last_verbose_line: state.last_verbose_line,
         shell_start_time: state.shell_start_time,
         last_argument: state.last_argument.clone(),
         call_stack: state.call_stack.clone(),
@@ -456,6 +465,7 @@ fn execute_command_substitution(
         pending_cmdsub_stderr: String::new(),
         fatal_expansion_error: false,
         last_command_had_error: false,
+        last_status_immune_to_errexit: false,
     };
 
     let result = execute_program(&program, &mut sub_state);
@@ -464,6 +474,8 @@ fn execute_command_substitution(
     state.counters.command_count = sub_state.counters.command_count;
     state.counters.output_size = sub_state.counters.output_size;
     state.counters.substitution_depth -= 1;
+    crate::interpreter::fold_child_process_state(state, &sub_state);
+    state.last_verbose_line = state.last_verbose_line.max(sub_state.last_verbose_line);
 
     let mut result = result?;
 
@@ -2258,10 +2270,14 @@ fn expand_escape_sequences(val: &str) -> String {
                         // No hex digits followed — preserve as literal \x
                         result.push('\\');
                         result.push('x');
-                    } else if let Ok(n) = u32::from_str_radix(&hex, 16)
-                        && let Some(c) = shell_char_from_byte_escape(n)
-                    {
-                        result.push(c);
+                    } else if let Ok(n) = u32::from_str_radix(&hex, 16) {
+                        let byte = n & 0xff;
+                        if byte == 0 {
+                            break;
+                        }
+                        if let Some(c) = shell_char_from_byte_escape(byte) {
+                            result.push(c);
+                        }
                     }
                     // Invalid codepoints (e.g. surrogates \uD800) silently produce nothing, matching bash.
                 }
@@ -2313,7 +2329,11 @@ fn expand_escape_sequences(val: &str) -> String {
                         val_octal = val_octal * 8 + chars[i].to_digit(8).unwrap_or(0);
                         count += 1;
                     }
-                    if let Some(c) = shell_char_from_byte_escape(val_octal) {
+                    let byte = val_octal & 0xff;
+                    if byte == 0 {
+                        break;
+                    }
+                    if let Some(c) = shell_char_from_byte_escape(byte) {
                         result.push(c);
                     }
                 }
@@ -2348,7 +2368,7 @@ fn shell_char_from_byte_escape(value: u32) -> Option<char> {
             .chars()
             .next()
     } else {
-        char::from_u32(value)
+        None
     }
 }
 
@@ -2648,7 +2668,7 @@ fn check_nounset(parameter: &Parameter, state: &InterpreterState) -> Result<(), 
         return Err(RustBashError::ExpansionError {
             message: format!("{name}: unbound variable"),
             exit_code: 1,
-            should_exit: true,
+            should_exit: !state.interactive_shell,
         });
     }
     Ok(())
@@ -3429,18 +3449,10 @@ fn resolve_named_var(name: &str, state: &InterpreterState) -> String {
         "LINENO" => return state.current_lineno.to_string(),
         "SECONDS" => return state.shell_start_time.elapsed().as_secs().to_string(),
         "_" => return state.last_argument.clone(),
-        "PPID" => {
-            return get_var(state, "PPID").unwrap_or_else(|| "1".to_string());
-        }
-        "UID" => {
-            return get_var(state, "UID").unwrap_or_else(|| "1000".to_string());
-        }
-        "EUID" => {
-            return get_var(state, "EUID").unwrap_or_else(|| "1000".to_string());
-        }
-        "BASHPID" => {
-            return get_var(state, "BASHPID").unwrap_or_else(|| "1".to_string());
-        }
+        "PPID" => return state.parent_pid.to_string(),
+        "UID" => return "1000".to_string(),
+        "EUID" => return "1000".to_string(),
+        "BASHPID" => return state.bash_pid.to_string(),
         "SHELLOPTS" => return compute_shellopts(state),
         "BASHOPTS" => return compute_bashopts(state),
         "MACHTYPE" => return state.machtype.clone(),
@@ -3683,8 +3695,11 @@ fn resolve_special(sp: &SpecialParameter, state: &InterpreterState) -> String {
                 state.positional_params.join(" ")
             }
         }
-        SpecialParameter::ProcessId => "1".to_string(),
-        SpecialParameter::LastBackgroundProcessId => String::new(),
+        SpecialParameter::ProcessId => state.shell_pid.to_string(),
+        SpecialParameter::LastBackgroundProcessId => state
+            .last_background_pid
+            .map(|pid| pid.to_string())
+            .unwrap_or_default(),
         SpecialParameter::ShellName => state.shell_name.clone(),
         SpecialParameter::CurrentOptionFlags => {
             let mut flags = String::from("h");
@@ -4768,6 +4783,12 @@ mod tests {
             control_flow: None,
             positional_params: Vec::new(),
             shell_name: "rust-bash".to_string(),
+            shell_pid: 1000,
+            bash_pid: 1000,
+            parent_pid: 1,
+            next_process_id: 1001,
+            last_background_pid: None,
+            last_background_status: None,
             interactive_shell: false,
             invoked_with_c: false,
             random_seed: 42,
@@ -4777,6 +4798,7 @@ mod tests {
             traps: HashMap::new(),
             in_trap: false,
             errexit_suppressed: 0,
+            errexit_bang_suppressed: 0,
             stdin_offset: 0,
             current_stdin_persistent_fd: None,
             dir_stack: Vec::new(),
@@ -4785,6 +4807,7 @@ mod tests {
             current_lineno: 0,
             current_source: "main".to_string(),
             current_source_text: String::new(),
+            last_verbose_line: 0,
             shell_start_time: crate::platform::Instant::now(),
             last_argument: String::new(),
             call_stack: Vec::new(),
@@ -4799,6 +4822,7 @@ mod tests {
             pending_cmdsub_stderr: String::new(),
             fatal_expansion_error: false,
             last_command_had_error: false,
+            last_status_immune_to_errexit: false,
         }
     }
 

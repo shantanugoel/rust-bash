@@ -582,6 +582,9 @@ builtin-echo.test:incomplete octal escape
 builtin-echo.test:incomplete unicode escape
 builtin-echo.test:\u6
 builtin-echo.test:\x
+builtin-echo.test:\0400 is one more than the highest octal byte
+builtin-echo.test:\0777 is out of range
+builtin-echo.test:\0 \1 \8
 builtin-eval-source.test:Eval
 builtin-eval-source.test:eval accepts/ignores --
 builtin-eval-source.test:Eval in bash does tilde expansion in array
@@ -793,6 +796,12 @@ builtin-set.test:set -u with undefined variable exits the interpreter
 builtin-set.test:set -u -- x y z
 builtin-set.test:set with both options and argv
 builtin-set.test:variables set before set -a are not exported
+builtin-set.test:set -u with undefined var in interactive shell does NOT exit the interpreter
+builtin-set.test:'set' and 'eval' round trip
+builtin-set.test:set - - and so forth
+builtin-set.test:set - leading single dash is ignored, turns off xtrace verbose (#2364)
+builtin-set.test:set - stops option processing like set --
+builtin-set.test:set - + and + -
 builtin-special.test:Non-special builtins CAN be redefined as functions
 builtin-special.test:set is special and fails whole script, even if using || true
 builtin-special.test:Shift is special and fails whole script
@@ -990,6 +999,16 @@ errexit.test:set +o errexit with 2 levels of ignored
 errexit.test:setting errexit in a subshell works but doesn't affect parent shell
 errexit.test:shopt -s strict:all || true while errexit is on
 errexit.test:simple command that's an alias - redir failure checked
+errexit.test:More && ||
+errexit.test:errexit and brace group { }
+errexit.test:errexit with !
+errexit.test:errexit with ! and ;
+errexit.test:set errexit while it's ignored in a subshell (moot with strict_errexit)
+errexit.test:simple command / assign - redir failure DOES respect errexit
+errexit.test:brace group - redir failure checked
+errexit.test:while loop - redirect failure checked
+errexit.test:set -e in function #2
+errexit.test:Command sub exit code is lost
 exit-status.test:Exit code when command sub evaluates to empty str, e.g. `false` (#2416)
 exit-status.test:If subshell false -- exit code is propagated in a weird way (strict_argv prevents)
 exit-status.test:If subshell true
@@ -1227,6 +1246,13 @@ nocasematch-match.test:file matching
 nocasematch-match.test:[ matching
 nocasematch-match.test:parameter expansion matching
 nocasematch-match.test:[[ regex matching
+nul-bytes.test:NUL bytes with echo -e
+nul-bytes.test:printf - \0 escape shows NUL byte
+nul-bytes.test:printf - NUL byte in value (OSH and zsh agree)
+nul-bytes.test:NUL bytes with echo $'\0' (OSH and zsh agree)
+nul-bytes.test:NUL bytes with test -n
+nul-bytes.test:NUL bytes with test -f
+nul-bytes.test:NUL bytes with ${#s} (OSH and zsh agree)
 paren-ambiguity.test:$(( closed with ) ) after multiple lines is command - #2337
 paren-ambiguity.test:$(( closed with )) after multiple lines is parse error - #2337
 paren-ambiguity.test:$((which example - command sub versus arith sub - gnunet-gtk package
@@ -1319,6 +1345,7 @@ quote.test:Var substitution
 quote.test:Var substitution with braces
 quote.test:Var substitution with braces, quoted
 quote.test:YSH allows unquoted foo\ bar too
+redirect-command.test:>$file touches a file
 redirect-command.test:$(< file; end) is not a special case
 redirect-command.test:Brace group redirect
 redirect-command.test:< file in pipeline and subshell doesn't work
@@ -1419,6 +1446,7 @@ serialize.test:${var@Q}
 serialize.test:printf %q newline
 serialize.test:printf %q quotes
 serialize.test:printf %q spaces
+serialize.test:set
 serialize.test:xtrace
 shell-grammar.test:Case all on one line without trailing ;; or ;
 shell-grammar.test:case item without ;; is not allowed
@@ -1715,6 +1743,7 @@ var-ref.test:Var ref, then error with ${ ? }
 var-ref.test:var ref to $1 and $2 with 1 and 2
 var-ref.test:var ref to $@ with @
 var-ref.test:var ref TO array var
+vars-bash.test:$SHELL is set to what is in /etc/passwd
 vars-special.test:$#
 vars-special.test:$?
 vars-special.test:$$ doesn't change with subshell or command sub
@@ -1740,6 +1769,18 @@ vars-special.test:$_ with loop
 vars-special.test:$_ with simple command and evaluation
 vars-special.test:$_ with word splitting
 vars-special.test:HOSTNAME OSTYPE can be changed
+vars-special.test:$PATH is set if unset at startup
+vars-special.test:$HOME is NOT set
+vars-special.test:Vars set interactively only: $HISTFILE
+vars-special.test:Some vars are set, even without startup file, or env: PATH, PWD
+vars-special.test:UID EUID PPID can't be changed
+vars-special.test:$BASHPID DOES change with subshell and command sub
+vars-special.test:Background PID $! looks like a PID
+vars-special.test:$LINENO in for loop
+vars-special.test:$LINENO in for (( loop
+vars-special.test:$_ with pipeline and subshell
+vars-special.test:$_ with assignments, arrays, etc.
+vars-special.test:BASH_VERSION / OILS_VERSION
 var-sub-quote.test:-
 var-sub-quote.test::-
 var-sub-quote.test:$'' allowed within VarSub arguments
@@ -1868,3 +1909,8 @@ xtrace.test:xtrace with tabs
 xtrace.test:xtrace with variables in PS4
 xtrace.test:xtrace with whitespace, quotes, and backslash
 xtrace.test:xtrace written before command executes
+xtrace.test:set -o verbose prints unevaluated code
+xtrace.test:xtrace with unprintable chars
+xtrace.test:xtrace with unicode chars
+xtrace.test:[[ ]]
+xtrace.test:Regression: xtrace for "declare -a a+=(v)"

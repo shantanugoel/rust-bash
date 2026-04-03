@@ -1529,6 +1529,12 @@ mod tests {
             control_flow: None,
             positional_params: Vec::new(),
             shell_name: "rust-bash".to_string(),
+            shell_pid: 1000,
+            bash_pid: 1000,
+            parent_pid: 1,
+            next_process_id: 1001,
+            last_background_pid: None,
+            last_background_status: None,
             interactive_shell: false,
             invoked_with_c: false,
             random_seed: 42,
@@ -1538,6 +1544,7 @@ mod tests {
             traps: HashMap::new(),
             in_trap: false,
             errexit_suppressed: 0,
+            errexit_bang_suppressed: 0,
             stdin_offset: 0,
             current_stdin_persistent_fd: None,
             dir_stack: Vec::new(),
@@ -1546,6 +1553,7 @@ mod tests {
             current_lineno: 0,
             current_source: "main".to_string(),
             current_source_text: String::new(),
+            last_verbose_line: 0,
             shell_start_time: crate::platform::Instant::now(),
             last_argument: String::new(),
             call_stack: Vec::new(),
@@ -1560,6 +1568,7 @@ mod tests {
             pending_cmdsub_stderr: String::new(),
             fatal_expansion_error: false,
             last_command_had_error: false,
+            last_status_immune_to_errexit: false,
         }
     }
 

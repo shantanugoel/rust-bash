@@ -6,7 +6,8 @@ use crate::interpreter::builtins::{self, resolve_path};
 use crate::interpreter::expansion::{expand_word_mut, expand_word_to_string_mut};
 use crate::interpreter::{
     CallFrame, ExecResult, ExecutionCounters, FunctionDef, InterpreterState, PersistentFd,
-    Variable, VariableAttrs, VariableValue, execute_trap, parse, set_array_element, set_variable,
+    Variable, VariableAttrs, VariableValue, ensure_shell_internal_vars, execute_trap,
+    fold_child_process_state, next_child_pid, parse, set_array_element, set_variable,
 };
 
 use brush_parser::ast;
@@ -38,6 +39,83 @@ fn expand_ps4(state: &mut InterpreterState) -> String {
     }
 }
 
+fn source_lines_for_range(source: &str, start_line: usize, end_line: usize) -> Option<String> {
+    if source.is_empty() || start_line == 0 || end_line < start_line {
+        return None;
+    }
+
+    let lines: Vec<&str> = source.split_inclusive('\n').collect();
+    if start_line > lines.len() {
+        return None;
+    }
+
+    let last = end_line.min(lines.len());
+    let mut snippet = String::new();
+    for line in &lines[start_line - 1..last] {
+        snippet.push_str(line);
+    }
+    if !snippet.ends_with('\n') {
+        snippet.push('\n');
+    }
+    Some(snippet)
+}
+
+fn maybe_verbose_trace(command: &ast::Command, state: &mut InterpreterState) -> String {
+    if !state.shell_opts.verbose {
+        return String::new();
+    }
+
+    let Some(loc) = command.location() else {
+        return String::new();
+    };
+    if loc.start.line <= state.last_verbose_line {
+        return String::new();
+    }
+    let Some(snippet) =
+        source_lines_for_range(&state.current_source_text, loc.start.line, loc.end.line)
+    else {
+        return String::new();
+    };
+    state.last_verbose_line = loc.end.line;
+    snippet
+}
+
+fn xtrace_uses_ansi_c(word: &str) -> bool {
+    word.chars().any(|ch| {
+        crate::shell_bytes::marker_byte(ch).is_some()
+            || matches!(ch, '\x00'..='\x08' | '\x0B'..='\x1F' | '\x7F')
+    })
+}
+
+fn xtrace_is_safe_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':' | '=' | '+')
+}
+
+fn xtrace_ansi_c_quote(word: &str) -> String {
+    let mut out = String::new();
+    for ch in word.chars() {
+        if let Some(byte) = crate::shell_bytes::marker_byte(ch) {
+            out.push_str(&format!("\\{:03o}", byte));
+            continue;
+        }
+        match ch {
+            '\'' => out.push_str("\\'"),
+            '\\' => out.push_str("\\\\"),
+            '\x07' => out.push_str("\\a"),
+            '\x08' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\x0B' => out.push_str("\\v"),
+            '\x0C' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            '\x1B' => out.push_str("\\E"),
+            control if control.is_control() => out.push_str(&format!("\\{:03o}", control as u32)),
+            _ => out.push(ch),
+        }
+    }
+    format!("$'{out}'")
+}
+
 /// Quote a single word for xtrace output.  Bash quotes words that contain
 /// whitespace, single quotes, double quotes, backslashes, or non-printable
 /// characters.  The quoting style uses single quotes with the `'\''` escape
@@ -47,47 +125,30 @@ fn xtrace_quote(word: &str) -> String {
         return "''".to_string();
     }
 
-    // Check what quoting is needed
-    let has_single_quote = word.contains('\'');
-    let needs_quoting = word
-        .chars()
-        .any(|c| c.is_whitespace() || c == '\'' || c == '"' || c == '\\' || (c as u32) < 0x20);
+    if xtrace_uses_ansi_c(word) {
+        return xtrace_ansi_c_quote(word);
+    }
 
-    if !needs_quoting {
+    if word.chars().all(xtrace_is_safe_char) {
         return word.to_string();
     }
 
-    // Bash xtrace uses single quotes for most quoting, but represents
-    // single quotes as \' (breaking out of quoting).
-    // E.g., "it's" → 'it'\''s'
-    // But a bare single quote → \'
-    if has_single_quote {
-        let mut out = String::new();
-        let mut in_squote = false;
-        for c in word.chars() {
-            if c == '\'' {
-                if in_squote {
-                    out.push('\''); // close single quote
-                    in_squote = false;
-                }
-                out.push_str("\\'");
-            } else {
-                if !in_squote {
-                    out.push('\''); // open single quote
-                    in_squote = true;
-                }
-                out.push(c);
-            }
-        }
-        if in_squote {
-            out.push('\'');
-        }
-        out
-    } else {
-        // Simple single-quote wrapping (no single quotes in content)
-        // Bash puts literal tabs and newlines inside single quotes
-        format!("'{word}'")
+    let has_single_quote = word.contains('\'');
+    let mut out = String::new();
+    if !has_single_quote {
+        out.push('\'');
     }
+    for ch in word.chars() {
+        if ch == '\'' {
+            out.push_str("\\'");
+        } else {
+            out.push(ch);
+        }
+    }
+    if !has_single_quote {
+        out.push('\'');
+    }
+    out
 }
 
 fn validate_function_name_word(word: &ast::Word) -> Result<(), RustBashError> {
@@ -120,6 +181,95 @@ fn format_xtrace_command(ps4: &str, cmd: &str, args: &[String]) -> String {
         parts.push(xtrace_quote(a));
     }
     format!("{ps4}{}\n", parts.join(" "))
+}
+
+fn split_array_body_for_trace(body: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut chars = body.chars().peekable();
+    while let Some(&ch) = chars.peek() {
+        match ch {
+            ' ' | '\t' | '\n' if !current.is_empty() => {
+                words.push(std::mem::take(&mut current));
+                chars.next();
+                while matches!(chars.peek(), Some(' ' | '\t' | '\n')) {
+                    chars.next();
+                }
+            }
+            ' ' | '\t' | '\n' => {
+                chars.next();
+            }
+            '"' => {
+                current.push('"');
+                chars.next();
+                while let Some(&inner) = chars.peek() {
+                    current.push(inner);
+                    chars.next();
+                    if inner == '"' {
+                        break;
+                    }
+                    if inner == '\\'
+                        && let Some(&escaped) = chars.peek()
+                    {
+                        current.push(escaped);
+                        chars.next();
+                    }
+                }
+            }
+            '\'' => {
+                current.push('\'');
+                chars.next();
+                while let Some(&inner) = chars.peek() {
+                    current.push(inner);
+                    chars.next();
+                    if inner == '\'' {
+                        break;
+                    }
+                }
+            }
+            _ => {
+                current.push(ch);
+                chars.next();
+            }
+        }
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
+}
+
+fn unquote_trace_word(word: &str) -> String {
+    if word.len() >= 2
+        && ((word.starts_with('"') && word.ends_with('"'))
+            || (word.starts_with('\'') && word.ends_with('\'')))
+    {
+        return word[1..word.len() - 1].to_string();
+    }
+    word.to_string()
+}
+
+fn parse_xtrace_array_assignment(arg: &str) -> Option<(String, bool, Vec<String>)> {
+    let (name, append, body) = if let Some((name, rest)) = arg.split_once("+=(") {
+        (name, true, rest)
+    } else if let Some((name, rest)) = arg.split_once("=(") {
+        (name, false, rest)
+    } else {
+        return None;
+    };
+    let body = body.strip_suffix(')')?;
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '[' | ']'))
+    {
+        return None;
+    }
+    let values = split_array_body_for_trace(body)
+        .into_iter()
+        .map(|word| unquote_trace_word(&word))
+        .collect();
+    Some((name.to_string(), append, values))
 }
 
 fn current_indexed_array_for_trace(
@@ -188,9 +338,14 @@ fn format_xtrace_indexed_assignment(
 /// in a suppressed context (if/while/until condition, `&&`/`||` left side,
 /// `!` pipeline), set `should_exit = true`.
 fn check_errexit(state: &mut InterpreterState) {
+    if state.last_status_immune_to_errexit {
+        state.last_status_immune_to_errexit = false;
+        return;
+    }
     if state.shell_opts.errexit
         && state.last_exit_code != 0
         && state.errexit_suppressed == 0
+        && state.errexit_bang_suppressed == 0
         && !state.in_trap
     {
         state.should_exit = true;
@@ -248,19 +403,57 @@ fn execute_compound_list(
     stdin: &str,
 ) -> Result<ExecResult, RustBashError> {
     let mut result = ExecResult::default();
+    let item_line = |item: &ast::CompoundListItem| {
+        let ast::CompoundListItem(and_or_list, _) = item;
+        and_or_list
+            .first
+            .seq
+            .first()
+            .and_then(|command| command.location())
+            .map(|loc| loc.start.line)
+            .unwrap_or(0)
+    };
 
-    for item in &list.0 {
+    let mut i = 0usize;
+    while i < list.0.len() {
         if state.should_exit || state.control_flow.is_some() {
             break;
         }
-        let ast::CompoundListItem(and_or_list, _separator) = item;
-        let r = match execute_and_or_list(and_or_list, state, stdin) {
+        let item = &list.0[i];
+        let ast::CompoundListItem(and_or_list, separator) = item;
+        let async_separator = matches!(separator, ast::SeparatorOperator::Async);
+        let r = match if async_separator {
+            let mut sub_state = make_pipeline_stage_state(state);
+            let background_pid = sub_state.bash_pid;
+            let background_result = execute_and_or_list(and_or_list, &mut sub_state, stdin)?;
+            state.counters.command_count = sub_state.counters.command_count;
+            state.counters.output_size = sub_state.counters.output_size;
+            state.proc_sub_counter = sub_state.proc_sub_counter;
+            fold_child_process_state(state, &sub_state);
+            state.last_verbose_line = state.last_verbose_line.max(sub_state.last_verbose_line);
+            state.last_background_pid = Some(background_pid);
+            state.last_background_status = Some(background_result.exit_code);
+            Ok(ExecResult {
+                stdout: background_result.stdout,
+                stderr: background_result.stderr,
+                exit_code: 0,
+                stdout_bytes: None,
+            })
+        } else {
+            execute_and_or_list(and_or_list, state, stdin)
+        } {
             Ok(r) => r,
             Err(RustBashError::Execution(msg)) if msg.contains("unbound variable") => {
-                // nounset errors: print to stderr, exit with code 1
                 state.last_command_had_error = true;
-                state.should_exit = true;
                 state.last_exit_code = 1;
+                if !state.interactive_shell {
+                    state.should_exit = true;
+                } else {
+                    let error_line = state.current_lineno;
+                    while i + 1 < list.0.len() && item_line(&list.0[i + 1]) == error_line {
+                        i += 1;
+                    }
+                }
                 ExecResult {
                     stderr: format!("rust-bash: {msg}\n"),
                     exit_code: 1,
@@ -312,11 +505,22 @@ fn execute_compound_list(
         result.exit_code = r.exit_code;
         state.last_exit_code = r.exit_code;
 
+        if state.interactive_shell
+            && state.last_command_had_error
+            && r.stderr.contains("unbound variable")
+        {
+            let error_line = state.current_lineno;
+            while i + 1 < list.0.len() && item_line(&list.0[i + 1]) == error_line {
+                i += 1;
+            }
+        }
+
         // Fire ERR trap on non-zero exit code (but not when errexit is suppressed,
         // e.g. inside `if`/`while`/`until` conditions or `&&`/`||` chains).
         if r.exit_code != 0
             && !state.in_trap
             && state.errexit_suppressed == 0
+            && state.errexit_bang_suppressed == 0
             && let Some(err_cmd) = state.traps.get("ERR").cloned()
             && !err_cmd.is_empty()
         {
@@ -324,6 +528,7 @@ fn execute_compound_list(
             result.stdout.push_str(&trap_r.stdout);
             result.stderr.push_str(&trap_r.stderr);
         }
+        i += 1;
     }
 
     Ok(result)
@@ -342,7 +547,7 @@ fn execute_and_or_list(
     }
     let mut result = execute_pipeline(&aol.first, state, stdin)?;
     if has_chain {
-        state.errexit_suppressed -= 1;
+        state.errexit_suppressed = state.errexit_suppressed.saturating_sub(1);
     }
     state.last_exit_code = result.exit_code;
 
@@ -370,7 +575,7 @@ fn execute_and_or_list(
             }
             let r = execute_pipeline(pipeline, state, stdin)?;
             if !is_last {
-                state.errexit_suppressed -= 1;
+                state.errexit_suppressed = state.errexit_suppressed.saturating_sub(1);
             }
             result.stdout.push_str(&r.stdout);
             result.stderr.push_str(&r.stderr);
@@ -382,6 +587,8 @@ fn execute_and_or_list(
             }
         }
     }
+
+    state.last_status_immune_to_errexit = has_chain && result.exit_code != 0 && !state.should_exit;
 
     Ok(result)
 }
@@ -405,10 +612,13 @@ fn execute_pipeline(
     let mut exit_codes: Vec<i32> = Vec::new();
     let is_actual_pipe = pipeline.seq.len() > 1;
     let saved_stdin_offset = state.stdin_offset;
+    if is_actual_pipe && state.shopt_opts.lastpipe {
+        state.last_argument.clear();
+    }
 
     // Negated pipelines (`! cmd`) suppress errexit for the inner commands
     if pipeline.bang {
-        state.errexit_suppressed += 1;
+        state.errexit_bang_suppressed += 1;
     }
 
     for (idx, command) in pipeline.seq.iter().enumerate() {
@@ -426,6 +636,8 @@ fn execute_pipeline(
             state.counters.command_count = stage_state.counters.command_count;
             state.counters.output_size = stage_state.counters.output_size;
             state.proc_sub_counter = stage_state.proc_sub_counter;
+            fold_child_process_state(state, &stage_state);
+            state.last_verbose_line = state.last_verbose_line.max(stage_state.last_verbose_line);
             r
         } else {
             // Reset stdin offset when entering a new pipe stage with fresh data
@@ -464,7 +676,7 @@ fn execute_pipeline(
     }
 
     if pipeline.bang {
-        state.errexit_suppressed -= 1;
+        state.errexit_bang_suppressed = state.errexit_bang_suppressed.saturating_sub(1);
     }
 
     // pipefail: exit code = rightmost non-zero, or 0 if all succeeded
@@ -477,7 +689,8 @@ fn execute_pipeline(
             .unwrap_or(0);
     }
 
-    let exit_code = if pipeline.bang {
+    let exit_code = if pipeline.bang && !state.should_exit {
+        state.last_status_immune_to_errexit = true;
         i32::from(exit_code == 0)
     } else {
         exit_code
@@ -533,6 +746,7 @@ fn execute_command(
     if let Some(loc) = command.location() {
         state.current_lineno = loc.start.line;
     }
+    let verbose_trace = maybe_verbose_trace(command, state);
 
     // noexec: skip all commands except simple commands named "set"
     if state.shell_opts.noexec && !matches!(command, ast::Command::Simple(_)) {
@@ -591,7 +805,10 @@ fn execute_command(
     match result {
         Ok(exec_result) => {
             state.last_command_had_error = false;
-            Ok(exec_result)
+            Ok(ExecResult {
+                stderr: format!("{verbose_trace}{}", exec_result.stderr),
+                ..exec_result
+            })
         }
         Err(RustBashError::ExpansionError {
             message,
@@ -605,7 +822,7 @@ fn execute_command(
                 state.fatal_expansion_error = true;
             }
             Ok(ExecResult {
-                stderr: format!("rust-bash: {message}\n"),
+                stderr: format!("{verbose_trace}rust-bash: {message}\n"),
                 exit_code,
                 ..Default::default()
             })
@@ -614,7 +831,16 @@ fn execute_command(
             state.last_command_had_error = true;
             state.last_exit_code = 1;
             Ok(ExecResult {
-                stderr: format!("rust-bash: no match: {pattern}\n"),
+                stderr: format!("{verbose_trace}rust-bash: no match: {pattern}\n"),
+                exit_code: 1,
+                ..Default::default()
+            })
+        }
+        Err(RustBashError::RedirectFailed(msg)) => {
+            state.last_command_had_error = true;
+            state.last_exit_code = 1;
+            Ok(ExecResult {
+                stderr: format!("{verbose_trace}rust-bash: {msg}\n"),
                 exit_code: 1,
                 ..Default::default()
             })
@@ -1526,6 +1752,7 @@ fn execute_simple_command(
 
     // 4. No command name → persist assignments in environment
     let Some(cmd_name) = alias_expansion.as_ref().map(|(name, _)| name.clone()) else {
+        state.last_argument.clear();
         // Expand assignments lazily (no command to run, so no deferred expansion needed)
         for (raw_assign, append) in &raw_assignments {
             match process_assignment(raw_assign, *append, state) {
@@ -1580,6 +1807,9 @@ fn execute_simple_command(
                     break;
                 }
             }
+            if result.exit_code == 0 && !redirects.is_empty() {
+                apply_output_redirects(&redirects, &mut result, state)?;
+            }
             if !state.pending_cmdsub_stderr.is_empty() {
                 let cmdsub_stderr = std::mem::take(&mut state.pending_cmdsub_stderr);
                 result.stderr = format!("{cmdsub_stderr}{}", result.stderr);
@@ -1598,6 +1828,9 @@ fn execute_simple_command(
                 break;
             }
         }
+        if result.exit_code == 0 && !redirects.is_empty() {
+            apply_output_redirects(&redirects, &mut result, state)?;
+        }
         if !state.pending_cmdsub_stderr.is_empty() {
             let cmdsub_stderr = std::mem::take(&mut state.pending_cmdsub_stderr);
             result.stderr = format!("{cmdsub_stderr}{}", result.stderr);
@@ -1610,6 +1843,7 @@ fn execute_simple_command(
 
     // 4b. Empty command name (e.g. from `$(false)`) → no command, persist assignments
     if cmd_name.is_empty() && args.is_empty() {
+        state.last_argument.clear();
         // Expand assignments lazily
         let mut expanded = Vec::new();
         for (raw_assign, append) in &raw_assignments {
@@ -1637,6 +1871,9 @@ fn execute_simple_command(
             if result.exit_code != 0 {
                 break;
             }
+        }
+        if !redirects.is_empty() {
+            apply_output_redirects(&redirects, &mut result, state)?;
         }
         if !state.pending_cmdsub_stderr.is_empty() {
             let cmdsub_stderr = std::mem::take(&mut state.pending_cmdsub_stderr);
@@ -1741,7 +1978,15 @@ fn execute_simple_command(
         kind: &'a ast::ProcessSubstitutionKind,
         list: &'a ast::CompoundList,
     }
-    let last_arg = args.last().cloned().unwrap_or_else(|| cmd_name.clone());
+    let last_arg = if matches!(cmd_name.as_str(), "declare" | "typeset") {
+        args.iter()
+            .rev()
+            .find_map(|arg| parse_xtrace_array_assignment(arg).map(|(name, _, _)| name))
+            .or_else(|| args.last().cloned())
+            .unwrap_or_else(|| cmd_name.clone())
+    } else {
+        args.last().cloned().unwrap_or_else(|| cmd_name.clone())
+    };
     let should_trace = state.shell_opts.xtrace;
     // Expand PS4 BEFORE dispatch so that `local PS4=...` is traced with the old value
     let pre_ps4 = if should_trace {
@@ -1837,27 +2082,66 @@ fn execute_simple_command(
 
         // 7a. Emit xtrace to stderr
         if let Some(ref ps4) = pre_ps4 {
-            let mut trace = format_xtrace_command(ps4, &cmd_name, &args);
-            // Assignment builtins (readonly, declare, export, typeset)
-            // also trace each assignment separately.
-            // Note: local does NOT trace assignments separately.
+            let mut trace = String::new();
+            let mut command_args = args.clone();
+            let mut assignment_traces = Vec::new();
+
             if matches!(
                 cmd_name.as_str(),
                 "readonly" | "declare" | "typeset" | "export"
             ) {
-                for arg in &args {
+                for (idx, arg) in args.iter().enumerate() {
+                    if let Some((name, append, values)) = parse_xtrace_array_assignment(arg) {
+                        let rendered_values: Vec<String> = values
+                            .iter()
+                            .map(|value| {
+                                let quoted = xtrace_quote(value);
+                                if quoted == *value {
+                                    format!("'{value}'")
+                                } else {
+                                    quoted
+                                }
+                            })
+                            .collect();
+                        let trace_line = if append {
+                            format!("{name}+=({})", rendered_values.join(" "))
+                        } else {
+                            format!("{name}=({})", rendered_values.join(" "))
+                        };
+                        if matches!(cmd_name.as_str(), "declare" | "typeset") {
+                            command_args[idx] = name;
+                            assignment_traces.push(trace_line);
+                            continue;
+                        }
+                    }
                     if let Some(eq_pos) = arg.find('=') {
                         let name_part = &arg[..eq_pos];
-                        // Only trace if it looks like a variable assignment (not a flag)
                         if !name_part.is_empty()
                             && !name_part.starts_with('-')
                             && name_part
                                 .chars()
                                 .all(|c| c.is_alphanumeric() || c == '_' || c == '+')
                         {
-                            trace.push_str(&format!("{ps4}{arg}\n"));
+                            assignment_traces.push(arg.clone());
                         }
                     }
+                }
+            }
+
+            if matches!(cmd_name.as_str(), "declare" | "typeset")
+                && !assignment_traces.is_empty()
+                && args
+                    .iter()
+                    .any(|arg| parse_xtrace_array_assignment(arg).is_some())
+            {
+                for assignment in &assignment_traces {
+                    trace.push_str(&format!("{ps4}{assignment}\n"));
+                }
+                trace.push_str(&format_xtrace_command(ps4, &cmd_name, &command_args));
+            } else {
+                trace.push_str(&format_xtrace_command(ps4, &cmd_name, &command_args));
+                for assignment in &assignment_traces {
+                    trace.push_str(&format!("{ps4}{assignment}\n"));
                 }
             }
             // Prepend trace so it appears before the command's own stderr
@@ -1880,6 +2164,8 @@ fn execute_simple_command(
                 state.counters.command_count = sub_state.counters.command_count;
                 state.counters.output_size = sub_state.counters.output_size;
                 state.proc_sub_counter = sub_state.proc_sub_counter;
+                fold_child_process_state(state, &sub_state);
+                state.last_verbose_line = state.last_verbose_line.max(sub_state.last_verbose_line);
                 result.stdout.push_str(&inner_result.stdout);
                 result.stderr.push_str(&inner_result.stderr);
             }
@@ -1897,6 +2183,8 @@ fn execute_simple_command(
             state.counters.command_count = sub_state.counters.command_count;
             state.counters.output_size = sub_state.counters.output_size;
             state.proc_sub_counter = sub_state.proc_sub_counter;
+            fold_child_process_state(state, &sub_state);
+            state.last_verbose_line = state.last_verbose_line.max(sub_state.last_verbose_line);
             result.stdout.push_str(&inner_result.stdout);
             result.stderr.push_str(&inner_result.stderr);
         }
@@ -2032,7 +2320,7 @@ fn execute_if(
     // Suppress errexit for condition evaluation
     state.errexit_suppressed += 1;
     let cond = execute_compound_list(&if_clause.condition, state, stdin)?;
-    state.errexit_suppressed -= 1;
+    state.errexit_suppressed = state.errexit_suppressed.saturating_sub(1);
     let cond_had_error = state.last_command_had_error;
     result.stdout.push_str(&cond.stdout);
     result.stderr.push_str(&cond.stderr);
@@ -2056,7 +2344,7 @@ fn execute_if(
                 // elif — suppress errexit for condition
                 state.errexit_suppressed += 1;
                 let cond = execute_compound_list(condition, state, stdin)?;
-                state.errexit_suppressed -= 1;
+                state.errexit_suppressed = state.errexit_suppressed.saturating_sub(1);
                 let cond_had_error = state.last_command_had_error;
                 result.stdout.push_str(&cond.stdout);
                 result.stderr.push_str(&cond.stderr);
@@ -2095,6 +2383,8 @@ fn execute_for(
     use crate::interpreter::ControlFlow;
 
     let mut result = ExecResult::default();
+    let loop_lineno = find_for_header_line(&state.current_source_text, for_clause.loc.start.index)
+        .unwrap_or(for_clause.loc.start.line);
 
     // Bash reports an error when the variable name is invalid
     // (e.g. `for i.j in a b c` → "not a valid identifier").
@@ -2111,6 +2401,7 @@ fn execute_for(
         return Ok(result);
     }
 
+    state.current_lineno = loop_lineno;
     let values: Vec<String> = if let Some(words) = &for_clause.values {
         let mut vals = Vec::new();
         for w in words {
@@ -2192,11 +2483,20 @@ fn execute_arithmetic(
             };
             if state.shell_opts.xtrace {
                 let ps4 = expand_ps4(state);
-                result.stderr = format!(
-                    "{ps4}(({}))\n{}",
-                    arith.expr.value.trim_end(),
-                    result.stderr
-                );
+                let trace = char_range_slice(
+                    &state.current_source_text,
+                    arith.loc.start.index,
+                    arith.loc.end.index,
+                )
+                .and_then(|raw| {
+                    let trimmed = raw.trim();
+                    trimmed
+                        .strip_prefix("((")
+                        .and_then(|inner| inner.strip_suffix("))"))
+                        .map(|inner| format!("(( {inner} ))"))
+                })
+                .unwrap_or_else(|| format!("(( {} ))", arith.expr.value.trim_end()));
+                result.stderr = format!("{ps4}{trace}\n{}", result.stderr);
             }
             Ok(result)
         }
@@ -2256,6 +2556,35 @@ fn char_range_slice(source: &str, start: usize, end: usize) -> Option<&str> {
         source.char_indices().nth(end)?.0
     };
     source.get(start_byte..end_byte)
+}
+
+fn find_for_header_line(source: &str, before_char_index: usize) -> Option<usize> {
+    let end_byte = if before_char_index == source.chars().count() {
+        source.len()
+    } else {
+        source.char_indices().nth(before_char_index)?.0
+    };
+    let prefix = source.get(..end_byte)?;
+    let target_physical_line = prefix.chars().filter(|&ch| ch == '\n').count() + 1;
+    let mut last = None;
+    let mut logical_line = 0usize;
+    for (physical_line, line) in source.lines().enumerate() {
+        if physical_line + 1 > target_physical_line {
+            break;
+        }
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        logical_line += 1;
+        if trimmed.starts_with("for ")
+            || trimmed.starts_with("for((")
+            || trimmed.starts_with("for ((")
+        {
+            last = Some(logical_line);
+        }
+    }
+    last
 }
 
 fn raw_arithmetic_command_contains_invalid_hash(raw_command: &str) -> bool {
@@ -2441,8 +2770,12 @@ fn execute_arithmetic_for(
 ) -> Result<ExecResult, RustBashError> {
     use crate::interpreter::ControlFlow;
 
+    let loop_lineno = find_for_header_line(&state.current_source_text, afc.loc.start.index)
+        .unwrap_or(afc.loc.start.line);
+
     // Evaluate initializer
     if let Some(init) = &afc.initializer {
+        state.current_lineno = loop_lineno;
         let expanded = crate::interpreter::expansion::expand_arith_expression(&init.value, state)?;
         eval_command_arithmetic_expr(&expanded, state)?;
     }
@@ -2469,6 +2802,7 @@ fn execute_arithmetic_for(
         if let Some(cond) = &afc.condition
             && !cond.value.trim().is_empty()
         {
+            state.current_lineno = loop_lineno;
             let expanded =
                 crate::interpreter::expansion::expand_arith_expression(&cond.value, state)?;
             let val = eval_command_arithmetic_expr(&expanded, state)?;
@@ -2505,6 +2839,7 @@ fn execute_arithmetic_for(
 
         // Evaluate updater
         if let Some(upd) = &afc.updater {
+            state.current_lineno = loop_lineno;
             let expanded =
                 crate::interpreter::expansion::expand_arith_expression(&upd.value, state)?;
             eval_command_arithmetic_expr(&expanded, state)?;
@@ -2544,7 +2879,7 @@ fn execute_while_until(
         // Suppress errexit for the loop condition
         state.errexit_suppressed += 1;
         let cond = execute_compound_list(&clause.0, state, stdin)?;
-        state.errexit_suppressed -= 1;
+        state.errexit_suppressed = state.errexit_suppressed.saturating_sub(1);
         let cond_had_error = state.last_command_had_error;
         result.stdout.push_str(&cond.stdout);
         result.stderr.push_str(&cond.stderr);
@@ -2601,6 +2936,7 @@ fn execute_subshell(
 ) -> Result<ExecResult, RustBashError> {
     // Deep-clone the filesystem so mutations in the subshell are isolated
     let cloned_fs = state.fs.deep_clone();
+    let child_pid = next_child_pid(state);
 
     let mut sub_state = InterpreterState {
         fs: cloned_fs,
@@ -2625,6 +2961,12 @@ fn execute_subshell(
         control_flow: None,
         positional_params: state.positional_params.clone(),
         shell_name: state.shell_name.clone(),
+        shell_pid: state.shell_pid,
+        bash_pid: child_pid,
+        parent_pid: state.bash_pid,
+        next_process_id: state.next_process_id,
+        last_background_pid: None,
+        last_background_status: None,
         interactive_shell: state.interactive_shell,
         invoked_with_c: state.invoked_with_c,
         random_seed: state.random_seed,
@@ -2633,7 +2975,8 @@ fn execute_subshell(
         in_function_depth: state.in_function_depth,
         traps: state.traps.clone(),
         in_trap: false,
-        errexit_suppressed: 0,
+        errexit_suppressed: state.errexit_suppressed,
+        errexit_bang_suppressed: state.errexit_bang_suppressed,
         stdin_offset: 0,
         current_stdin_persistent_fd: None,
         dir_stack: state.dir_stack.clone(),
@@ -2642,6 +2985,7 @@ fn execute_subshell(
         current_lineno: state.current_lineno,
         current_source: state.current_source.clone(),
         current_source_text: state.current_source_text.clone(),
+        last_verbose_line: state.last_verbose_line,
         shell_start_time: state.shell_start_time,
         last_argument: state.last_argument.clone(),
         call_stack: state.call_stack.clone(),
@@ -2656,6 +3000,7 @@ fn execute_subshell(
         pending_cmdsub_stderr: String::new(),
         fatal_expansion_error: false,
         last_command_had_error: false,
+        last_status_immune_to_errexit: false,
     };
 
     let result = execute_compound_list(list, &mut sub_state, stdin);
@@ -2663,6 +3008,8 @@ fn execute_subshell(
     // Fold shared counters back into parent
     state.counters.command_count = sub_state.counters.command_count;
     state.counters.output_size = sub_state.counters.output_size;
+    fold_child_process_state(state, &sub_state);
+    state.last_verbose_line = state.last_verbose_line.max(sub_state.last_verbose_line);
 
     let result = result?;
 
@@ -2671,6 +3018,7 @@ fn execute_subshell(
 }
 
 fn make_pipeline_stage_state(state: &mut InterpreterState) -> InterpreterState {
+    let child_pid = next_child_pid(state);
     InterpreterState {
         fs: Arc::clone(&state.fs),
         env: state.env.clone(),
@@ -2694,6 +3042,12 @@ fn make_pipeline_stage_state(state: &mut InterpreterState) -> InterpreterState {
         control_flow: None,
         positional_params: state.positional_params.clone(),
         shell_name: state.shell_name.clone(),
+        shell_pid: state.shell_pid,
+        bash_pid: child_pid,
+        parent_pid: state.bash_pid,
+        next_process_id: state.next_process_id,
+        last_background_pid: None,
+        last_background_status: None,
         interactive_shell: state.interactive_shell,
         invoked_with_c: state.invoked_with_c,
         random_seed: state.random_seed,
@@ -2702,7 +3056,8 @@ fn make_pipeline_stage_state(state: &mut InterpreterState) -> InterpreterState {
         in_function_depth: state.in_function_depth,
         traps: state.traps.clone(),
         in_trap: false,
-        errexit_suppressed: 0,
+        errexit_suppressed: state.errexit_suppressed,
+        errexit_bang_suppressed: state.errexit_bang_suppressed,
         stdin_offset: 0,
         current_stdin_persistent_fd: None,
         dir_stack: state.dir_stack.clone(),
@@ -2711,6 +3066,7 @@ fn make_pipeline_stage_state(state: &mut InterpreterState) -> InterpreterState {
         current_lineno: state.current_lineno,
         current_source: state.current_source.clone(),
         current_source_text: state.current_source_text.clone(),
+        last_verbose_line: state.last_verbose_line,
         shell_start_time: state.shell_start_time,
         last_argument: state.last_argument.clone(),
         call_stack: state.call_stack.clone(),
@@ -2725,6 +3081,7 @@ fn make_pipeline_stage_state(state: &mut InterpreterState) -> InterpreterState {
         pending_cmdsub_stderr: String::new(),
         fatal_expansion_error: false,
         last_command_had_error: false,
+        last_status_immune_to_errexit: false,
     }
 }
 
@@ -2815,7 +3172,7 @@ pub(crate) fn clone_commands(
 /// the top-level command (e.g., `xargs`/`find`) itself.
 fn make_exec_callback(
     state: &InterpreterState,
-) -> impl Fn(&str) -> Result<CommandResult, RustBashError> {
+) -> impl Fn(&str, Option<&HashMap<String, String>>) -> Result<CommandResult, RustBashError> {
     let cloned_fs = state.fs.deep_clone();
     let env = state.env.clone();
     let cwd = state.cwd.clone();
@@ -2837,15 +3194,36 @@ fn make_exec_callback(
     let current_source_text = state.current_source_text.clone();
     let machtype = state.machtype.clone();
     let hosttype = state.hosttype.clone();
+    let shell_pid = state.shell_pid;
+    let bash_pid = state.bash_pid;
+    let parent_pid = state.parent_pid;
+    let next_process_id = state.next_process_id;
 
-    move |cmd_str: &str| {
+    move |cmd_str: &str, env_override: Option<&HashMap<String, String>>| {
         let program = parse(cmd_str)?;
 
         let sub_fs = cloned_fs.deep_clone();
+        let sub_env = env_override.map_or_else(
+            || env.clone(),
+            |override_env| {
+                override_env
+                    .iter()
+                    .map(|(name, value)| {
+                        (
+                            name.clone(),
+                            Variable {
+                                value: VariableValue::Scalar(value.clone()),
+                                attrs: VariableAttrs::EXPORTED,
+                            },
+                        )
+                    })
+                    .collect()
+            },
+        );
 
         let mut sub_state = InterpreterState {
             fs: sub_fs,
-            env: env.clone(),
+            env: sub_env,
             cwd: cwd.clone(),
             functions: functions.clone(),
             last_exit_code,
@@ -2866,6 +3244,12 @@ fn make_exec_callback(
             control_flow: None,
             positional_params: positional_params.clone(),
             shell_name: shell_name.clone(),
+            shell_pid,
+            bash_pid,
+            parent_pid,
+            next_process_id,
+            last_background_pid: None,
+            last_background_status: None,
             interactive_shell: false,
             invoked_with_c: false,
             random_seed,
@@ -2875,6 +3259,7 @@ fn make_exec_callback(
             traps: HashMap::new(),
             in_trap: false,
             errexit_suppressed: 0,
+            errexit_bang_suppressed: 0,
             stdin_offset: 0,
             current_stdin_persistent_fd: None,
             dir_stack: Vec::new(),
@@ -2883,6 +3268,7 @@ fn make_exec_callback(
             current_lineno: 0,
             current_source: current_source.clone(),
             current_source_text: current_source_text.clone(),
+            last_verbose_line: 0,
             shell_start_time,
             last_argument: last_argument.clone(),
             call_stack: call_stack.clone(),
@@ -2897,7 +3283,9 @@ fn make_exec_callback(
             pending_cmdsub_stderr: String::new(),
             fatal_expansion_error: false,
             last_command_had_error: false,
+            last_status_immune_to_errexit: false,
         };
+        ensure_shell_internal_vars(&mut sub_state);
 
         let result = execute_program(&program, &mut sub_state)?;
         Ok(CommandResult {
@@ -3005,11 +3393,30 @@ fn dispatch_command(
 ) -> Result<ExecResult, RustBashError> {
     state.counters.command_count += 1;
     check_limits(state)?;
+    let resolved_name = if name.contains('/') {
+        let resolved_path = resolve_path(&state.cwd, name);
+        let path = Path::new(&resolved_path);
+        if !state.fs.exists(path) {
+            return Ok(ExecResult {
+                stdout: String::new(),
+                stderr: format!("{name}: command not found\n"),
+                exit_code: 127,
+                stdout_bytes: None,
+            });
+        }
+        path.file_name()
+            .and_then(|component| component.to_str())
+            .unwrap_or(name)
+            .to_string()
+    } else {
+        name.to_string()
+    };
+    let lookup_name = resolved_name.as_str();
 
     // 0. --help interception (before builtin dispatch, function lookup, etc.)
     if args.first().map(|a| a.as_str()) == Some("--help") {
         // Check builtins first
-        if let Some(meta) = builtins::builtin_meta(name)
+        if let Some(meta) = builtins::builtin_meta(lookup_name)
             && meta.supports_help_flag
         {
             return Ok(ExecResult {
@@ -3020,7 +3427,7 @@ fn dispatch_command(
             });
         }
         // Check registered commands
-        if let Some(cmd) = state.commands.get(name)
+        if let Some(cmd) = state.commands.get(lookup_name)
             && let Some(meta) = cmd.meta()
             && meta.supports_help_flag
         {
@@ -3035,17 +3442,19 @@ fn dispatch_command(
     }
 
     // 1. Special shell builtins (unshadowable)
-    if let Some(result) = builtins::execute_builtin(name, args, state, stdin, extra_input_fds)? {
+    if let Some(result) =
+        builtins::execute_builtin(lookup_name, args, state, stdin, extra_input_fds)?
+    {
         return Ok(result);
     }
 
     // 2. User-defined functions
-    if state.functions.contains_key(name) {
-        return execute_function_call(name, args, state, stdin);
+    if state.functions.contains_key(lookup_name) {
+        return execute_function_call(lookup_name, args, state, stdin);
     }
 
     // 3. Registered commands
-    if let Some(cmd) = state.commands.get(name) {
+    if let Some(cmd) = state.commands.get(lookup_name) {
         let mut env: HashMap<String, String> = state
             .env
             .iter()
@@ -3085,7 +3494,7 @@ fn dispatch_command(
 
         // xpg_echo: when enabled, echo interprets backslash escapes by default
         let effective_args: Vec<String>;
-        let cmd_args: &[String] = if name == "echo" && state.shopt_opts.xpg_echo {
+        let cmd_args: &[String] = if lookup_name == "echo" && state.shopt_opts.xpg_echo {
             effective_args = std::iter::once("-e".to_string())
                 .chain(args.iter().cloned())
                 .collect();
@@ -4388,6 +4797,8 @@ fn execute_read_process_substitution(
     state.counters.command_count = sub_state.counters.command_count;
     state.counters.output_size = sub_state.counters.output_size;
     state.proc_sub_counter = sub_state.proc_sub_counter;
+    fold_child_process_state(state, &sub_state);
+    state.last_verbose_line = state.last_verbose_line.max(sub_state.last_verbose_line);
 
     allocate_proc_sub_temp_file(state, result.stdout.as_bytes())
 }
@@ -4421,6 +4832,7 @@ fn allocate_proc_sub_temp_file(
 /// Unlike command substitution which deep-clones the fs, process substitution
 /// needs the temp file to be visible to the outer command.
 fn make_proc_sub_state(state: &mut InterpreterState) -> InterpreterState {
+    let child_pid = next_child_pid(state);
     InterpreterState {
         fs: Arc::clone(&state.fs),
         env: state.env.clone(),
@@ -4444,6 +4856,12 @@ fn make_proc_sub_state(state: &mut InterpreterState) -> InterpreterState {
         control_flow: None,
         positional_params: state.positional_params.clone(),
         shell_name: state.shell_name.clone(),
+        shell_pid: state.shell_pid,
+        bash_pid: child_pid,
+        parent_pid: state.bash_pid,
+        next_process_id: state.next_process_id,
+        last_background_pid: None,
+        last_background_status: None,
         interactive_shell: state.interactive_shell,
         invoked_with_c: state.invoked_with_c,
         random_seed: state.random_seed,
@@ -4452,7 +4870,8 @@ fn make_proc_sub_state(state: &mut InterpreterState) -> InterpreterState {
         in_function_depth: 0,
         traps: HashMap::new(),
         in_trap: false,
-        errexit_suppressed: 0,
+        errexit_suppressed: state.errexit_suppressed,
+        errexit_bang_suppressed: state.errexit_bang_suppressed,
         stdin_offset: 0,
         current_stdin_persistent_fd: None,
         dir_stack: state.dir_stack.clone(),
@@ -4461,6 +4880,7 @@ fn make_proc_sub_state(state: &mut InterpreterState) -> InterpreterState {
         current_lineno: state.current_lineno,
         current_source: state.current_source.clone(),
         current_source_text: state.current_source_text.clone(),
+        last_verbose_line: state.last_verbose_line,
         shell_start_time: state.shell_start_time,
         last_argument: state.last_argument.clone(),
         call_stack: state.call_stack.clone(),
@@ -4475,6 +4895,7 @@ fn make_proc_sub_state(state: &mut InterpreterState) -> InterpreterState {
         pending_cmdsub_stderr: String::new(),
         fatal_expansion_error: false,
         last_command_had_error: false,
+        last_status_immune_to_errexit: false,
     }
 }
 

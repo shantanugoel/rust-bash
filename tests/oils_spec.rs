@@ -160,6 +160,10 @@ fn execute_oils_case(file_stem: &str, case: &OilsTestCase) -> Option<String> {
         // not seed TZ; only explicit shell exports should affect %(...)T.
         env_map.remove("TZ");
     }
+    if file_stem == "vars-special.test" {
+        env_map.remove("HOME");
+        env_map.insert("BASH_VERSION".into(), "4.4.0(1)-release".into());
+    }
 
     let mut builder = RustBashBuilder::new()
         .env(env_map)

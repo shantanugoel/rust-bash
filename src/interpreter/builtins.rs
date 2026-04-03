@@ -4,7 +4,8 @@ use crate::commands::CommandMeta;
 use crate::error::RustBashError;
 use crate::interpreter::walker::execute_program;
 use crate::interpreter::{
-    ControlFlow, ExecResult, InterpreterState, Variable, VariableAttrs, VariableValue, parse,
+    ControlFlow, ExecResult, InterpreterState, Variable, VariableAttrs, VariableValue,
+    ensure_nested_shell_startup_vars, fold_child_process_state, next_child_pid, parse,
     set_array_element, set_variable,
 };
 use crate::vfs::NodeType;
@@ -49,7 +50,7 @@ pub(crate) fn execute_builtin(
         "popd" => builtin_popd(args, state).map(Some),
         "dirs" => builtin_dirs(args, state).map(Some),
         "hash" => builtin_hash(args, state).map(Some),
-        "wait" => Ok(Some(ExecResult::default())),
+        "wait" => builtin_wait(args, state).map(Some),
         "alias" => builtin_alias(args, state).map(Some),
         "unalias" => builtin_unalias(args, state).map(Some),
         "printf" => builtin_printf(args, state).map(Some),
@@ -1200,42 +1201,125 @@ fn declared_only_shadow_variable(var: &Variable) -> Variable {
 
 // ── set ─────────────────────────────────────────────────────────────
 
+fn shell_word_needs_ansi_c_quote(value: &str) -> bool {
+    value.chars().any(|ch| {
+        crate::shell_bytes::marker_byte(ch).is_some() || ch == '\'' || ch == '\\' || ch.is_control()
+    })
+}
+
+fn shell_word_is_plain(value: &str) -> bool {
+    !value.is_empty()
+        && value.chars().all(|ch| {
+            ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':' | '=' | '+')
+        })
+}
+
+fn shell_ansi_c_quote(value: &str) -> String {
+    let mut out = String::new();
+    for ch in value.chars() {
+        if let Some(byte) = crate::shell_bytes::marker_byte(ch) {
+            out.push_str(&format!("\\{:03o}", byte));
+            continue;
+        }
+        match ch {
+            '\'' => out.push_str("\\'"),
+            '\\' => out.push_str("\\\\"),
+            '\x07' => out.push_str("\\a"),
+            '\x08' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\x0B' => out.push_str("\\v"),
+            '\x0C' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            '\x1B' => out.push_str("\\E"),
+            control if control.is_control() => out.push_str(&format!("\\{:03o}", control as u32)),
+            _ => out.push(ch),
+        }
+    }
+    format!("$'{out}'")
+}
+
+fn shell_quote_for_reparse(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+    if shell_word_needs_ansi_c_quote(value) {
+        return shell_ansi_c_quote(value);
+    }
+    if shell_word_is_plain(value) {
+        return value.to_string();
+    }
+    format!("'{value}'")
+}
+
+fn shell_double_quote(value: &str) -> String {
+    let mut out = String::new();
+    for ch in value.chars() {
+        match ch {
+            '\\' | '"' | '$' | '`' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    format!("\"{out}\"")
+}
+
+fn shell_quote_for_set_array_value(value: &str) -> String {
+    if shell_word_needs_ansi_c_quote(value) {
+        shell_ansi_c_quote(value)
+    } else {
+        shell_double_quote(value)
+    }
+}
+
+fn shell_quote_for_set_assoc_key(key: &str) -> String {
+    if shell_word_is_plain(key) {
+        key.to_string()
+    } else if shell_word_needs_ansi_c_quote(key) {
+        shell_ansi_c_quote(key)
+    } else {
+        shell_double_quote(key)
+    }
+}
+
+fn format_set_line(name: &str, var: &Variable) -> String {
+    match &var.value {
+        VariableValue::Scalar(s) => format!("{name}={}\n", shell_quote_for_reparse(s)),
+        VariableValue::IndexedArray(map) => {
+            let elems: Vec<String> = map
+                .iter()
+                .map(|(k, v)| format!("[{k}]={}", shell_quote_for_set_array_value(v)))
+                .collect();
+            format!("{name}=({})\n", elems.join(" "))
+        }
+        VariableValue::AssociativeArray(map) => {
+            let mut entries: Vec<(&String, &String)> = map.iter().collect();
+            entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+            let elems: Vec<String> = entries
+                .iter()
+                .map(|(k, v)| {
+                    let key = shell_quote_for_set_assoc_key(k);
+                    format!("[{key}]={}", shell_quote_for_set_array_value(v))
+                })
+                .collect();
+            if elems.is_empty() {
+                format!("{name}=()\n")
+            } else {
+                format!("{name}=({} )\n", elems.join(" "))
+            }
+        }
+    }
+}
+
 fn builtin_set(args: &[String], state: &mut InterpreterState) -> Result<ExecResult, RustBashError> {
     if args.is_empty() {
-        // List all variables in bash format (no quotes for scalars, array syntax for arrays)
+        // List all variables in a form that can be re-sourced by `eval`/`.`.
         let mut lines: Vec<String> = state
             .env
             .iter()
-            .map(|(k, v)| match &v.value {
-                VariableValue::IndexedArray(map) => {
-                    let elements: Vec<String> = map
-                        .iter()
-                        .map(|(idx, val)| format!("[{idx}]=\"{val}\""))
-                        .collect();
-                    format!("{k}=({})\n", elements.join(" "))
-                }
-                VariableValue::AssociativeArray(map) => {
-                    let mut entries: Vec<(&String, &String)> = map.iter().collect();
-                    entries.sort_by(|(a, _), (b, _)| a.cmp(b));
-                    let elements: Vec<String> = entries
-                        .iter()
-                        .map(|(key, val)| {
-                            if key.contains(' ') || key.contains('"') {
-                                format!("[\"{key}\"]=\"{val}\"")
-                            } else {
-                                format!("[{key}]=\"{val}\"")
-                            }
-                        })
-                        .collect();
-                    if elements.is_empty() {
-                        format!("{k}=()\n")
-                    } else {
-                        // Bash outputs a trailing space before the closing paren
-                        format!("{k}=({} )\n", elements.join(" "))
-                    }
-                }
-                VariableValue::Scalar(s) => format!("{k}={s}\n"),
-            })
+            .map(|(k, v)| format_set_line(k, v))
             .collect();
         lines.sort();
         return Ok(ExecResult {
@@ -1251,6 +1335,20 @@ fn builtin_set(args: &[String], state: &mut InterpreterState) -> Result<ExecResu
             // Everything after -- becomes positional parameters
             state.positional_params = args[i + 1..].to_vec();
             return Ok(ExecResult::default());
+        } else if arg == "-" {
+            state.shell_opts.xtrace = false;
+            state.shell_opts.verbose = false;
+            if i + 1 < args.len() {
+                state.positional_params = args[i + 1..].to_vec();
+            }
+            return Ok(ExecResult::default());
+        } else if arg == "+" {
+            if i + 1 < args.len() && args[i + 1] == "-" {
+                state.positional_params = vec!["+".to_string()];
+                return Ok(ExecResult::default());
+            }
+            i += 1;
+            continue;
         } else if arg.starts_with('+') || arg.starts_with('-') {
             let enable = arg.starts_with('-');
             if arg == "-o" || arg == "+o" {
@@ -1307,7 +1405,12 @@ fn builtin_set(args: &[String], state: &mut InterpreterState) -> Result<ExecResu
 
 fn apply_option_char(c: char, enable: bool, state: &mut InterpreterState) {
     match c {
-        'e' => state.shell_opts.errexit = enable,
+        'e' => {
+            state.shell_opts.errexit = enable;
+            if enable && state.in_function_depth > 0 && state.errexit_bang_suppressed > 0 {
+                state.errexit_bang_suppressed = state.errexit_bang_suppressed.saturating_sub(1);
+            }
+        }
         'u' => state.shell_opts.nounset = enable,
         'x' => state.shell_opts.xtrace = enable,
         'v' => state.shell_opts.verbose = enable,
@@ -1321,7 +1424,12 @@ fn apply_option_char(c: char, enable: bool, state: &mut InterpreterState) {
 
 fn apply_option_name(name: &str, enable: bool, state: &mut InterpreterState) {
     match name {
-        "errexit" => state.shell_opts.errexit = enable,
+        "errexit" => {
+            state.shell_opts.errexit = enable;
+            if enable && state.in_function_depth > 0 && state.errexit_bang_suppressed > 0 {
+                state.errexit_bang_suppressed = state.errexit_bang_suppressed.saturating_sub(1);
+            }
+        }
         "nounset" => state.shell_opts.nounset = enable,
         "pipefail" => state.shell_opts.pipefail = enable,
         "xtrace" => state.shell_opts.xtrace = enable,
@@ -1388,6 +1496,37 @@ fn builtin_shift(
 
     state.positional_params = state.positional_params[n..].to_vec();
     Ok(ExecResult::default())
+}
+
+fn builtin_wait(
+    args: &[String],
+    state: &mut InterpreterState,
+) -> Result<ExecResult, RustBashError> {
+    let status = if args.is_empty() {
+        state.last_background_status.unwrap_or(0)
+    } else {
+        let pid = match args[0].parse::<u32>() {
+            Ok(pid) => pid,
+            Err(_) => {
+                return Ok(ExecResult {
+                    stderr: format!("wait: {}: not a pid or valid job spec\n", args[0]),
+                    exit_code: 1,
+                    ..ExecResult::default()
+                });
+            }
+        };
+        if Some(pid) == state.last_background_pid {
+            state.last_background_status.unwrap_or(0)
+        } else {
+            127
+        }
+    };
+
+    state.last_exit_code = status;
+    Ok(ExecResult {
+        exit_code: status,
+        ..ExecResult::default()
+    })
 }
 
 // ── readonly ────────────────────────────────────────────────────────
@@ -1871,9 +2010,12 @@ fn declare_list_all(state: &InterpreterState) -> Result<ExecResult, RustBashErro
 /// Format `name=value` (used by bare `declare` and `local`).
 fn format_simple_line(name: &str, var: &Variable) -> String {
     match &var.value {
-        VariableValue::Scalar(s) => format!("{name}={s}\n"),
+        VariableValue::Scalar(s) => format!("{name}={}\n", shell_quote_for_reparse(s)),
         VariableValue::IndexedArray(map) => {
-            let elems: Vec<String> = map.iter().map(|(k, v)| format!("[{k}]=\"{v}\"")).collect();
+            let elems: Vec<String> = map
+                .iter()
+                .map(|(k, v)| format!("[{k}]={}", shell_quote_for_reparse(v)))
+                .collect();
             format!("{name}=({})\n", elems.join(" "))
         }
         VariableValue::AssociativeArray(map) => {
@@ -1881,7 +2023,14 @@ fn format_simple_line(name: &str, var: &Variable) -> String {
             entries.sort_by(|(a, _), (b, _)| a.cmp(b));
             let elems: Vec<String> = entries
                 .iter()
-                .map(|(k, v)| format!("[{k}]=\"{v}\""))
+                .map(|(k, v)| {
+                    let key = if shell_word_is_plain(k) {
+                        (*k).clone()
+                    } else {
+                        shell_quote_for_reparse(k)
+                    };
+                    format!("[{key}]={}", shell_quote_for_reparse(v))
+                })
                 .collect();
             if elems.is_empty() {
                 format!("{name}=()\n")
@@ -5711,6 +5860,11 @@ fn builtin_sh(
                 continue;
             }
 
+            if matches!(arg.as_str(), "--norc" | "--noprofile") {
+                i += 1;
+                continue;
+            }
+
             if matches!(arg.as_str(), "-o" | "+o" | "-O" | "+O") {
                 let enable = !arg.starts_with('+');
                 let shopt_mode = arg.ends_with('O');
@@ -5837,6 +5991,7 @@ fn run_in_subshell(
 ) -> Result<ExecResult, RustBashError> {
     use std::collections::HashMap;
     let cloned_fs = state.fs.deep_clone();
+    let child_pid = next_child_pid(state);
     let mut sub_state = InterpreterState {
         fs: cloned_fs,
         env: state.env.clone(),
@@ -5866,6 +6021,12 @@ fn run_in_subshell(
         shell_name: shell_name_override
             .map(|s| s.to_string())
             .unwrap_or_else(|| state.shell_name.clone()),
+        shell_pid: state.shell_pid,
+        bash_pid: child_pid,
+        parent_pid: state.bash_pid,
+        next_process_id: state.next_process_id,
+        last_background_pid: None,
+        last_background_status: None,
         interactive_shell: state.interactive_shell,
         invoked_with_c,
         random_seed: state.random_seed,
@@ -5874,7 +6035,8 @@ fn run_in_subshell(
         in_function_depth: 0,
         traps: state.traps.clone(),
         in_trap: false,
-        errexit_suppressed: 0,
+        errexit_suppressed: state.errexit_suppressed,
+        errexit_bang_suppressed: state.errexit_bang_suppressed,
         stdin_offset: 0,
         current_stdin_persistent_fd: None,
         dir_stack: state.dir_stack.clone(),
@@ -5884,6 +6046,7 @@ fn run_in_subshell(
         current_source: source_override.unwrap_or_else(|| state.current_source.clone()),
         current_source_text: source_text_override
             .unwrap_or_else(|| state.current_source_text.clone()),
+        last_verbose_line: state.last_verbose_line,
         shell_start_time: state.shell_start_time,
         last_argument: state.last_argument.clone(),
         call_stack: state.call_stack.clone(),
@@ -5898,7 +6061,9 @@ fn run_in_subshell(
         pending_cmdsub_stderr: String::new(),
         fatal_expansion_error: false,
         last_command_had_error: false,
+        last_status_immune_to_errexit: false,
     };
+    ensure_nested_shell_startup_vars(&mut sub_state);
 
     let result = execute_program(program, &mut sub_state).map(|mut result| {
         if sub_state.fatal_expansion_error {
@@ -5910,6 +6075,8 @@ fn run_in_subshell(
     // Fold shared counters back into parent
     state.counters.command_count = sub_state.counters.command_count;
     state.counters.output_size = sub_state.counters.output_size;
+    fold_child_process_state(state, &sub_state);
+    state.last_verbose_line = state.last_verbose_line.max(sub_state.last_verbose_line);
 
     result
 }
@@ -5993,6 +6160,12 @@ mod tests {
             control_flow: None,
             positional_params: Vec::new(),
             shell_name: "rust-bash".to_string(),
+            shell_pid: 1000,
+            bash_pid: 1000,
+            parent_pid: 1,
+            next_process_id: 1001,
+            last_background_pid: None,
+            last_background_status: None,
             interactive_shell: false,
             invoked_with_c: false,
             random_seed: 42,
@@ -6002,6 +6175,7 @@ mod tests {
             traps: HashMap::new(),
             in_trap: false,
             errexit_suppressed: 0,
+            errexit_bang_suppressed: 0,
             stdin_offset: 0,
             current_stdin_persistent_fd: None,
             dir_stack: Vec::new(),
@@ -6010,6 +6184,7 @@ mod tests {
             current_lineno: 0,
             current_source: "main".to_string(),
             current_source_text: String::new(),
+            last_verbose_line: 0,
             shell_start_time: Instant::now(),
             last_argument: String::new(),
             call_stack: Vec::new(),
@@ -6024,6 +6199,7 @@ mod tests {
             pending_cmdsub_stderr: String::new(),
             fatal_expansion_error: false,
             last_command_had_error: false,
+            last_status_immune_to_errexit: false,
         }
     }
 

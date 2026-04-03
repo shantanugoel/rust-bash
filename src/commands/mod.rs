@@ -34,7 +34,8 @@ pub struct CommandResult {
 }
 
 /// Callback type for sub-command execution (e.g. `xargs`, `find -exec`).
-pub type ExecCallback<'a> = &'a dyn Fn(&str) -> Result<CommandResult, RustBashError>;
+pub type ExecCallback<'a> =
+    &'a dyn Fn(&str, Option<&HashMap<String, String>>) -> Result<CommandResult, RustBashError>;
 
 /// Context passed to command execution.
 pub struct CommandContext<'a> {
@@ -214,24 +215,29 @@ impl VirtualCommand for EchoCommand {
     }
 }
 
+fn push_char_bytes(out: &mut Vec<u8>, ch: char) {
+    let mut buf = [0u8; 4];
+    out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+}
+
 fn interpret_echo_escapes(s: &str) -> (String, bool) {
-    let mut result = String::with_capacity(s.len());
+    let mut result = Vec::with_capacity(s.len());
     let chars: Vec<char> = s.chars().collect();
     let mut i = 0;
     while i < chars.len() {
         if chars[i] == '\\' && i + 1 < chars.len() {
             i += 1;
             match chars[i] {
-                'n' => result.push('\n'),
-                't' => result.push('\t'),
-                '\\' => result.push('\\'),
-                'a' => result.push('\x07'),
-                'b' => result.push('\x08'),
-                'f' => result.push('\x0C'),
-                'r' => result.push('\r'),
-                'v' => result.push('\x0B'),
-                'e' | 'E' => result.push('\x1B'),
-                'c' => return (result, true),
+                'n' => result.push(b'\n'),
+                't' => result.push(b'\t'),
+                '\\' => result.push(b'\\'),
+                'a' => result.push(0x07),
+                'b' => result.push(0x08),
+                'f' => result.push(0x0C),
+                'r' => result.push(b'\r'),
+                'v' => result.push(0x0B),
+                'e' | 'E' => result.push(0x1B),
+                'c' => return (crate::shell_bytes::decode_shell_bytes(&result), true),
                 '0' => {
                     // \0NNN — octal (up to 3 octal digits after the 0)
                     let mut val: u32 = 0;
@@ -245,9 +251,7 @@ fn interpret_echo_escapes(s: &str) -> (String, bool) {
                         val = val * 8 + (chars[i] as u32 - '0' as u32);
                         count += 1;
                     }
-                    if let Some(c) = char::from_u32(val) {
-                        result.push(c);
-                    }
+                    result.push((val & 0xFF) as u8);
                 }
                 'x' => {
                     // \xHH — hex escape (up to 2 hex digits)
@@ -257,12 +261,10 @@ fn interpret_echo_escapes(s: &str) -> (String, bool) {
                         hex.push(chars[i]);
                     }
                     if hex.is_empty() {
-                        result.push('\\');
-                        result.push('x');
-                    } else if let Some(c) =
-                        u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
-                    {
-                        result.push(c);
+                        result.push(b'\\');
+                        result.push(b'x');
+                    } else if let Ok(value) = u32::from_str_radix(&hex, 16) {
+                        result.push((value & 0xFF) as u8);
                     }
                 }
                 'u' => {
@@ -273,12 +275,12 @@ fn interpret_echo_escapes(s: &str) -> (String, bool) {
                         hex.push(chars[i]);
                     }
                     if hex.is_empty() {
-                        result.push('\\');
-                        result.push('u');
+                        result.push(b'\\');
+                        result.push(b'u');
                     } else if let Some(c) =
                         u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
                     {
-                        result.push(c);
+                        push_char_bytes(&mut result, c);
                     }
                 }
                 'U' => {
@@ -289,25 +291,25 @@ fn interpret_echo_escapes(s: &str) -> (String, bool) {
                         hex.push(chars[i]);
                     }
                     if hex.is_empty() {
-                        result.push('\\');
-                        result.push('U');
+                        result.push(b'\\');
+                        result.push(b'U');
                     } else if let Some(c) =
                         u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
                     {
-                        result.push(c);
+                        push_char_bytes(&mut result, c);
                     }
                 }
                 other => {
-                    result.push('\\');
-                    result.push(other);
+                    result.push(b'\\');
+                    push_char_bytes(&mut result, other);
                 }
             }
         } else {
-            result.push(chars[i]);
+            push_char_bytes(&mut result, chars[i]);
         }
         i += 1;
     }
-    (result, false)
+    (crate::shell_bytes::decode_shell_bytes(&result), false)
 }
 
 /// The `true` command: always succeeds (exit code 0).

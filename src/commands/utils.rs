@@ -295,10 +295,16 @@ impl super::VirtualCommand for DateCommand {
     fn execute(&self, args: &[String], _ctx: &CommandContext) -> CommandResult {
         let now = chrono::Local::now();
 
-        let format_str = args.iter().find(|a| a.starts_with('+'));
-        let output = if let Some(fmt) = format_str {
-            let fmt_str = &fmt[1..]; // strip leading +
-            now.format(fmt_str).to_string()
+        if let Some(arg) = args.iter().find(|arg| !arg.starts_with('+')) {
+            return CommandResult {
+                stderr: format!("date: invalid date '{arg}'\n"),
+                exit_code: 1,
+                ..Default::default()
+            };
+        }
+
+        let output = if let Some(fmt) = args.iter().find(|a| a.starts_with('+')) {
+            now.format(&fmt[1..]).to_string()
         } else {
             now.format("%a %b %e %H:%M:%S %Z %Y").to_string()
         };
@@ -645,14 +651,6 @@ impl super::VirtualCommand for EnvCommand {
             };
         }
 
-        if clear_env {
-            return CommandResult {
-                stderr: "env: executing commands with -i is not supported yet\n".into(),
-                exit_code: 125,
-                ..Default::default()
-            };
-        }
-
         let Some(exec) = ctx.exec else {
             return CommandResult {
                 stderr: "env: command execution unavailable\n".into(),
@@ -661,7 +659,7 @@ impl super::VirtualCommand for EnvCommand {
             };
         };
 
-        match exec(&shell_join(args)) {
+        match exec(&shell_join(&args[idx..]), Some(&env)) {
             Ok(result) => result,
             Err(err) => CommandResult {
                 stderr: format!("env: {err}\n"),
@@ -764,32 +762,52 @@ impl super::VirtualCommand for WhichCommand {
             .unwrap_or_default();
 
         for arg in args {
+            if arg.contains('/') {
+                let full = if std::path::Path::new(arg).is_absolute() {
+                    std::path::PathBuf::from(arg)
+                } else {
+                    std::path::PathBuf::from(ctx.cwd).join(arg)
+                };
+                if ctx.fs.exists(&full)
+                    && ctx
+                        .fs
+                        .stat(&full)
+                        .is_ok_and(|m| m.node_type != crate::vfs::NodeType::Directory)
+                {
+                    stdout.push_str(&full.to_string_lossy());
+                    stdout.push('\n');
+                } else {
+                    exit_code = 1;
+                }
+                continue;
+            }
+            let mut found = false;
+            for dir in &path_dirs {
+                let full = if dir.is_empty() {
+                    format!("./{arg}")
+                } else {
+                    format!("{dir}/{arg}")
+                };
+                let p = std::path::Path::new(&full);
+                if ctx.fs.exists(p)
+                    && ctx
+                        .fs
+                        .stat(p)
+                        .is_ok_and(|m| m.node_type != crate::vfs::NodeType::Directory)
+                {
+                    stdout.push_str(&full);
+                    stdout.push('\n');
+                    found = true;
+                    break;
+                }
+            }
+            if found {
+                continue;
+            }
             if crate::interpreter::builtins::is_builtin(arg) {
                 stdout.push_str(&format!("{arg}: shell built-in command\n"));
             } else {
-                let mut found = false;
-                for dir in &path_dirs {
-                    let full = if dir.is_empty() {
-                        format!("./{arg}")
-                    } else {
-                        format!("{dir}/{arg}")
-                    };
-                    let p = std::path::Path::new(&full);
-                    if ctx.fs.exists(p)
-                        && ctx
-                            .fs
-                            .stat(p)
-                            .is_ok_and(|m| m.node_type != crate::vfs::NodeType::Directory)
-                    {
-                        stdout.push_str(&full);
-                        stdout.push('\n');
-                        found = true;
-                        break;
-                    }
-                }
-                if !found {
-                    exit_code = 1;
-                }
+                exit_code = 1;
             }
         }
 
@@ -1453,7 +1471,7 @@ impl super::VirtualCommand for TimeoutCommand {
         // so a long-running command will block for its full duration.  The
         // global `max_execution_time` limit may still interrupt, but with
         // its own error rather than exit code 124.
-        match exec(&cmd_line) {
+        match exec(&cmd_line, None) {
             Ok(result) => {
                 let elapsed = start.elapsed();
                 if elapsed.as_secs_f64() > duration_secs {
@@ -2252,6 +2270,15 @@ mod tests {
         assert!(epoch.unwrap() > 1_000_000_000);
     }
 
+    #[test]
+    fn date_invalid_operand() {
+        let (fs, env, limits, np) = setup();
+        let c = ctx(&*fs, &env, &limits, &np);
+        let r = DateCommand.execute(&["%x".into()], &c);
+        assert_eq!(r.exit_code, 1);
+        assert!(r.stdout.is_empty());
+    }
+
     // ── sleep tests ──────────────────────────────────────────────────
 
     #[test]
@@ -2326,7 +2353,7 @@ mod tests {
     #[test]
     fn env_executes_subcommand() {
         let (fs, env, limits, np) = setup();
-        let exec = |command: &str| {
+        let exec = |command: &str, _env: Option<&std::collections::HashMap<String, String>>| {
             Ok(CommandResult {
                 stdout: format!("{command}\n"),
                 ..Default::default()

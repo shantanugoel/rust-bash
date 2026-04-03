@@ -171,7 +171,7 @@ impl super::VirtualCommand for XargsCommand {
             }
             // With no input and no replace, run the command with no extra args
             let cmd_line = shell_join(&command_parts);
-            match exec(&cmd_line) {
+            match exec(&cmd_line, None) {
                 Ok(r) => return r,
                 Err(e) => {
                     return CommandResult {
@@ -195,7 +195,7 @@ impl super::VirtualCommand for XargsCommand {
                     .map(|part| part.replace(repl.as_str(), token))
                     .collect();
                 let cmd_str = shell_join(&cmd_line);
-                match exec(&cmd_str) {
+                match exec(&cmd_str, None) {
                     Ok(r) => {
                         stdout.push_str(&r.stdout);
                         stderr.push_str(&r.stderr);
@@ -213,7 +213,7 @@ impl super::VirtualCommand for XargsCommand {
                 let mut cmd_line = command_parts.clone();
                 cmd_line.extend(chunk.iter().cloned());
                 let cmd_str = shell_join(&cmd_line);
-                match exec(&cmd_str) {
+                match exec(&cmd_str, None) {
                     Ok(r) => {
                         stdout.push_str(&r.stdout);
                         stderr.push_str(&r.stderr);
@@ -230,7 +230,7 @@ impl super::VirtualCommand for XargsCommand {
             let mut cmd_line = command_parts.clone();
             cmd_line.extend(tokens);
             let cmd_str = shell_join(&cmd_line);
-            match exec(&cmd_str) {
+            match exec(&cmd_str, None) {
                 Ok(r) => {
                     stdout.push_str(&r.stdout);
                     stderr.push_str(&r.stderr);
@@ -749,7 +749,7 @@ fn eval_find(
                     })
                     .collect::<Vec<_>>()
                     .join(" ");
-                match exec(&cmd_str) {
+                match exec(&cmd_str, None) {
                     Ok(r) => {
                         out.stdout.push_str(&r.stdout);
                         out.stderr.push_str(&r.stderr);
@@ -835,7 +835,7 @@ fn collect_batch_cmds(
                     parts.extend(paths.iter().map(|p| shell_escape(p)));
                     parts.join(" ")
                 };
-                match exec(&cmd_str) {
+                match exec(&cmd_str, None) {
                     Ok(r) => {
                         out.stdout.push_str(&r.stdout);
                         out.stderr.push_str(&r.stderr);
@@ -921,7 +921,10 @@ mod tests {
         }
     }
 
-    fn simple_exec(cmd: &str) -> Result<CommandResult, crate::error::RustBashError> {
+    fn simple_exec(
+        cmd: &str,
+        _env: Option<&std::collections::HashMap<String, String>>,
+    ) -> Result<CommandResult, crate::error::RustBashError> {
         // Simple exec that handles "echo ..." and "cat ..." for testing.
         // Understands single-quoted arguments for proper shell_join handling.
         let parts = parse_simple_args(cmd);

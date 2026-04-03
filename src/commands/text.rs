@@ -1871,6 +1871,7 @@ fn shell_text_to_bytes(text: &str) -> Vec<u8> {
 
 fn od_c_field(byte: u8) -> String {
     match byte {
+        0 => "\\0".to_string(),
         b'\n' => "\\n".to_string(),
         b'\t' => "\\t".to_string(),
         b'\r' => "\\r".to_string(),

@@ -568,9 +568,9 @@ fn special_variables() {
     let r = sh.exec("echo $0").unwrap();
     assert_eq!(r.stdout, "rust-bash\n");
 
-    // $$ is PID (we use 1)
+    // $$ is the shell PID
     let r = sh.exec("echo $$").unwrap();
-    assert_eq!(r.stdout, "1\n");
+    assert_eq!(r.stdout, "1000\n");
 }
 
 #[test]
@@ -1200,7 +1200,7 @@ fn exec_callback_available_to_commands() {
         }
         fn execute(&self, _args: &[String], ctx: &CommandContext) -> CommandResult {
             match ctx.exec {
-                Some(exec) => match exec("echo from-callback") {
+                Some(exec) => match exec("echo from-callback", None) {
                     Ok(r) => CommandResult {
                         stdout: r.stdout,
                         stderr: r.stderr,
@@ -5932,15 +5932,25 @@ fn ls_bin_lists_commands() {
 fn which_resolves_via_path() {
     let mut sh = shell();
     let r = sh.exec("which ls").unwrap();
-    assert_eq!(r.stdout.trim(), "/bin/ls");
+    assert_eq!(r.stdout.trim(), "/usr/bin/ls");
     assert_eq!(r.exit_code, 0);
 }
 
 #[test]
-fn which_builtin_reports_builtin() {
+fn which_prefers_path_executable_over_builtin() {
     let mut sh = shell();
     let r = sh.exec("which cd").unwrap();
+    assert_eq!(r.stdout.trim(), "/usr/bin/cd");
+    assert_eq!(r.exit_code, 0);
+}
+
+#[test]
+fn which_reports_builtin_when_no_path_match() {
+    let mut sh = shell();
+    sh.exec("PATH=").unwrap();
+    let r = sh.exec("which cd").unwrap();
     assert!(r.stdout.contains("shell built-in command"));
+    assert_eq!(r.exit_code, 0);
 }
 
 #[test]

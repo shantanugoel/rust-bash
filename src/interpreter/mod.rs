@@ -358,6 +358,18 @@ pub struct InterpreterState {
     pub(crate) control_flow: Option<ControlFlow>,
     pub positional_params: Vec<String>,
     pub shell_name: String,
+    /// `$${}` / `$$` value: fixed for the lifetime of a shell invocation tree.
+    pub(crate) shell_pid: u32,
+    /// Current shell process identity, exposed as `$BASHPID`.
+    pub(crate) bash_pid: u32,
+    /// Parent process identity, exposed as `$PPID`.
+    pub(crate) parent_pid: u32,
+    /// Monotonic allocator for subshell/command-substitution/background PIDs.
+    pub(crate) next_process_id: u32,
+    /// Last background process ID, exposed as `$!`.
+    pub(crate) last_background_pid: Option<u32>,
+    /// Exit status of the most recently launched background job.
+    pub(crate) last_background_status: Option<i32>,
     pub interactive_shell: bool,
     pub invoked_with_c: bool,
     /// Simple PRNG state for $RANDOM.
@@ -375,6 +387,8 @@ pub struct InterpreterState {
     /// Nesting depth for contexts where `set -e` should NOT trigger an exit.
     /// Incremented when entering if/while/until conditions, `&&`/`||` left sides, or `!` pipelines.
     pub(crate) errexit_suppressed: usize,
+    /// Nesting depth for `!` pipelines, which bash treats specially when `set -e` is re-enabled.
+    pub(crate) errexit_bang_suppressed: usize,
     /// Byte offset into the current stdin stream, used by `read` to consume
     /// successive lines from piped input across loop iterations.
     pub(crate) stdin_offset: usize,
@@ -392,6 +406,8 @@ pub struct InterpreterState {
     pub(crate) current_source: String,
     /// Full source text for the currently executing parsed program.
     pub(crate) current_source_text: String,
+    /// Last source line printed for `set -o verbose`.
+    pub(crate) last_verbose_line: usize,
     /// Shell start time for `$SECONDS`.
     pub(crate) shell_start_time: Instant,
     /// Last argument of the previous simple command (`$_`).
@@ -425,6 +441,96 @@ pub struct InterpreterState {
     pub(crate) fatal_expansion_error: bool,
     /// Distinguishes shell/runtime errors from ordinary non-zero command exits.
     pub(crate) last_command_had_error: bool,
+    /// True when the last non-zero status came from a context exempt from `set -e`.
+    pub(crate) last_status_immune_to_errexit: bool,
+}
+
+pub(crate) const DEFAULT_PATH: &str = "/usr/bin:/bin";
+pub(crate) const DEFAULT_HOME: &str = "/home/user";
+pub(crate) const DEFAULT_USER: &str = "user";
+pub(crate) const DEFAULT_HOSTNAME: &str = "rust-bash";
+pub(crate) const DEFAULT_OSTYPE: &str = "linux-gnu";
+pub(crate) const DEFAULT_SHELL_PATH: &str = "/bin/bash";
+pub(crate) const DEFAULT_BASH_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const DEFAULT_TERM: &str = "xterm-256color";
+pub(crate) const DEFAULT_IFS: &str = " \t\n";
+
+fn exported_scalar(value: impl Into<String>) -> Variable {
+    Variable {
+        value: VariableValue::Scalar(value.into()),
+        attrs: VariableAttrs::EXPORTED,
+    }
+}
+
+fn shell_scalar(value: impl Into<String>) -> Variable {
+    Variable {
+        value: VariableValue::Scalar(value.into()),
+        attrs: VariableAttrs::empty(),
+    }
+}
+
+pub(crate) fn ensure_shell_internal_vars(state: &mut InterpreterState) {
+    for (name, value) in [("OPTIND", "1"), ("OPTERR", "1"), ("IFS", DEFAULT_IFS)] {
+        state
+            .env
+            .entry(name.to_string())
+            .or_insert_with(|| shell_scalar(value));
+    }
+
+    state
+        .env
+        .entry("SHELLOPTS".to_string())
+        .or_insert(Variable {
+            value: VariableValue::Scalar(String::new()),
+            attrs: VariableAttrs::READONLY,
+        });
+    state.env.entry("BASHOPTS".to_string()).or_insert(Variable {
+        value: VariableValue::Scalar(String::new()),
+        attrs: VariableAttrs::READONLY,
+    });
+
+    state
+        .env
+        .entry("PS4".to_string())
+        .or_insert_with(|| shell_scalar("+ "));
+}
+
+pub(crate) fn ensure_nested_shell_startup_vars(state: &mut InterpreterState) {
+    for (name, value) in [
+        ("PATH", DEFAULT_PATH),
+        ("SHELL", DEFAULT_SHELL_PATH),
+        ("BASH", DEFAULT_SHELL_PATH),
+        ("BASH_VERSION", DEFAULT_BASH_VERSION),
+    ] {
+        state
+            .env
+            .entry(name.to_string())
+            .or_insert_with(|| exported_scalar(value));
+    }
+
+    state
+        .env
+        .entry("PWD".to_string())
+        .or_insert_with(|| exported_scalar(state.cwd.clone()));
+
+    if state.interactive_shell {
+        state
+            .env
+            .entry("HISTFILE".to_string())
+            .or_insert_with(|| shell_scalar(".bash_history"));
+    }
+
+    ensure_shell_internal_vars(state);
+}
+
+pub(crate) fn next_child_pid(state: &mut InterpreterState) -> u32 {
+    let pid = state.next_process_id;
+    state.next_process_id += 1;
+    pid
+}
+
+pub(crate) fn fold_child_process_state(parent: &mut InterpreterState, child: &InterpreterState) {
+    parent.next_process_id = parent.next_process_id.max(child.next_process_id);
 }
 
 // ── Parsing ──────────────────────────────────────────────────────────
@@ -1457,6 +1563,12 @@ mod tests {
             control_flow: None,
             positional_params: Vec::new(),
             shell_name: "rust-bash".to_string(),
+            shell_pid: 1000,
+            bash_pid: 1000,
+            parent_pid: 1,
+            next_process_id: 1001,
+            last_background_pid: None,
+            last_background_status: None,
             interactive_shell: false,
             invoked_with_c: false,
             random_seed: 42,
@@ -1466,6 +1578,7 @@ mod tests {
             traps: HashMap::new(),
             in_trap: false,
             errexit_suppressed: 0,
+            errexit_bang_suppressed: 0,
             stdin_offset: 0,
             current_stdin_persistent_fd: None,
             dir_stack: Vec::new(),
@@ -1474,6 +1587,7 @@ mod tests {
             current_lineno: 0,
             current_source: "main".to_string(),
             current_source_text: String::new(),
+            last_verbose_line: 0,
             shell_start_time: Instant::now(),
             last_argument: String::new(),
             call_stack: Vec::new(),
@@ -1488,6 +1602,7 @@ mod tests {
             pending_cmdsub_stderr: String::new(),
             fatal_expansion_error: false,
             last_command_had_error: false,
+            last_status_immune_to_errexit: false,
         }
     }
 }
