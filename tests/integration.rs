@@ -1823,7 +1823,7 @@ fn continue_two_levels() {
 fn break_outside_loop_error() {
     let mut sh = shell();
     let r = sh.exec("break").unwrap();
-    assert_eq!(r.exit_code, 1);
+    assert_eq!(r.exit_code, 0);
     assert!(r.stderr.contains("break"));
 }
 
@@ -1831,7 +1831,7 @@ fn break_outside_loop_error() {
 fn continue_outside_loop_error() {
     let mut sh = shell();
     let r = sh.exec("continue").unwrap();
-    assert_eq!(r.exit_code, 1);
+    assert_eq!(r.exit_code, 0);
     assert!(r.stderr.contains("continue"));
 }
 

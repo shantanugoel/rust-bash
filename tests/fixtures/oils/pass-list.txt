@@ -746,6 +746,7 @@ builtin-set.test:set -o lists options
 builtin-set.test:set -u error can break out of nested evals
 builtin-set.test:set -u with undefined variable exits the interpreter
 builtin-set.test:set -u -- x y z
+builtin-set.test:set -u -- clears argv
 builtin-set.test:set with both options and argv
 builtin-set.test:variables set before set -a are not exported
 builtin-special.test:Non-special builtins CAN be redefined as functions
@@ -932,6 +933,7 @@ extglob-files.test:Extended glob as argument to ${undef:-} (dynamic globbing)
 extglob-files.test:Extended glob in same word as array
 extglob-files.test:Extended glob patterns with spaces
 extglob-files.test:Extended glob with word splitting
+extglob-files.test:Escaping of pipe (glibc bug, see demo/glibc_fnmatch.c)
 extglob-files.test:failglob
 extglob-files.test:Filenames with spaces
 extglob-files.test:Glob other punctuation chars (lexer mode)
@@ -1039,6 +1041,7 @@ glob.test:Glob after var manipulation
 glob.test:glob backslash escape
 glob.test:glob double quote escape
 glob.test:glob double quotes
+glob.test:glob escaped
 glob.test:Glob flags on file system
 glob.test:glob inside array
 glob.test:Glob of negated unescaped [[] and []]
@@ -1101,6 +1104,7 @@ here-doc.test:Two here docs -- first is ignored; second ones wins!
 if_.test:elif
 if_.test:else
 if_.test:If
+if_.test:if break corner case
 if_.test:Long style
 introspect.test:${FUNCNAME} with prefix/suffix operators
 introspect.test:operators on FUNCNAME
@@ -1115,6 +1119,7 @@ loop.test:break in condition of nested loop
 loop.test:builtin,command break,continue,return,exit
 loop.test:continue
 loop.test:continue at top level
+loop.test:continue in subshell aborts with errexit
 loop.test:continue in subshell
 loop.test:for loop with invalid identifier
 loop.test:implicit for loop
@@ -1155,6 +1160,7 @@ nocasematch-match.test:[[ regex matching
 paren-ambiguity.test:$(( closed with ) ) after multiple lines is command - #2337
 paren-ambiguity.test:$(( closed with )) after multiple lines is parse error - #2337
 paren-ambiguity.test:$((which example - command sub versus arith sub - gnunet-gtk package
+paren-ambiguity.test:(( closed with ) ) after multiple lines is command - #2337
 paren-ambiguity.test:(( closed with )) after multiple lines is parse error - #2337
 paren-ambiguity.test:(((grep example - 4+ instances in regtest/aports - #2337
 paren-ambiguity.test:((gzip example - zdiff package - #2337
@@ -1249,6 +1255,7 @@ redirect-command.test:redirect for loop
 redirect-command.test:Redirect function stdout
 redirect-command.test:redirect if
 redirect-command.test:Redirect in assignment
+redirect-command.test:Redirect in command sub
 redirect-command.test:Redirect in function body
 redirect-command.test:Redirect in function body AND function call
 redirect-command.test:Redirect in the middle of a simple command
@@ -1346,15 +1353,18 @@ sh-func.test:Assign local separately
 sh-func.test:Dynamic Scope
 sh-func.test:Dynamic Scope Mutation (wow this is bad)
 sh-func.test:Globals leak
+sh-func.test:Locals don't leak
 sh-func.test:return $empty
 sh-func.test:return "" (a lot of disagreement)
 sh-func.test:Return statement
 sh-func.test:Return without args gives previous
 sh-func.test:Scope of global variable when sourced in function (Shell Functions aren't Closures)
+sh-func.test:Subshell function
 sh-options-bash.test:If shopt --set xtrace is allowed, it should update SHELLOPTS, not BASHOPTS
 sh-options-bash.test:SHELLOPTS and BASHOPTS are non-empty
 sh-options-bash.test:SHELLOPTS is readonly
 sh-options-bash.test:SHELLOPTS is updated when options are changed
+sh-options-bash.test:OSH calling bash with SHELLOPTS does not change braceexpand
 sh-options-bash.test:shopt -s progcomp hostcomplete are stubs (bash-completion)
 sh-options.test:$- and more options
 sh-options.test:$- with pipefail
@@ -1405,6 +1415,7 @@ smoke.test:command sub
 smoke.test:command sub with builtin
 smoke.test:failed command
 smoke.test:for loop
+smoke.test:here doc with var
 smoke.test:here doc with builtin
 smoke.test:here doc without var
 smoke.test:Here doc with redirect
@@ -1417,6 +1428,8 @@ smoke.test:vars
 strict-options.test:Arrays are incorrectly compared, but strict_array prevents it
 strict-options.test:automatically creating arrays are INDEXED, not associative
 strict-options.test:automatically creating arrays WITHOUT strict_array
+strict-options.test:break at top level is NOT an error
+strict-options.test:continue at top level is NOT an error
 strict-options.test:empty argv WITH strict_argv
 strict-options.test:return at top level is an error
 strict-options.test:shopt -s strict_binding: Persistent prefix bindings not allowed on special builtins
@@ -1424,7 +1437,9 @@ strict-options.test:simple_eval_builtin
 strict-options.test:strict_arith option
 strict-options.test:strict_parse_slice means you need explicit  length
 subshell.test:Subshell exit code
+subshell.test:Subshell with redirects
 temp-binding.test:FOO=bar $unset - temp binding, then empty argv from unquoted unset var (#2411)
+temp-binding.test:More eval 'local v='
 temp-binding.test:Temp bindings with local
 temp-binding.test:Temp bindings with unset
 tilde.test:a[x]=foo:~ has tilde expansion
@@ -1690,6 +1705,7 @@ whitespace.test:whitespace in string to integer conversion
 word-eval.test:Default values -- more cases
 word-eval.test:Evaluation of constant parts
 word-eval.test:Evaluation of each part
+word-eval.test:Globbing escaping
 word-eval.test:Globbing after splitting
 word-eval.test:Word elision
 word-eval.test:Word joining

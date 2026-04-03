@@ -186,6 +186,10 @@ fn execute_oils_case(file_stem: &str, case: &OilsTestCase) -> Option<String> {
             "/repo/spec/testdata/utf8-chars.txt".into(),
             "aaμa€a𐍈".as_bytes().to_vec(),
         ),
+        (
+            "/repo/spec/testdata/define-local-var-z.sh".into(),
+            b"local z=z\n".to_vec(),
+        ),
     ]));
 
     let mut sh = match builder.build() {

@@ -2153,6 +2153,9 @@ fn execute_arithmetic(
             Err(RustBashError::Execution(msg))
         }
         Err(e) => {
+            if let Some(result) = try_execute_multiline_paren_ambiguity_command(arith, state)? {
+                return Ok(result);
+            }
             // Non-fatal arithmetic error: set exit code 1 and continue
             Ok(ExecResult {
                 stderr: format!("rust-bash: {e}\n"),
@@ -2259,6 +2262,52 @@ fn raw_arithmetic_command_contains_invalid_hash(raw_command: &str) -> bool {
     }
 
     false
+}
+
+fn try_execute_multiline_paren_ambiguity_command(
+    arith: &ast::ArithmeticCommand,
+    state: &mut InterpreterState,
+) -> Result<Option<ExecResult>, RustBashError> {
+    if state.current_source_text.is_empty() {
+        return Ok(None);
+    }
+
+    let Some(raw_command) = char_range_slice(
+        &state.current_source_text,
+        arith.loc.start.index,
+        arith.loc.end.index,
+    ) else {
+        return Ok(None);
+    };
+
+    let trimmed = raw_command.trim();
+    if !trimmed.starts_with("((") || !trimmed.ends_with(") )") || !trimmed.contains('\n') {
+        return Ok(None);
+    }
+
+    let Some(inner) = raw_command
+        .strip_prefix("((")
+        .and_then(|command| command.strip_suffix(") )"))
+    else {
+        return Ok(None);
+    };
+    let mut rewritten = String::from("( {");
+    rewritten.push_str(inner);
+    if !inner.ends_with('\n') && !inner.trim_end().ends_with(';') {
+        rewritten.push(';');
+    }
+    rewritten.push_str("} )");
+
+    let program = match parse(&rewritten) {
+        Ok(program) => program,
+        Err(_) => return Ok(None),
+    };
+
+    let saved_source_text = std::mem::replace(&mut state.current_source_text, rewritten.clone());
+    let result = execute_program(&program, state);
+    state.current_source_text = saved_source_text;
+
+    result.map(Some)
 }
 
 fn is_base_literal_hash(chars: &[char], hash_index: usize) -> bool {
@@ -2525,9 +2574,9 @@ fn execute_subshell(
         positional_params: state.positional_params.clone(),
         shell_name: state.shell_name.clone(),
         random_seed: state.random_seed,
-        local_scopes: Vec::new(),
-        temp_binding_scopes: Vec::new(),
-        in_function_depth: 0,
+        local_scopes: state.local_scopes.clone(),
+        temp_binding_scopes: state.temp_binding_scopes.clone(),
+        in_function_depth: state.in_function_depth,
         traps: state.traps.clone(),
         in_trap: false,
         errexit_suppressed: 0,
@@ -3293,7 +3342,8 @@ fn expand_heredoc_body(
     state: &mut InterpreterState,
 ) -> Result<String, RustBashError> {
     let mut body = if heredoc.requires_expansion {
-        let mut expanded_input = String::new();
+        let mut expanded_input = String::with_capacity(heredoc.doc.value.len() + 2);
+        expanded_input.push('"');
         let mut chars = heredoc.doc.value.chars().peekable();
         while let Some(ch) = chars.next() {
             if ch == '\\' {
@@ -3301,21 +3351,17 @@ fn expand_heredoc_body(
                     Some('\n') => {
                         chars.next();
                     }
-                    Some('\\') => {
+                    Some(next @ ('\\' | '$' | '`')) => {
                         chars.next();
-                        expanded_input.push_str("__RB_HEREDOC_BSLASH__");
-                    }
-                    Some('$') => {
-                        chars.next();
-                        expanded_input.push_str("__RB_HEREDOC_DOLLAR__");
-                    }
-                    Some('`') => {
-                        chars.next();
-                        expanded_input.push_str("__RB_HEREDOC_BQUOTE__");
+                        expanded_input.push('\\');
+                        expanded_input.push(next);
                     }
                     Some('"') => {
                         chars.next();
-                        expanded_input.push_str("__RB_HEREDOC_DQ__");
+                        expanded_input.push('\\');
+                        expanded_input.push('\\');
+                        expanded_input.push('\\');
+                        expanded_input.push('"');
                     }
                     Some(other) => {
                         expanded_input.push('\\');
@@ -3324,23 +3370,22 @@ fn expand_heredoc_body(
                     }
                     None => expanded_input.push('\\'),
                 }
+            } else if ch == '"' {
+                expanded_input.push('\\');
+                expanded_input.push('"');
             } else {
                 expanded_input.push(ch);
             }
         }
+        expanded_input.push('"');
 
-        let expanded = expand_word_to_string_mut(
+        expand_word_to_string_mut(
             &ast::Word {
                 value: expanded_input,
                 loc: heredoc.doc.loc.clone(),
             },
             state,
-        )?;
-        expanded
-            .replace("__RB_HEREDOC_BSLASH__", "\\")
-            .replace("__RB_HEREDOC_DOLLAR__", "$")
-            .replace("__RB_HEREDOC_BQUOTE__", "`")
-            .replace("__RB_HEREDOC_DQ__", "\\\"")
+        )?
     } else {
         heredoc.doc.value.clone()
     };

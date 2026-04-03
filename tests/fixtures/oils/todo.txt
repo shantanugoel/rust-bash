@@ -1,7 +1,7 @@
 # Ordered Oils fix queue as of 2026-04-03.
 # Source of truth: current `tests/fixtures/oils/pass-list.txt` plus `tests/oils_spec.rs`
 # skip rules and `tests/common/oils_format.rs` case parsing.
-# Current totals: 2024 pass / 435 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
+# Current totals: 1780 pass / 419 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
 #
 # ── How the Oils test infra works ──
 # Runner:      tests/oils_spec.rs (datatest_stable harness, discovers .test.sh files)
@@ -25,15 +25,6 @@
 # `nul-bytes.test` and `unicode.test` stay deferred to Milestone 9 work.
 # `builtin-cd.test` and `redirect.test` stay on the queue, but expect a small VFS/symlink/fd tail to remain until M9.
 
-## Parser, Expansion, Quoting, Assignment
-- sh-func.test (xfail=2) shell-function parsing / invocation tail
-- word-eval.test (xfail=1) word evaluation corner cases
-- temp-binding.test (xfail=1) temporary binding semantics
-- if_.test (xfail=1) `if` control-flow edge case
-- paren-ambiguity.test (xfail=1) parenthesis parse ambiguity tail
-- smoke.test (xfail=1) keep green after upstream parser fixes
-- subshell.test (xfail=1) small subshell semantic tail tied to core parsing/execution
-
 ## Builtins, Shell State, Options, Control, Tracing
 - builtin-read.test (xfail=26) `read` / `mapfile` semantics remain the biggest builtin gap
 - builtin-printf.test (xfail=14) format handling, escapes, integer conversion, `%T`, `%b`, `-v`
@@ -42,7 +33,7 @@
 - dbracket.test (xfail=6) `[[ ... ]]` parse/runtime semantics
 - xtrace.test (xfail=5) tracing output fidelity and `PS4` behavior
 - vars-special.test (xfail=12) `BASHPID`, `LINENO`, `$_`, startup defaults, pipeline state
-- builtin-set.test (xfail=7) `set` flag handling and side effects
+- builtin-set.test (xfail=6) `set` flag handling and side effects
 - errexit.test (xfail=12) `set -e` / redirection / alias / function behavior
 - builtin-echo.test (xfail=3) escape behavior and bash echo quirks
 - command_.test (xfail=11) command lookup / PATH / cache / script execution behavior
@@ -51,10 +42,10 @@
 - builtin-vars.test (xfail=7) `unset`, `local`, export / scope edge cases
 - builtin-bracket.test (xfail=10) `test` / `[` predicate fidelity
 - builtin-special.test (xfail=8) POSIX special builtin semantics
-- strict-options.test (xfail=8) strict mode control-flow / argv behavior
+- strict-options.test (xfail=6) strict mode control-flow / argv behavior
 - builtin-getopts.test (xfail=6) `getopts`, `OPTIND`, `OPTARG` edge cases
-- loop.test (xfail=6) `break` / `continue` / loop validation tail
-- sh-options-bash.test (xfail=4) `SHELLOPTS` / `BASHOPTS` fidelity
+- loop.test (xfail=5) `break` / `continue` / loop validation tail
+- sh-options-bash.test (xfail=3) `SHELLOPTS` / `BASHOPTS` fidelity
 - builtin-meta-assign.test (xfail=1) assignment-builtin interaction tail
 - case_.test (xfail=3) `case` parsing / pattern tail
 - exit-status.test (xfail=3) shell exit-code bookkeeping
@@ -80,14 +71,14 @@
 - redirect.test (xfail=7) redirection semantics; leave the final fd/VFS tail for M9
 - builtin-cd.test (xfail=7) `cd` / `pwd` semantics; leave the final symlink/PWD fidelity tail for M9
 - redirect-multi.test (xfail=1) multi-redirect word expansion and ambiguity tail
-- glob.test (xfail=5) remaining glob semantics and locale/order edge cases
+- glob.test (xfail=4) remaining glob semantics and locale/order edge cases
 - tilde.test (xfail=3) tilde expansion tail
 - globignore.test (xfail=4) `GLOBIGNORE` interaction semantics
 - process-sub.test (xfail=3) process substitution semantics
 - serialize.test (xfail=5) shell state serialization / `%q` / `set` output fidelity
-- redirect-command.test (xfail=5) command + redirect interaction semantics
+- redirect-command.test (xfail=4) command + redirect interaction semantics
 - redir-order.test (xfail=4) redirect ordering semantics
-- extglob-files.test (xfail=3) extglob filesystem matching tail
+- extglob-files.test (xfail=2) extglob filesystem matching tail
 - extglob-match.test (xfail=2) extglob matcher semantics
 - pipeline.test (xfail=9) pipeline execution semantics
 - glob-bash.test (xfail=1) bash-specific glob behavior tail

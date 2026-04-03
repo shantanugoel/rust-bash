@@ -642,7 +642,7 @@ fn builtin_break(
     if state.loop_depth == 0 {
         return Ok(ExecResult {
             stderr: "break: only meaningful in a `for', `while', or `until' loop\n".to_string(),
-            exit_code: 1,
+            exit_code: 0,
             ..ExecResult::default()
         });
     }
@@ -664,7 +664,7 @@ fn builtin_continue(
     if state.loop_depth == 0 {
         return Ok(ExecResult {
             stderr: "continue: only meaningful in a `for', `while', or `until' loop\n".to_string(),
-            exit_code: 1,
+            exit_code: 0,
             ..ExecResult::default()
         });
     }

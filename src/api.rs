@@ -1572,6 +1572,13 @@ mod tests {
     }
 
     #[test]
+    fn subshell_function_can_return() {
+        let mut shell = shell();
+        let result = shell.exec("f() ( return 42; )\nf\necho $?\n").unwrap();
+        assert_eq!(result.stdout, "42\n");
+    }
+
+    #[test]
     fn subshell_isolates_fs_writes() {
         let mut shell = shell();
         shell.exec("(echo data > /subshell_file.txt)").unwrap();
@@ -1613,6 +1620,59 @@ mod tests {
         let mut shell = shell();
         let result = shell.exec("if true; then echo yes; fi | cat").unwrap();
         assert_eq!(result.stdout, "yes\n");
+    }
+
+    #[test]
+    fn if_break_outside_loop_still_takes_then_branch() {
+        let mut shell = shell();
+        let result = shell
+            .exec("f() { if break; then echo hi; fi; }\nf\n")
+            .unwrap();
+        assert_eq!(result.stdout, "hi\n");
+        assert!(result.stderr.contains("break: only meaningful"));
+        assert_eq!(result.exit_code, 0);
+    }
+
+    #[test]
+    fn multiline_double_paren_can_parse_as_command_group() {
+        let mut shell = shell();
+        let result = shell
+            .exec("(( echo 1\necho 2\n(( x ))\n: $(( x ))\necho 3\n) )\n")
+            .unwrap();
+        assert_eq!(result.stdout, "1\n2\n3\n");
+    }
+
+    #[test]
+    fn expanding_heredoc_treats_quotes_as_literal_text() {
+        let mut shell = shell();
+        let result = shell.exec("v=one\ntac <<EOF\n$v\n\"two\nEOF\n").unwrap();
+        assert_eq!(result.stdout, "\"two\none\n");
+    }
+
+    #[test]
+    fn expanding_heredoc_preserves_backslash_quote_sequences() {
+        let mut shell = shell();
+        let result = shell.exec("cat <<EOF\na \\\"quote\\\"\nEOF\n").unwrap();
+        assert_eq!(result.stdout, "a \\\"quote\\\"\n");
+    }
+
+    #[test]
+    fn quoted_glob_prefix_stays_literal() {
+        let mut shell = shell();
+        shell.exec("mkdir -p _tmp").unwrap();
+        shell
+            .exec("touch '_tmp/[bc]ar.mm' _tmp/bar.mm _tmp/car.mm")
+            .unwrap();
+        let result = shell.exec("echo '_tmp/[bc]'*.mm - _tmp/?ar.mm").unwrap();
+        assert_eq!(result.stdout, "_tmp/[bc]ar.mm - _tmp/bar.mm _tmp/car.mm\n");
+    }
+
+    #[test]
+    fn env_command_runs_inside_redirected_subshell() {
+        let mut shell = shell();
+        shell.exec("( env echo 2 ) > b.txt").unwrap();
+        let result = shell.exec("cat b.txt").unwrap();
+        assert_eq!(result.stdout, "2\n");
     }
 
     // ── Phase 1C: New commands ──────────────────────────────────

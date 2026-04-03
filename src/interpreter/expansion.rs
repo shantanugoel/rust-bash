@@ -1719,6 +1719,7 @@ fn ifs_preserves_unquoted_empty(state: &InterpreterState) -> bool {
 /// A word after IFS splitting, carrying glob eligibility metadata.
 struct SplitWord {
     text: String,
+    glob_pattern: String,
     /// True if the word may contain unquoted glob metacharacters.
     may_glob: bool,
 }
@@ -1738,7 +1739,7 @@ fn finalize_with_ifs_split(words: Vec<WordInProgress>, state: &InterpreterState)
     // When extglob is enabled, mark words containing extglob syntax as glob-eligible
     if extglob {
         for w in &mut result {
-            if !w.may_glob && has_extglob_pattern(&w.text) {
+            if !w.may_glob && has_extglob_pattern(&w.glob_pattern) {
                 w.may_glob = true;
             }
         }
@@ -1757,6 +1758,34 @@ fn finalize_no_split(words: Vec<WordInProgress>) -> Vec<String> {
 /// Check whether a character is a glob metacharacter.
 fn is_glob_meta(c: char) -> bool {
     matches!(c, '*' | '?' | '[')
+}
+
+fn is_glob_special(c: char) -> bool {
+    matches!(
+        c,
+        '*' | '?' | '[' | ']' | '\\' | '(' | ')' | '|' | '@' | '+' | '!'
+    )
+}
+
+fn append_glob_pattern_char(pattern: &mut String, c: char, glob_protected: bool) {
+    if glob_protected && is_glob_special(c) {
+        pattern.push('\\');
+    }
+    pattern.push(c);
+}
+
+fn push_split_char(
+    current: &mut String,
+    current_glob_pattern: &mut String,
+    current_may_glob: &mut bool,
+    c: char,
+    glob_protected: bool,
+) {
+    current.push(c);
+    append_glob_pattern_char(current_glob_pattern, c, glob_protected);
+    if !glob_protected && is_glob_meta(c) {
+        *current_may_glob = true;
+    }
 }
 
 /// Check whether a string contains extglob syntax like `@(`, `+(`, `*(`, `?(`, `!(`.
@@ -1802,6 +1831,7 @@ fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
         if word_has_quoted || word_has_synthetic_empty {
             result.push(SplitWord {
                 text: String::new(),
+                glob_pattern: String::new(),
                 may_glob: false,
             });
         }
@@ -1811,8 +1841,16 @@ fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
     // Fast path: entirely quoted → single word, no splitting.
     if chars.iter().all(|(_, q, _)| *q) {
         let s: String = chars.iter().map(|(c, _, _)| c).collect();
+        let mut glob_pattern = String::with_capacity(s.len());
+        for (c, _, gp) in &chars {
+            append_glob_pattern_char(&mut glob_pattern, *c, *gp);
+        }
         let may_glob = chars.iter().any(|(c, _, gp)| !gp && is_glob_meta(*c));
-        result.push(SplitWord { text: s, may_glob });
+        result.push(SplitWord {
+            text: s,
+            glob_pattern,
+            may_glob,
+        });
         return;
     }
 
@@ -1832,6 +1870,7 @@ fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
     let len = chars.len();
     let result_start = result.len();
     let mut current = String::new();
+    let mut current_glob_pattern = String::new();
     let mut current_may_glob = false;
     let mut has_content = false;
     let mut i = 0;
@@ -1843,6 +1882,7 @@ fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
         // Emit the leading empty field anchor.
         result.push(SplitWord {
             text: String::new(),
+            glob_pattern: String::new(),
             may_glob: false,
         });
     } else {
@@ -1859,16 +1899,20 @@ fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
     while i < len {
         let (c, quoted, glob_protected) = chars[i];
         if quoted {
-            current.push(c);
-            if !glob_protected && is_glob_meta(c) {
-                current_may_glob = true;
-            }
+            push_split_char(
+                &mut current,
+                &mut current_glob_pattern,
+                &mut current_may_glob,
+                c,
+                glob_protected,
+            );
             has_content = true;
             i += 1;
         } else if is_ifs_nw(c) {
             // Non-whitespace IFS delimiter: always produces a field boundary.
             result.push(SplitWord {
                 text: std::mem::take(&mut current),
+                glob_pattern: std::mem::take(&mut current_glob_pattern),
                 may_glob: current_may_glob,
             });
             current_may_glob = false;
@@ -1891,6 +1935,7 @@ fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
             if has_content || !current.is_empty() {
                 result.push(SplitWord {
                     text: std::mem::take(&mut current),
+                    glob_pattern: std::mem::take(&mut current_glob_pattern),
                     may_glob: current_may_glob,
                 });
                 current_may_glob = false;
@@ -1898,10 +1943,13 @@ fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
             }
         } else {
             // Regular character (not IFS).
-            current.push(c);
-            if !glob_protected && is_glob_meta(c) {
-                current_may_glob = true;
-            }
+            push_split_char(
+                &mut current,
+                &mut current_glob_pattern,
+                &mut current_may_glob,
+                c,
+                glob_protected,
+            );
             has_content = true;
             i += 1;
         }
@@ -1913,6 +1961,7 @@ fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
     if had_content {
         result.push(SplitWord {
             text: current,
+            glob_pattern: current_glob_pattern,
             may_glob: current_may_glob,
         });
     } else if word_has_quoted && result_start == result.len() && !trailing_empty_quoted {
@@ -1921,6 +1970,7 @@ fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
         // one empty field. Skip when trailing anchor will handle it.
         result.push(SplitWord {
             text: String::new(),
+            glob_pattern: String::new(),
             may_glob: false,
         });
     }
@@ -1933,6 +1983,7 @@ fn ifs_split_word(word: &[Segment], ifs: &str, result: &mut Vec<SplitWord>) {
     if trailing_empty_quoted && !had_content {
         result.push(SplitWord {
             text: String::new(),
+            glob_pattern: String::new(),
             may_glob: false,
         });
     }
@@ -1985,7 +2036,7 @@ fn glob_expand_words(
             continue;
         }
 
-        match state.fs.glob_with_opts(&w.text, &cwd, &opts) {
+        match state.fs.glob_with_opts(&w.glob_pattern, &cwd, &opts) {
             Ok(matches) if !matches.is_empty() => {
                 if matches.len() > max {
                     return Err(RustBashError::LimitExceeded {

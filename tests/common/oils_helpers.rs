@@ -108,7 +108,6 @@ impl VirtualCommand for PrintenvPyCommand {
                 ctx.env.get(name.as_str()).cloned()
             };
             match val {
-                Some(v) if v.is_empty() => {}
                 Some(v) => out.push_str(&format!("{v}\n")),
                 None => out.push_str("None\n"),
             }

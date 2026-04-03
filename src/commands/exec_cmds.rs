@@ -253,7 +253,7 @@ impl super::VirtualCommand for XargsCommand {
 }
 
 /// Shell-escape and join args into a command string for the exec callback.
-fn shell_join(parts: &[String]) -> String {
+pub(crate) fn shell_join(parts: &[String]) -> String {
     parts
         .iter()
         .map(|p| {

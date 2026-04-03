@@ -2,7 +2,9 @@
 //! md5sum, sha256sum, whoami, hostname, uname, yes
 
 use super::CommandMeta;
+use crate::commands::exec_cmds::shell_join;
 use crate::commands::{CommandContext, CommandResult};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 fn resolve_path(path_str: &str, cwd: &str) -> PathBuf {
@@ -557,12 +559,37 @@ pub struct EnvCommand;
 
 static ENV_META: CommandMeta = CommandMeta {
     name: "env",
-    synopsis: "env",
-    description: "Print the current environment.",
+    synopsis: "env [-i] [NAME=VALUE ...] [COMMAND [ARG ...]]",
+    description: "Print the environment or run a command with modified environment variables.",
     options: &[],
     supports_help_flag: true,
     flags: &[],
 };
+
+fn render_env(env: &HashMap<String, String>) -> String {
+    let mut stdout = String::new();
+    let mut keys: Vec<&String> = env.keys().collect();
+    keys.sort();
+    for key in keys {
+        if let Some(val) = env.get(key) {
+            stdout.push_str(&format!("{key}={val}\n"));
+        }
+    }
+    stdout
+}
+
+fn parse_env_assignment(arg: &str) -> Option<(&str, &str)> {
+    let (name, value) = arg.split_once('=')?;
+    let mut chars = name.chars();
+    let first = chars.next()?;
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return None;
+    }
+    if !chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric()) {
+        return None;
+    }
+    Some((name, value))
+}
 
 impl super::VirtualCommand for EnvCommand {
     fn name(&self) -> &str {
@@ -573,18 +600,74 @@ impl super::VirtualCommand for EnvCommand {
         Some(&ENV_META)
     }
 
-    fn execute(&self, _args: &[String], ctx: &CommandContext) -> CommandResult {
-        let mut stdout = String::new();
-        let mut keys: Vec<&String> = ctx.env.keys().collect();
-        keys.sort();
-        for key in keys {
-            if let Some(val) = ctx.env.get(key) {
-                stdout.push_str(&format!("{key}={val}\n"));
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
+        let mut clear_env = false;
+        let mut idx = 0usize;
+        while idx < args.len() {
+            match args[idx].as_str() {
+                "-i" | "--ignore-environment" | "-" => {
+                    clear_env = true;
+                    idx += 1;
+                }
+                _ => break,
             }
         }
-        CommandResult {
-            stdout,
-            ..Default::default()
+
+        if idx == 0
+            && args.first().is_some_and(|arg| {
+                arg.starts_with('-') && arg != "-" && arg != "-i" && arg != "--ignore-environment"
+            })
+        {
+            return CommandResult {
+                stderr: format!("env: unsupported option '{}'\n", args[0]),
+                exit_code: 125,
+                ..Default::default()
+            };
+        }
+
+        let mut env = if clear_env {
+            HashMap::new()
+        } else {
+            (*ctx.env).clone()
+        };
+        while idx < args.len() {
+            let Some((name, value)) = parse_env_assignment(&args[idx]) else {
+                break;
+            };
+            env.insert(name.to_string(), value.to_string());
+            idx += 1;
+        }
+
+        if idx == args.len() {
+            return CommandResult {
+                stdout: render_env(&env),
+                ..Default::default()
+            };
+        }
+
+        if clear_env {
+            return CommandResult {
+                stderr: "env: executing commands with -i is not supported yet\n".into(),
+                exit_code: 125,
+                ..Default::default()
+            };
+        }
+
+        let Some(exec) = ctx.exec else {
+            return CommandResult {
+                stderr: "env: command execution unavailable\n".into(),
+                exit_code: 125,
+                ..Default::default()
+            };
+        };
+
+        match exec(&shell_join(args)) {
+            Ok(result) => result,
+            Err(err) => CommandResult {
+                stderr: format!("env: {err}\n"),
+                exit_code: 125,
+                ..Default::default()
+            },
         }
     }
 }
@@ -614,16 +697,8 @@ impl super::VirtualCommand for PrintenvCommand {
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
         if args.is_empty() {
             // Same as env
-            let mut stdout = String::new();
-            let mut keys: Vec<&String> = ctx.env.keys().collect();
-            keys.sort();
-            for key in keys {
-                if let Some(val) = ctx.env.get(key) {
-                    stdout.push_str(&format!("{key}={val}\n"));
-                }
-            }
             return CommandResult {
-                stdout,
+                stdout: render_env(ctx.env),
                 ..Default::default()
             };
         }
@@ -2246,6 +2321,33 @@ mod tests {
         let r = EnvCommand.execute(&[], &c);
         assert!(r.stdout.contains("USER=testuser"));
         assert!(r.stdout.contains("HOSTNAME=myhost"));
+    }
+
+    #[test]
+    fn env_executes_subcommand() {
+        let (fs, env, limits, np) = setup();
+        let exec = |command: &str| {
+            Ok(CommandResult {
+                stdout: format!("{command}\n"),
+                ..Default::default()
+            })
+        };
+        let c = CommandContext {
+            exec: Some(&exec),
+            ..ctx(&*fs, &env, &limits, &np)
+        };
+        let r = EnvCommand.execute(&["echo".into(), "2".into()], &c);
+        assert_eq!(r.stdout, "echo 2\n");
+    }
+
+    #[test]
+    fn env_assignments_affect_listing() {
+        let (fs, env, limits, np) = setup();
+        let c = ctx(&*fs, &env, &limits, &np);
+        let r = EnvCommand.execute(&["USER=override".into(), "NEW_VAR=value".into()], &c);
+        assert!(r.stdout.contains("USER=override"));
+        assert!(r.stdout.contains("NEW_VAR=value"));
+        assert!(!r.stdout.contains("USER=testuser"));
     }
 
     // ── printenv tests ───────────────────────────────────────────────

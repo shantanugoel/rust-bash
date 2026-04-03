@@ -126,9 +126,9 @@ fn parse_case(lines: &[&str]) -> OilsTestCase {
             };
 
             if let Some(val) = rest.strip_prefix("stdout: ") {
-                *stdout_slot = Some(ensure_trailing_newline_if_nonempty(val));
+                *stdout_slot = Some(ensure_trailing_newline(val));
             } else if rest == "stdout:" {
-                *stdout_slot = Some(String::new());
+                *stdout_slot = Some(ensure_trailing_newline(""));
             } else if rest == "STDOUT:" {
                 let (block, consumed) = parse_multiline_block(&meta_lines[i + 1..]);
                 *stdout_slot = Some(block);
@@ -136,9 +136,9 @@ fn parse_case(lines: &[&str]) -> OilsTestCase {
             } else if let Some(val) = rest.strip_prefix("stdout-json: ") {
                 *stdout_slot = decode_json_string(val);
             } else if let Some(val) = rest.strip_prefix("stderr: ") {
-                *stderr_slot = Some(ensure_trailing_newline_if_nonempty(val));
+                *stderr_slot = Some(ensure_trailing_newline(val));
             } else if rest == "stderr:" {
-                *stderr_slot = Some(String::new());
+                *stderr_slot = Some(ensure_trailing_newline(""));
             } else if rest == "STDERR:" {
                 let (block, consumed) = parse_multiline_block(&meta_lines[i + 1..]);
                 *stderr_slot = Some(block);
@@ -158,9 +158,9 @@ fn parse_case(lines: &[&str]) -> OilsTestCase {
         if let Some(val) = stripped.strip_prefix("code: ") {
             code = val.to_string();
         } else if let Some(val) = stripped.strip_prefix("stdout: ") {
-            default_stdout = Some(ensure_trailing_newline_if_nonempty(val));
+            default_stdout = Some(ensure_trailing_newline(val));
         } else if stripped == "stdout:" {
-            default_stdout = Some(String::new());
+            default_stdout = Some(ensure_trailing_newline(""));
         } else if stripped == "STDOUT:" {
             let (block, consumed) = parse_multiline_block(&meta_lines[i + 1..]);
             default_stdout = Some(block);
@@ -168,9 +168,9 @@ fn parse_case(lines: &[&str]) -> OilsTestCase {
         } else if let Some(val) = stripped.strip_prefix("stdout-json: ") {
             default_stdout = decode_json_string(val);
         } else if let Some(val) = stripped.strip_prefix("stderr: ") {
-            default_stderr = Some(ensure_trailing_newline_if_nonempty(val));
+            default_stderr = Some(ensure_trailing_newline(val));
         } else if stripped == "stderr:" {
-            default_stderr = Some(String::new());
+            default_stderr = Some(ensure_trailing_newline(""));
         } else if stripped == "STDERR:" {
             let (block, consumed) = parse_multiline_block(&meta_lines[i + 1..]);
             default_stderr = Some(block);
@@ -207,12 +207,9 @@ fn parse_case(lines: &[&str]) -> OilsTestCase {
     }
 }
 
-/// Inline stdout values in Oils format don't include a trailing newline in the annotation,
-/// but the actual shell output will have one. Add it if the string is non-empty.
-fn ensure_trailing_newline_if_nonempty(s: &str) -> String {
-    if s.is_empty() {
-        return String::new();
-    }
+/// Inline stdout/stderr values in Oils format imply a trailing newline.
+/// `stdout-json` / `stderr-json` are used for exact empty strings.
+fn ensure_trailing_newline(s: &str) -> String {
     if s.ends_with('\n') {
         s.to_string()
     } else {
@@ -416,11 +413,11 @@ pub fn run_parser_unit_tests() {
         assert_eq!(file.cases[1].name, "second");
     }
 
-    // Empty stdout
+    // Inline stdout implies a trailing newline, even when empty.
     {
         let input = "#### test\ntrue\n## stdout:\n";
         let file = parse_oils_file(input);
-        assert_eq!(file.cases[0].expected_stdout, Some(String::new()));
+        assert_eq!(file.cases[0].expected_stdout, Some("\n".to_string()));
     }
 
     // stderr-json
@@ -502,5 +499,5 @@ pub fn run_parser_unit_tests() {
         assert_eq!(file.cases[0].expected_stdout, Some("\n5\n".to_string()));
     }
 
-    eprintln!("--- oils_format parser: all 22 unit tests passed");
+    eprintln!("--- oils_format parser: all 21 unit tests passed");
 }
