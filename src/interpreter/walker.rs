@@ -1,6 +1,6 @@
 //! AST walking: execution of programs, compound lists, pipelines, and simple commands.
 
-use crate::commands::{CommandContext, CommandResult};
+use crate::commands::CommandResult;
 use crate::error::RustBashError;
 use crate::interpreter::builtins::{self, resolve_path};
 use crate::interpreter::expansion::{expand_word_mut, expand_word_to_string_mut};
@@ -761,6 +761,14 @@ fn execute_command(
         ast::Command::Function(func_def) => match validate_function_name_word(&func_def.fname) {
             Ok(()) => match expand_word_to_string_mut(&func_def.fname, state) {
                 Ok(name) => {
+                    if state.shell_opts.posix && builtins::is_special_builtin(&name) {
+                        state.should_exit = true;
+                        return Ok(ExecResult {
+                            stderr: format!("{name}: cannot define in POSIX mode\n"),
+                            exit_code: 2,
+                            ..ExecResult::default()
+                        });
+                    }
                     state.functions.insert(
                         name,
                         FunctionDef {
@@ -1882,45 +1890,6 @@ fn execute_simple_command(
         return Ok(result);
     }
 
-    // 4c. Handle `exec` builtin specially — it needs access to redirects.
-    //     Prefix assignments before `exec` are permanent (no subshell).
-    if cmd_name == "exec" {
-        // Intercept --help before exec dispatch
-        if args.first().map(|a| a.as_str()) == Some("--help")
-            && let Some(meta) = builtins::builtin_meta("exec")
-            && meta.supports_help_flag
-        {
-            return Ok(ExecResult {
-                stdout: crate::commands::format_help(meta),
-                stderr: String::new(),
-                exit_code: 0,
-                stdout_bytes: None,
-            });
-        }
-        for (raw_assign, append) in &raw_assignments {
-            let a = match process_assignment(raw_assign, *append, state) {
-                Ok(assignment) => assignment,
-                Err(RustBashError::Execution(msg)) => {
-                    if msg.contains("unbound variable") {
-                        return Err(RustBashError::Execution(msg));
-                    }
-                    return Ok(ExecResult {
-                        stderr: format!("rust-bash: {msg}\n"),
-                        exit_code: 1,
-                        ..ExecResult::default()
-                    });
-                }
-                Err(other) => return Err(other),
-            };
-            let mut dummy = ExecResult::default();
-            apply_assignment_shell_error(a, state, &mut dummy)?;
-            if dummy.exit_code != 0 {
-                return Ok(dummy);
-            }
-        }
-        return execute_exec_builtin(&args, &redirects, state, stdin);
-    }
-
     // 5. Apply temporary pre-command assignments
     // On error (e.g. readonly): print the error but still execute the command.
     // Bash skips the failing assignment but runs the command; $? is from the
@@ -1929,6 +1898,8 @@ fn execute_simple_command(
     // (e.g. FOO=foo BAR="$FOO" cmd → BAR sees FOO=foo).
     // Array element assignments (e.g. b[0]=2) are silently ignored in env
     // binding context — bash does not export them.
+    let persist_prefix_assignments =
+        state.shell_opts.posix && builtins::is_special_builtin(&cmd_name) && cmd_name != "exec";
     let mut saved: Vec<(String, Option<Variable>)> = Vec::new();
     let mut temp_binding_scope: HashMap<String, Option<Variable>> = HashMap::new();
     let mut prefix_stderr = String::new();
@@ -1960,8 +1931,9 @@ fn execute_simple_command(
         if dummy.exit_code != 0 {
             prefix_stderr.push_str(&dummy.stderr);
         }
-        // Temporary per-command bindings are exported for the duration of
-        // the command (bash behavior: `FOO=bar cmd` exports FOO to cmd).
+        // Prefix bindings are exported while the command runs. When the binding
+        // persists (POSIX special builtins), we leave the exported flag in place
+        // to preserve the current command-visible behavior.
         if let Some(var) = state.env.get_mut(a.name()) {
             var.attrs.insert(VariableAttrs::EXPORTED);
         }
@@ -2067,13 +2039,29 @@ fn execute_simple_command(
         //     (captured outside closure as `should_trace`)
 
         // 7. Dispatch command
-        let dispatch_result = dispatch_command(
-            &cmd_name,
-            &args,
-            state,
-            &effective_stdin,
-            Some(&input_redirects),
-        );
+        let dispatch_result = if cmd_name == "exec" {
+            if args.first().map(|a| a.as_str()) == Some("--help")
+                && let Some(meta) = builtins::builtin_meta("exec")
+                && meta.supports_help_flag
+            {
+                Ok(ExecResult {
+                    stdout: crate::commands::format_help(meta),
+                    stderr: String::new(),
+                    exit_code: 0,
+                    stdout_bytes: None,
+                })
+            } else {
+                execute_exec_builtin(&args, &redirects, state, &effective_stdin)
+            }
+        } else {
+            dispatch_command(
+                &cmd_name,
+                &args,
+                state,
+                &effective_stdin,
+                Some(&input_redirects),
+            )
+        };
         if input_redirects.contains_key(&0) {
             state.stdin_offset = saved_stdin_offset;
         }
@@ -2206,13 +2194,15 @@ fn execute_simple_command(
     }
 
     // 9. Restore pre-command assignments
-    for (name, old_value) in saved {
-        match old_value {
-            Some(var) => {
-                state.env.insert(name, var);
-            }
-            None => {
-                state.env.remove(&name);
+    if !persist_prefix_assignments {
+        for (name, old_value) in saved {
+            match old_value {
+                Some(var) => {
+                    state.env.insert(name, var);
+                }
+                None => {
+                    state.env.remove(&name);
+                }
             }
         }
     }
@@ -3170,7 +3160,7 @@ pub(crate) fn clone_commands(
 /// Per-invocation `command_count` resets because the `Fn` closure signature cannot
 /// fold counters back to the parent. The parent's `dispatch_command` still counts
 /// the top-level command (e.g., `xargs`/`find`) itself.
-fn make_exec_callback(
+pub(crate) fn make_exec_callback(
     state: &InterpreterState,
 ) -> impl Fn(&str, Option<&HashMap<String, String>>) -> Result<CommandResult, RustBashError> {
     let cloned_fs = state.fs.deep_clone();
@@ -3393,30 +3383,18 @@ fn dispatch_command(
 ) -> Result<ExecResult, RustBashError> {
     state.counters.command_count += 1;
     check_limits(state)?;
-    let resolved_name = if name.contains('/') {
-        let resolved_path = resolve_path(&state.cwd, name);
-        let path = Path::new(&resolved_path);
-        if !state.fs.exists(path) {
-            return Ok(ExecResult {
-                stdout: String::new(),
-                stderr: format!("{name}: command not found\n"),
-                exit_code: 127,
-                stdout_bytes: None,
-            });
-        }
-        path.file_name()
-            .and_then(|component| component.to_str())
-            .unwrap_or(name)
-            .to_string()
-    } else {
-        name.to_string()
-    };
-    let lookup_name = resolved_name.as_str();
+    if name.contains('/') {
+        return builtins::execute_path_command(name, args, state, stdin, extra_input_fds);
+    }
+    let lookup_name = name;
 
     // 0. --help interception (before builtin dispatch, function lookup, etc.)
     if args.first().map(|a| a.as_str()) == Some("--help") {
-        // Check builtins first
-        if let Some(meta) = builtins::builtin_meta(lookup_name)
+        let function_shadows_builtin = state.functions.contains_key(lookup_name)
+            && (!builtins::is_special_builtin(lookup_name) || !state.shell_opts.posix);
+        // Check builtins first, but allow regular functions to shadow regular builtins.
+        if !function_shadows_builtin
+            && let Some(meta) = builtins::builtin_meta(lookup_name)
             && meta.supports_help_flag
         {
             return Ok(ExecResult {
@@ -3426,8 +3404,9 @@ fn dispatch_command(
                 stdout_bytes: None,
             });
         }
-        // Check registered commands
-        if let Some(cmd) = state.commands.get(lookup_name)
+        // Check registered commands only when a shell function doesn't shadow them.
+        if !state.functions.contains_key(lookup_name)
+            && let Some(cmd) = state.commands.get(lookup_name)
             && let Some(meta) = cmd.meta()
             && meta.supports_help_flag
         {
@@ -3442,8 +3421,10 @@ fn dispatch_command(
     }
 
     // 1. Special shell builtins (unshadowable)
-    if let Some(result) =
-        builtins::execute_builtin(lookup_name, args, state, stdin, extra_input_fds)?
+    if state.shell_opts.posix
+        && builtins::is_special_builtin(lookup_name)
+        && let Some(result) =
+            builtins::execute_builtin(lookup_name, args, state, stdin, extra_input_fds)?
     {
         return Ok(result);
     }
@@ -3453,66 +3434,38 @@ fn dispatch_command(
         return execute_function_call(lookup_name, args, state, stdin);
     }
 
-    // 3. Registered commands
-    if let Some(cmd) = state.commands.get(lookup_name) {
-        let mut env: HashMap<String, String> = state
-            .env
-            .iter()
-            .map(|(k, v)| (k.clone(), v.value.as_scalar().to_string()))
-            .collect();
-        if let Some(extra_fds) = extra_input_fds {
-            for (fd, contents) in extra_fds {
-                if *fd == 0 {
-                    continue;
-                }
-                env.insert(format!("__RUST_BASH_FD_{fd}"), contents.clone());
-            }
-        }
-        // Clone variables for `test -v` array element checks (before mutable borrow).
-        let vars_clone = state.env.clone();
-        let fs = Arc::clone(&state.fs);
-        let cwd = state.cwd.clone();
-        let limits = state.limits.clone();
-        let network_policy = state.network_policy.clone();
-
-        // Take binary pipe data from interpreter state before borrowing state for callback
-        let binary_stdin = state.pipe_stdin_bytes.take();
-        let exec_callback = make_exec_callback(state);
-
-        let ctx = CommandContext {
-            fs: &*fs,
-            cwd: &cwd,
-            env: &env,
-            variables: Some(&vars_clone),
-            stdin,
-            stdin_bytes: binary_stdin.as_deref(),
-            limits: &limits,
-            network_policy: &network_policy,
-            exec: Some(&exec_callback),
-            shell_opts: Some(&state.shell_opts),
-        };
-
-        // xpg_echo: when enabled, echo interprets backslash escapes by default
-        let effective_args: Vec<String>;
-        let cmd_args: &[String] = if lookup_name == "echo" && state.shopt_opts.xpg_echo {
-            effective_args = std::iter::once("-e".to_string())
-                .chain(args.iter().cloned())
-                .collect();
-            &effective_args
-        } else {
-            args
-        };
-
-        let cmd_result = cmd.execute(cmd_args, &ctx);
-        return Ok(ExecResult {
-            stdout: cmd_result.stdout,
-            stderr: cmd_result.stderr,
-            exit_code: cmd_result.exit_code,
-            stdout_bytes: cmd_result.stdout_bytes,
-        });
+    // 3. Regular builtins
+    if let Some(result) =
+        builtins::execute_builtin(lookup_name, args, state, stdin, extra_input_fds)?
+    {
+        return Ok(result);
     }
 
-    // 4. Command not found
+    // 4. Cached PATH hit
+    if let Some(path) = state.command_hash.get(lookup_name).cloned() {
+        return builtins::execute_path_command(&path, args, state, stdin, extra_input_fds);
+    }
+
+    // 5. PATH search
+    if let Some(path) = builtins::search_path(lookup_name, state) {
+        state
+            .command_hash
+            .insert(lookup_name.to_string(), path.clone());
+        return builtins::execute_path_command(&path, args, state, stdin, extra_input_fds);
+    }
+
+    // 6. Registered command fallback
+    if state.commands.contains_key(lookup_name) {
+        return builtins::execute_registered_command_by_name(
+            lookup_name,
+            args,
+            state,
+            stdin,
+            extra_input_fds,
+        );
+    }
+
+    // 7. Command not found
     Ok(ExecResult {
         stdout: String::new(),
         stderr: format!("{name}: command not found\n"),
@@ -4293,6 +4246,10 @@ fn apply_persistent_fd_fallback(
                     result.stdout.clear();
                 }
             }
+            PersistentFd::DupStdFd(2) => {
+                result.stderr.push_str(&result.stdout);
+                result.stdout.clear();
+            }
             PersistentFd::DevNull | PersistentFd::Closed => {
                 result.stdout.clear();
             }
@@ -4310,6 +4267,10 @@ fn apply_persistent_fd_fallback(
                     write_or_append(state, path, &result.stderr, true)?;
                     result.stderr.clear();
                 }
+            }
+            PersistentFd::DupStdFd(1) => {
+                result.stdout.push_str(&result.stderr);
+                result.stderr.clear();
             }
             PersistentFd::DevNull | PersistentFd::Closed => {
                 result.stderr.clear();

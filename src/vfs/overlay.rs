@@ -1066,5 +1066,6 @@ fn map_std_metadata(meta: &std::fs::Metadata) -> Metadata {
         size: meta.len(),
         mode: meta.permissions().mode(),
         mtime: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+        file_id: 0,
     }
 }

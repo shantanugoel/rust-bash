@@ -367,6 +367,7 @@ impl VirtualFs for MountableFs {
                 size: 0,
                 mode: 0o755,
                 mtime: SystemTime::UNIX_EPOCH,
+                file_id: 0,
             });
         }
         Err(VfsError::NotFound(path.to_path_buf()))
@@ -384,6 +385,7 @@ impl VirtualFs for MountableFs {
                 size: 0,
                 mode: 0o755,
                 mtime: SystemTime::UNIX_EPOCH,
+                file_id: 0,
             });
         }
         Err(VfsError::NotFound(path.to_path_buf()))

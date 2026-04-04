@@ -259,6 +259,7 @@ array.test:declare -a / local -a is empty array
 array.test:declare array and then append
 array.test:Dynamic parsing of LHS a[$code]=value
 array.test:Dynamic parsing of RHS ${a[$code]}
+array.test:Exporting array doesn't do anything, not even first element
 array.test:glob within array yields separate elements
 array.test:Interpolate array into array
 array.test:Is element set?  test -v a[i]
@@ -295,6 +296,7 @@ array.test:Singleton Array Copy and Assign.  OSH can't index strings with ints
 array.test:Slice of array with [@]
 array.test:Slice of sparse array with [@]
 array.test:Slice with arithmetic
+array.test:strict_array prevents exporting array
 array.test:Stripping a whole array quoted
 array.test:Stripping a whole array unquoted
 array.test:test -v a[i] with arith expressions
@@ -493,9 +495,11 @@ builtin-bracket.test:bug from pnut: negative number $((-1))
 builtin-bracket.test:Bug regression
 builtin-bracket.test:[ compare with literal -f
 builtin-bracket.test:-d
+builtin-bracket.test:-ef
 builtin-bracket.test:[ '(' foo ] is runtime syntax error
 builtin-bracket.test:-G and -O for effective user ID and group ID
 builtin-bracket.test:-h and -L test for symlink
+builtin-bracket.test:-k for sticky bit
 builtin-bracket.test:Looks like octal, but digit is too big
 builtin-bracket.test:More negative numbers
 builtin-bracket.test:-n
@@ -505,19 +509,27 @@ builtin-bracket.test:no recursive arith [ 1+2 -eq 3 ]
 builtin-bracket.test:-nt -ot
 builtin-bracket.test:-o
 builtin-bracket.test:one arg: empty string is false.  Equivalent to -n.
+builtin-bracket.test:operator/operand ambiguity with ]
+builtin-bracket.test:operator/operand ambiguity with -a
 builtin-bracket.test:-ot and -nt
 builtin-bracket.test:Overflow error
+builtin-bracket.test:-r
 builtin-bracket.test:] syntax errors
 builtin-bracket.test:-t 1 for stdout
 builtin-bracket.test:test -b -c -S (block, character, socket)
+builtin-bracket.test:test -c
 builtin-bracket.test:test -o for options
+builtin-bracket.test:test -p named pipe
 builtin-bracket.test:test -s
 builtin-bracket.test:test -S
 builtin-bracket.test:test with extra args is syntax error
 builtin-bracket.test:[ -t invalid ]
+builtin-bracket.test:-u for setuid, -g too
 builtin-bracket.test:-v to test variable (bash)
+builtin-bracket.test:-w
 builtin-bracket.test:[ with op variable
 builtin-bracket.test:[ with unquoted empty var
+builtin-bracket.test:-x
 builtin-bracket.test:zero args: [ ]
 builtin-bracket.test:-z '>' implies two token lookahead
 builtin-cd.test:$OLDPWD
@@ -559,7 +571,10 @@ builtin-dirs.test:pushd does not take more than one argument
 builtin-dirs.test:pushd/popd
 builtin-dirs.test:pushd usage
 builtin-echo.test:\0
+builtin-echo.test:\0 \1 \8
 builtin-echo.test:\0377 is the highest octal byte
+builtin-echo.test:\0400 is one more than the highest octal byte
+builtin-echo.test:\0777 is out of range
 builtin-echo.test:\c stops processing input
 builtin-echo.test:echo backslashes
 builtin-echo.test:echo builtin should disallow typed args - literal
@@ -582,25 +597,29 @@ builtin-echo.test:incomplete octal escape
 builtin-echo.test:incomplete unicode escape
 builtin-echo.test:\u6
 builtin-echo.test:\x
-builtin-echo.test:\0400 is one more than the highest octal byte
-builtin-echo.test:\0777 is out of range
-builtin-echo.test:\0 \1 \8
 builtin-eval-source.test:Eval
 builtin-eval-source.test:eval accepts/ignores --
 builtin-eval-source.test:Eval in bash does tilde expansion in array
 builtin-eval-source.test:Eval in does tilde expansion
 builtin-eval-source.test:eval string with 'break continue return error'
+builtin-eval-source.test:eval usage
 builtin-eval-source.test:Eval with syntax error
+builtin-eval-source.test:eval YSH block with 'break continue return error'
 builtin-eval-source.test:exit within eval (regression)
 builtin-eval-source.test:exit within source (regression)
 builtin-eval-source.test:Source
 builtin-eval-source.test:source accepts/ignores --
 builtin-eval-source.test:source doesn't crash when targeting a directory
+builtin-eval-source.test:source finds files in PATH before current dir
+builtin-eval-source.test:Source from a function, mutating argv and defining a local var
+builtin-eval-source.test:source looks in PATH for files
 builtin-eval-source.test:Source nonexistent
+builtin-eval-source.test:Source with arguments
 builtin-eval-source.test:Source with no arguments
 builtin-eval-source.test:Source with syntax error
 builtin-eval-source.test:source works for files in current directory (bash only)
 builtin-eval-source.test:source works for files in subdirectory
+builtin-eval-source.test:sourcing along PATH should ignore directories
 builtin-getopts.test:Basic getopts invocation
 builtin-getopts.test:getopts doesn't look for flags after args
 builtin-getopts.test:getopts empty
@@ -636,16 +655,23 @@ builtin-meta-assign.test:Dynamic $c readonly - bash and dash change behavior, mk
 builtin-meta-assign.test:dynamic builtin command ASSIGN, command builtin ASSIGN
 builtin-meta-assign.test:export, builtin export
 builtin-meta-assign.test:static builtin command ASSIGN, command builtin ASSIGN
+builtin-meta.test:$(command type ls)
+builtin-meta.test:builtin
 builtin-meta.test:builtin command echo hi
+builtin-meta.test:builtin ls not found
+builtin-meta.test:builtin usage
 builtin-meta.test:command command seq 3
 builtin-meta.test:command command -v seq
 builtin-meta.test:command -p (hide tool in custom path)
+builtin-meta.test:command -p (override existing program)
 builtin-meta.test:command skips function lookup
 builtin-meta.test:command -v
+builtin-meta.test:command -V
 builtin-meta.test:command -v doesn't find executable dir
 builtin-meta.test:command -v doesn't find non-executable file
 builtin-meta.test:command -v executable, builtin
 builtin-meta.test:command -V nonexistent
+builtin-meta.test:command -v with multiple names
 builtin-misc.test:Invalid shift argument
 builtin-misc.test:Print shell strings with normal chars: set and printf %q and ${x@Q}
 builtin-misc.test:shift
@@ -786,26 +812,34 @@ builtin-set.test:reset option with short flag
 builtin-set.test:set -a exports declare variables
 builtin-set.test:set -a exports local variables
 builtin-set.test:set -a exports variables
+builtin-set.test:set - + and + -
+builtin-set.test:'set' and 'eval' round trip
+builtin-set.test:set - - and so forth
 builtin-set.test:set +a stops exporting
 builtin-set.test:set -eu (flag parsing)
+builtin-set.test:set - leading single dash is ignored, turns off xtrace verbose (#2364)
 builtin-set.test:set -o allexport (long form)
 builtin-set.test:set -o lists options
+builtin-set.test:set - stops option processing like set --
 builtin-set.test:set -u -- clears argv
 builtin-set.test:set -u error can break out of nested evals
 builtin-set.test:set -u with undefined variable exits the interpreter
+builtin-set.test:set -u with undefined var in interactive shell does NOT exit the interpreter
 builtin-set.test:set -u -- x y z
 builtin-set.test:set with both options and argv
 builtin-set.test:variables set before set -a are not exported
-builtin-set.test:set -u with undefined var in interactive shell does NOT exit the interpreter
-builtin-set.test:'set' and 'eval' round trip
-builtin-set.test:set - - and so forth
-builtin-set.test:set - leading single dash is ignored, turns off xtrace verbose (#2364)
-builtin-set.test:set - stops option processing like set --
-builtin-set.test:set - + and + -
+builtin-special.test:bash 'type' gets confused - says 'function', but runs builtin
+builtin-special.test:command, builtin - both can be redefined, not special (regression)
+builtin-special.test:exec without args is a special case of the special case in some shells
 builtin-special.test:Non-special builtins CAN be redefined as functions
+builtin-special.test:Prefix assignments persist after readonly, but NOT exported (set -o posix)
+builtin-special.test:Prefix assignments persist after special builtins, like : (set -o posix)
+builtin-special.test:Prefix binding for exec is a special case (versus e.g. readonly)
 builtin-special.test:set is special and fails whole script, even if using || true
 builtin-special.test:Shift is special and fails whole script
+builtin-special.test:Special builtins can't be redefined as shell functions (set -o posix)
 builtin-special.test:true is not special; prefix assignments don't persist, it can be redefined
+builtin-special.test:Which shells allow special builtins to be redefined?
 builtin-type-bash.test:type -a -> alias; prints alias definition
 builtin-type-bash.test:type -a -> builtin
 builtin-type-bash.test:type -a -> builtin and file
@@ -843,6 +877,8 @@ builtin-type.test:type -> not found
 builtin-type.test:type of relative path
 builtin-vars.test:assign to readonly variable
 builtin-vars.test:assign to readonly variable - errexit
+builtin-vars.test:can't export array (strict_array)
+builtin-vars.test:can't export associative array (strict_array)
 builtin-vars.test:Dependent export setting
 builtin-vars.test:Export a variable before defining it
 builtin-vars.test:Exporting a parent func variable (dynamic scope)
@@ -850,11 +886,13 @@ builtin-vars.test:Exporting a variable doesn't change it
 builtin-vars.test:export -n foo=bar not allowed
 builtin-vars.test:export -n undefined is ignored
 builtin-vars.test:Export sets a global variable
+builtin-vars.test:local after readonly
 builtin-vars.test:Local without variable is still unset!
 builtin-vars.test:Make an existing local variable readonly
 builtin-vars.test:unset a[-1] (bf.bash regression)
 builtin-vars.test:unset a[-1] in sparse array (bf.bash regression)
 builtin-vars.test:Unset a function without -f
+builtin-vars.test:Unset and scope (bug #653)
 builtin-vars.test:Unset array member
 builtin-vars.test:Unset array member with dynamic parsing
 builtin-vars.test:unset assoc errors
@@ -863,11 +901,14 @@ builtin-vars.test:Unset errors
 builtin-vars.test:Unset exit status
 builtin-vars.test:Unset exported variable, then define it again.  It's NOT still exported.
 builtin-vars.test:Unset has dynamic scope
+builtin-vars.test:Unset invalid variable name
 builtin-vars.test:Unset nonexistent variable#1
 builtin-vars.test:Unset nonexistent variable#2
 builtin-vars.test:unset of local reveals variable in higher scope
 builtin-vars.test:Unset readonly variable
 builtin-vars.test:unset -v assoc (related to issue #661)
+builtin-vars.test:Unset wrong type
+builtin-vars.test:Use local twice
 case_.test:case \n bug regression
 case_.test:Case statement
 case_.test:Case statement with ;&
@@ -902,11 +943,22 @@ command-sub.test:Here doc with pipeline
 command-sub.test:Making command out of command sub should work
 command-sub.test:Making keyword out of command sub should NOT work
 command-sub.test:Quoting " within ``
+command_.test:$PATH lookup
 command_.test:Command block
+command_.test:Executing command with same name as directory in PATH (#2429)
 command_.test:External programs don't have _OVM in environment
+command_.test:File in relative subdirectory and no shebang is executed
+command_.test:File with no shebang is executed
+command_.test:File with relative path and no shebang is executed
+command_.test:filling $PATH cache, then deleting command
+command_.test:filling $PATH cache, then insert the same command earlier in cache
 command_.test:hash -r doesn't allow additional args
 command_.test:hash with args
+command_.test:hash without args prints the cache
+command_.test:Name too long
+command_.test:Non-executable on $PATH
 command_.test:Not a dir
+command_.test:Permission denied
 comments.test:comment
 comments.test:not a comment without leading space x
 dbracket.test:[[ a 3< b ]] doesn't work (bug regression)
@@ -976,39 +1028,39 @@ empty-bodies.test:Empty do/done
 empty-bodies.test:Empty then/fi
 errexit.test:background processes respect errexit
 errexit.test:bash atoms [[ (( - redir failure checked
+errexit.test:brace group - redir failure checked
+errexit.test:Command sub exit code is lost
 errexit.test:errexit aborts early
 errexit.test:errexit aborts early on pipeline
+errexit.test:errexit and brace group { }
 errexit.test:errexit and loop
 errexit.test:errexit and time { }
 errexit.test:errexit double guard
 errexit.test:errexit for nonexistent command
 errexit.test:errexit test && and fail
 errexit.test:errexit test && -- from gen-module-init
+errexit.test:errexit with !
 errexit.test:errexit with &&
 errexit.test:errexit with (( ))
 errexit.test:errexit with { }
 errexit.test:errexit with ||
+errexit.test:errexit with ! and ;
 errexit.test:errexit with if and { }
 errexit.test:errexit with subshell
 errexit.test:errexit with while/until
+errexit.test:More && ||
 errexit.test:pipeline process respects errexit
 errexit.test:set -e enabled in function (regression)
+errexit.test:set -e in function #2
+errexit.test:set errexit while it's ignored in a subshell (moot with strict_errexit)
 errexit.test:set +o errexit while it's being ignored (moot with strict_errexit)
 errexit.test:set -o errexit while it's being ignored (moot with strict_errexit)
 errexit.test:set +o errexit with 2 levels of ignored
 errexit.test:setting errexit in a subshell works but doesn't affect parent shell
 errexit.test:shopt -s strict:all || true while errexit is on
-errexit.test:simple command that's an alias - redir failure checked
-errexit.test:More && ||
-errexit.test:errexit and brace group { }
-errexit.test:errexit with !
-errexit.test:errexit with ! and ;
-errexit.test:set errexit while it's ignored in a subshell (moot with strict_errexit)
 errexit.test:simple command / assign - redir failure DOES respect errexit
-errexit.test:brace group - redir failure checked
+errexit.test:simple command that's an alias - redir failure checked
 errexit.test:while loop - redirect failure checked
-errexit.test:set -e in function #2
-errexit.test:Command sub exit code is lost
 exit-status.test:Exit code when command sub evaluates to empty str, e.g. `false` (#2416)
 exit-status.test:If subshell false -- exit code is propagated in a weird way (strict_argv prevents)
 exit-status.test:If subshell true
@@ -1246,13 +1298,13 @@ nocasematch-match.test:file matching
 nocasematch-match.test:[ matching
 nocasematch-match.test:parameter expansion matching
 nocasematch-match.test:[[ regex matching
+nul-bytes.test:NUL bytes with ${#s} (OSH and zsh agree)
+nul-bytes.test:NUL bytes with echo $'\0' (OSH and zsh agree)
 nul-bytes.test:NUL bytes with echo -e
+nul-bytes.test:NUL bytes with test -f
+nul-bytes.test:NUL bytes with test -n
 nul-bytes.test:printf - \0 escape shows NUL byte
 nul-bytes.test:printf - NUL byte in value (OSH and zsh agree)
-nul-bytes.test:NUL bytes with echo $'\0' (OSH and zsh agree)
-nul-bytes.test:NUL bytes with test -n
-nul-bytes.test:NUL bytes with test -f
-nul-bytes.test:NUL bytes with ${#s} (OSH and zsh agree)
 paren-ambiguity.test:$(( closed with ) ) after multiple lines is command - #2337
 paren-ambiguity.test:$(( closed with )) after multiple lines is parse error - #2337
 paren-ambiguity.test:$((which example - command sub versus arith sub - gnunet-gtk package
@@ -1345,8 +1397,8 @@ quote.test:Var substitution
 quote.test:Var substitution with braces
 quote.test:Var substitution with braces, quoted
 quote.test:YSH allows unquoted foo\ bar too
-redirect-command.test:>$file touches a file
 redirect-command.test:$(< file; end) is not a special case
+redirect-command.test:>$file touches a file
 redirect-command.test:Brace group redirect
 redirect-command.test:< file in pipeline and subshell doesn't work
 redirect-command.test:Leading redirect in a simple command
@@ -1750,6 +1802,8 @@ vars-special.test:$$ doesn't change with subshell or command sub
 vars-special.test:$$ looks like a PID
 vars-special.test:$1 .. $9 are scoped, while $0 is not
 vars-special.test:$_ and ${_}
+vars-special.test:$BASHPID DOES change with subshell and command sub
+vars-special.test:$HOME is NOT set
 vars-special.test:$HOSTNAME
 vars-special.test:$_ is not reset with (( and [[
 vars-special.test:$_ is not undefined on first use
@@ -1757,30 +1811,28 @@ vars-special.test:$LINENO for assignment
 vars-special.test:$LINENO in ((
 vars-special.test:$LINENO in [[
 vars-special.test:$LINENO in case
+vars-special.test:$LINENO in for (( loop
+vars-special.test:$LINENO in for loop
 vars-special.test:$LINENO in other for loops
 vars-special.test:$OSTYPE is non-empty
+vars-special.test:$PATH is set if unset at startup
 vars-special.test:$PIPESTATUS
 vars-special.test:$PWD is not only set, but exported
 vars-special.test:$PWD is set
 vars-special.test:$SECONDS
 vars-special.test:$UID and $EUID
 vars-special.test:$_ with && and ||
+vars-special.test:$_ with assignments, arrays, etc.
 vars-special.test:$_ with loop
+vars-special.test:$_ with pipeline and subshell
 vars-special.test:$_ with simple command and evaluation
 vars-special.test:$_ with word splitting
+vars-special.test:Background PID $! looks like a PID
+vars-special.test:BASH_VERSION / OILS_VERSION
 vars-special.test:HOSTNAME OSTYPE can be changed
-vars-special.test:$PATH is set if unset at startup
-vars-special.test:$HOME is NOT set
-vars-special.test:Vars set interactively only: $HISTFILE
 vars-special.test:Some vars are set, even without startup file, or env: PATH, PWD
 vars-special.test:UID EUID PPID can't be changed
-vars-special.test:$BASHPID DOES change with subshell and command sub
-vars-special.test:Background PID $! looks like a PID
-vars-special.test:$LINENO in for loop
-vars-special.test:$LINENO in for (( loop
-vars-special.test:$_ with pipeline and subshell
-vars-special.test:$_ with assignments, arrays, etc.
-vars-special.test:BASH_VERSION / OILS_VERSION
+vars-special.test:Vars set interactively only: $HISTFILE
 var-sub-quote.test:-
 var-sub-quote.test::-
 var-sub-quote.test:$'' allowed within VarSub arguments
@@ -1895,6 +1947,7 @@ word-split.test:Word elision with non-whitespace IFS
 word-split.test:Word elision with space
 word-split.test:Word splitting
 word-split.test:Word splitting 2
+xtrace.test:[[ ]]
 xtrace.test:Assignments and assign builtins
 xtrace.test:PS4 is scoped
 xtrace.test:PS4 with runtime error
@@ -1902,15 +1955,14 @@ xtrace.test:PS4 with unterminated $(
 xtrace.test:PS4 with unterminated ${
 xtrace.test:Reading $? in PS4
 xtrace.test:Regression: xtrace for "a+=(v)"
+xtrace.test:Regression: xtrace for "declare -a a+=(v)"
+xtrace.test:set -o verbose prints unevaluated code
 xtrace.test:unset PS4
 xtrace.test:xtrace with newlines
 xtrace.test:xtrace with paths
 xtrace.test:xtrace with tabs
+xtrace.test:xtrace with unicode chars
+xtrace.test:xtrace with unprintable chars
 xtrace.test:xtrace with variables in PS4
 xtrace.test:xtrace with whitespace, quotes, and backslash
 xtrace.test:xtrace written before command executes
-xtrace.test:set -o verbose prints unevaluated code
-xtrace.test:xtrace with unprintable chars
-xtrace.test:xtrace with unicode chars
-xtrace.test:[[ ]]
-xtrace.test:Regression: xtrace for "declare -a a+=(v)"

@@ -471,6 +471,8 @@ fn setup_default_filesystem(
     for dir in &["/bin", "/usr/bin", "/tmp", "/dev"] {
         let _ = fs.mkdir_p(Path::new(dir));
     }
+    let _ = fs.chmod(Path::new("/tmp"), 0o1777);
+    let _ = fs.chmod(Path::new("/dev"), 0o755);
 
     // HOME directory
     if let Some(home) = env.get("HOME") {
@@ -484,6 +486,11 @@ fn setup_default_filesystem(
         if !fs.exists(p) {
             fs.write_file(p, b"")?;
         }
+        let mode = match *name {
+            "zero" | "null" => 0o20666,
+            _ => 0o20666,
+        };
+        let _ = fs.chmod(p, mode);
     }
 
     for prefix in ["/bin", "/usr/bin"] {
@@ -494,6 +501,7 @@ fn setup_default_filesystem(
             if !fs.exists(p) {
                 let content = format!("#!/bin/bash\n# built-in: {name}\n");
                 fs.write_file(p, content.as_bytes())?;
+                fs.chmod(p, 0o755)?;
             }
         }
 
@@ -507,6 +515,7 @@ fn setup_default_filesystem(
             if !fs.exists(p) {
                 let content = format!("#!/bin/bash\n# built-in: {name}\n");
                 fs.write_file(p, content.as_bytes())?;
+                fs.chmod(p, 0o755)?;
             }
         }
     }

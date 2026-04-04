@@ -17,6 +17,21 @@ pub(crate) fn evaluate_test_args(args: &[String], ctx: &CommandContext) -> Comma
         return result(1);
     }
 
+    if args.len() == 3 && args[1] == "-a" {
+        return result(if !args[0].is_empty() && !args[2].is_empty() {
+            0
+        } else {
+            1
+        });
+    }
+    if args.len() == 3 && args[1] == "-o" {
+        return result(if !args[0].is_empty() || !args[2].is_empty() {
+            0
+        } else {
+            1
+        });
+    }
+
     match eval_expr(args, ctx, false) {
         Ok((value, consumed)) => {
             if consumed != args.len() {
@@ -148,13 +163,18 @@ fn try_unary(op: &str, operand: &str, ctx: &CommandContext) -> Option<bool> {
         "-d" => Some(file_is_dir(operand, ctx)),
         "-L" | "-h" => Some(file_is_symlink(operand, ctx)),
         "-s" => Some(file_size_nonzero(operand, ctx)),
-        "-r" => Some(file_exists(operand, ctx)), // always readable in VFS
-        "-w" => Some(file_exists(operand, ctx)), // always writable in VFS
-        "-x" => Some(file_exists(operand, ctx)), // always executable in VFS
+        "-r" => Some(file_has_any_mode_bit(operand, ctx, 0o444)),
+        "-w" => Some(file_has_any_mode_bit(operand, ctx, 0o222)),
+        "-x" => Some(file_has_any_mode_bit(operand, ctx, 0o111)),
         "-O" | "-G" => Some(file_exists(operand, ctx)), // always owned by current user in VFS
-        "-b" | "-c" | "-p" | "-S" | "-u" | "-g" | "-k" | "-t" | "-N" => {
-            Some(false) // unsupported file tests always false
-        }
+        "-b" => Some(false),
+        "-c" => Some(file_has_type_bits(operand, ctx, 0o020000)),
+        "-p" => Some(file_has_type_bits(operand, ctx, 0o010000)),
+        "-S" => Some(file_has_type_bits(operand, ctx, 0o140000)),
+        "-u" => Some(file_has_all_mode_bits(operand, ctx, 0o4000)),
+        "-g" => Some(file_has_all_mode_bits(operand, ctx, 0o2000)),
+        "-k" => Some(file_has_all_mode_bits(operand, ctx, 0o1000)),
+        "-t" | "-N" => Some(false),
         "-o" => {
             // Check if shell option is enabled
             Some(is_shell_option_set(operand, ctx))
@@ -200,7 +220,11 @@ fn try_unary(op: &str, operand: &str, ctx: &CommandContext) -> Option<bool> {
                     return Some(false);
                 }
             }
-            Some(ctx.env.contains_key(operand))
+            Some(
+                ctx.variables
+                    .map(|vars| vars.contains_key(operand))
+                    .unwrap_or_else(|| ctx.env.contains_key(operand)),
+            )
         }
         _ => None,
     }
@@ -423,12 +447,45 @@ fn file_size_nonzero(path_str: &str, ctx: &CommandContext) -> bool {
         .unwrap_or(false)
 }
 
+fn file_has_any_mode_bit(path_str: &str, ctx: &CommandContext, mask: u32) -> bool {
+    let resolved = resolve_test_path(path_str, ctx);
+    ctx.fs
+        .stat(Path::new(&resolved))
+        .map(|m| m.mode & mask != 0)
+        .unwrap_or(false)
+}
+
+fn file_has_all_mode_bits(path_str: &str, ctx: &CommandContext, mask: u32) -> bool {
+    let resolved = resolve_test_path(path_str, ctx);
+    ctx.fs
+        .stat(Path::new(&resolved))
+        .map(|m| m.mode & mask == mask)
+        .unwrap_or(false)
+}
+
+fn file_has_type_bits(path_str: &str, ctx: &CommandContext, kind: u32) -> bool {
+    let resolved = resolve_test_path(path_str, ctx);
+    ctx.fs
+        .stat(Path::new(&resolved))
+        .map(|m| m.mode & 0o170000 == kind)
+        .unwrap_or(false)
+}
+
 /// `-ef`: true if both paths resolve to the same file (same path after resolution).
 fn file_same_device_and_inode(left: &str, right: &str, ctx: &CommandContext) -> bool {
     let l = resolve_test_path(left, ctx);
     let r = resolve_test_path(right, ctx);
-    // In our VFS there are no real inodes; two paths are "the same file" if they
-    // resolve to the same canonical path and the file exists.
+    let l_meta = match ctx.fs.stat(Path::new(&l)) {
+        Ok(meta) => meta,
+        Err(_) => return false,
+    };
+    let r_meta = match ctx.fs.stat(Path::new(&r)) {
+        Ok(meta) => meta,
+        Err(_) => return false,
+    };
+    if l_meta.file_id != 0 && l_meta.file_id == r_meta.file_id {
+        return true;
+    }
     if !ctx.fs.exists(Path::new(&l)) || !ctx.fs.exists(Path::new(&r)) {
         return false;
     }

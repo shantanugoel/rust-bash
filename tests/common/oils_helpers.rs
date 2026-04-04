@@ -143,6 +143,7 @@ impl VirtualCommand for PrintenvPyCommand {
             let val = if let Some(vars) = ctx.variables {
                 vars.get(name.as_str())
                     .filter(|v| v.exported())
+                    .filter(|v| matches!(v.value, rust_bash::VariableValue::Scalar(_)))
                     .map(|v| v.value.as_scalar().to_string())
             } else {
                 ctx.env.get(name.as_str()).cloned()

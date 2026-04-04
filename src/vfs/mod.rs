@@ -45,6 +45,7 @@ pub struct Metadata {
     pub size: u64,
     pub mode: u32,
     pub mtime: SystemTime,
+    pub file_id: u64,
 }
 
 /// The type of a filesystem node (without content).
@@ -69,6 +70,7 @@ pub enum FsNode {
         content: Vec<u8>,
         mode: u32,
         mtime: SystemTime,
+        file_id: u64,
     },
     Directory {
         children: std::collections::BTreeMap<String, FsNode>,

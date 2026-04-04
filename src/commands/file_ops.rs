@@ -510,11 +510,7 @@ pub struct ChmodCommand;
 
 enum ParsedChmodMode {
     Absolute(u32),
-    SymbolicExec {
-        user: bool,
-        group: bool,
-        other: bool,
-    },
+    Symbolic { add: bool, mask: u32 },
 }
 
 static CHMOD_META: CommandMeta = CommandMeta {
@@ -536,20 +532,11 @@ impl super::VirtualCommand for ChmodCommand {
     }
 
     fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
-        let mut opts_done = false;
-        let mut operands: Vec<&str> = Vec::new();
-
-        for arg in args {
-            if !opts_done && arg == "--" {
-                opts_done = true;
-                continue;
-            }
-            if !opts_done && arg.starts_with('-') && arg.len() > 1 {
-                // ignore flags like -R
-            } else {
-                operands.push(arg);
-            }
-        }
+        let operands: Vec<&str> = if args.first().map(|arg| arg.as_str()) == Some("--") {
+            args[1..].iter().map(|arg| arg.as_str()).collect()
+        } else {
+            args.iter().map(|arg| arg.as_str()).collect()
+        };
 
         if operands.len() < 2 {
             return CommandResult {
@@ -578,7 +565,7 @@ impl super::VirtualCommand for ChmodCommand {
             let path = resolve_path(file, ctx.cwd);
             let mode = match parsed_mode {
                 ParsedChmodMode::Absolute(mode) => mode,
-                ParsedChmodMode::SymbolicExec { user, group, other } => {
+                ParsedChmodMode::Symbolic { add, mask } => {
                     let current = match ctx.fs.stat(&path) {
                         Ok(meta) => meta.mode,
                         Err(e) => {
@@ -590,10 +577,7 @@ impl super::VirtualCommand for ChmodCommand {
                             continue;
                         }
                     };
-                    current
-                        | if user { 0o100 } else { 0 }
-                        | if group { 0o010 } else { 0 }
-                        | if other { 0o001 } else { 0 }
+                    if add { current | mask } else { current & !mask }
                 }
             };
             if let Err(e) = ctx.fs.chmod(&path, mode) {
@@ -616,10 +600,16 @@ fn parse_chmod_mode(mode_str: &str) -> Option<ParsedChmodMode> {
         return Some(ParsedChmodMode::Absolute(mode));
     }
 
-    let plus_pos = mode_str.find('+')?;
-    let (who, perms) = mode_str.split_at(plus_pos);
-    let perms = perms.strip_prefix('+')?;
-    if perms != "x" {
+    let op_pos = mode_str.find(['+', '-'])?;
+    let (who, op_and_perms) = mode_str.split_at(op_pos);
+    let (add, perms) = if let Some(perms) = op_and_perms.strip_prefix('+') {
+        (true, perms)
+    } else if let Some(perms) = op_and_perms.strip_prefix('-') {
+        (false, perms)
+    } else {
+        return None;
+    };
+    if perms.is_empty() {
         return None;
     }
 
@@ -641,7 +631,123 @@ fn parse_chmod_mode(mode_str: &str) -> Option<ParsedChmodMode> {
         }
     }
 
-    Some(ParsedChmodMode::SymbolicExec { user, group, other })
+    let mut mask = 0;
+    for perm in perms.chars() {
+        match perm {
+            'r' => {
+                if user {
+                    mask |= 0o400;
+                }
+                if group {
+                    mask |= 0o040;
+                }
+                if other {
+                    mask |= 0o004;
+                }
+            }
+            'w' => {
+                if user {
+                    mask |= 0o200;
+                }
+                if group {
+                    mask |= 0o020;
+                }
+                if other {
+                    mask |= 0o002;
+                }
+            }
+            'x' => {
+                if user {
+                    mask |= 0o100;
+                }
+                if group {
+                    mask |= 0o010;
+                }
+                if other {
+                    mask |= 0o001;
+                }
+            }
+            's' => {
+                if user {
+                    mask |= 0o4000;
+                }
+                if group {
+                    mask |= 0o2000;
+                }
+                if other {
+                    return None;
+                }
+            }
+            't' => {
+                mask |= 0o1000;
+            }
+            _ => return None,
+        }
+    }
+
+    Some(ParsedChmodMode::Symbolic { add, mask })
+}
+
+// ── mkfifo ────────────────────────────────────────────────────────────
+
+pub struct MkfifoCommand;
+
+static MKFIFO_META: CommandMeta = CommandMeta {
+    name: "mkfifo",
+    synopsis: "mkfifo NAME...",
+    description: "Create named pipes.",
+    options: &[],
+    supports_help_flag: true,
+    flags: &[],
+};
+
+impl super::VirtualCommand for MkfifoCommand {
+    fn name(&self) -> &str {
+        "mkfifo"
+    }
+
+    fn meta(&self) -> Option<&'static CommandMeta> {
+        Some(&MKFIFO_META)
+    }
+
+    fn execute(&self, args: &[String], ctx: &CommandContext) -> CommandResult {
+        if args.is_empty() {
+            return CommandResult {
+                stderr: "mkfifo: missing operand\n".into(),
+                exit_code: 1,
+                ..Default::default()
+            };
+        }
+
+        let mut stderr = String::new();
+        let mut exit_code = 0;
+        for name in args {
+            let path = resolve_path(name, ctx.cwd);
+            if ctx.fs.exists(&path) {
+                stderr.push_str(&format!(
+                    "mkfifo: cannot create fifo '{}': File exists\n",
+                    name
+                ));
+                exit_code = 1;
+                continue;
+            }
+            if let Err(e) = ctx.fs.write_file(&path, b"") {
+                stderr.push_str(&format!("mkfifo: cannot create fifo '{}': {}\n", name, e));
+                exit_code = 1;
+                continue;
+            }
+            if let Err(e) = ctx.fs.chmod(&path, 0o10644) {
+                stderr.push_str(&format!("mkfifo: cannot set mode for '{}': {}\n", name, e));
+                exit_code = 1;
+            }
+        }
+
+        CommandResult {
+            stderr,
+            exit_code,
+            ..Default::default()
+        }
+    }
 }
 
 // ── ln ───────────────────────────────────────────────────────────────

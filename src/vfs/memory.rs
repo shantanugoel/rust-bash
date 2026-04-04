@@ -48,6 +48,27 @@ impl InMemoryFs {
             root: Arc::new(RwLock::new(tree.clone())),
         }
     }
+
+    fn next_file_id(&self) -> u64 {
+        fn visit(node: &FsNode, max_id: &mut u64) {
+            match node {
+                FsNode::File { file_id, .. } => {
+                    *max_id = (*max_id).max(*file_id);
+                }
+                FsNode::Directory { children, .. } => {
+                    for child in children.values() {
+                        visit(child, max_id);
+                    }
+                }
+                FsNode::Symlink { .. } => {}
+            }
+        }
+
+        let tree = self.root.read();
+        let mut max_id = 0;
+        visit(&tree, &mut max_id);
+        max_id + 1
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -464,6 +485,7 @@ impl VirtualFs for InMemoryFs {
         }
 
         // File doesn't exist — create it in the parent directory
+        let file_id = self.next_file_id();
         self.with_parent_mut(path, |parent, child_name| match parent {
             FsNode::Directory { children, .. } => {
                 children.insert(
@@ -472,6 +494,7 @@ impl VirtualFs for InMemoryFs {
                         content: content.to_vec(),
                         mode: 0o644,
                         mtime: SystemTime::now(),
+                        file_id,
                     },
                 );
                 Ok(())
@@ -707,6 +730,7 @@ impl VirtualFs for InMemoryFs {
                         content: content.clone(),
                         mode: meta.mode,
                         mtime: meta.mtime,
+                        file_id: meta.file_id,
                     },
                 );
                 Ok(())
@@ -963,24 +987,28 @@ fn node_metadata(node: &FsNode) -> Metadata {
             content,
             mode,
             mtime,
+            file_id,
             ..
         } => Metadata {
             node_type: NodeType::File,
             size: content.len() as u64,
             mode: *mode,
             mtime: *mtime,
+            file_id: *file_id,
         },
         FsNode::Directory { mode, mtime, .. } => Metadata {
             node_type: NodeType::Directory,
             size: 0,
             mode: *mode,
             mtime: *mtime,
+            file_id: 0,
         },
         FsNode::Symlink { target, mtime, .. } => Metadata {
             node_type: NodeType::Symlink,
             size: target.to_string_lossy().len() as u64,
             mode: 0o777,
             mtime: *mtime,
+            file_id: 0,
         },
     }
 }

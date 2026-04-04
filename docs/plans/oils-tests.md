@@ -57,7 +57,7 @@ Key format elements:
 | Oils spec cases | 2,728 | 2,278 | −450 (42 files skipped) |
 | **Total test surface** | **~3,260** | **2,758** | **−502** |
 
-The Oils corpus is imported and running. Of the 2,278 Oils cases (in 100 tested files), **1,870 pass**, **329 are xfail**, and **79 are skip**. Upstream provenance: Oils commit `7789e21d81537a5b47bacbd4267edf7c659a9366`.
+The Oils corpus is imported and running. Of the 2,278 Oils cases (in 100 tested files), **1,968 pass**, **231 are xfail**, and **79 are skip**. Upstream provenance: Oils commit `7789e21d81537a5b47bacbd4267edf7c659a9366`.
 
 ---
 
@@ -304,7 +304,7 @@ estimates below are superseded by the measured totals in the "Combined test surf
 | Non-applicable | 22 | 165 | — | — | 165 |
 | **Total** | **136** | **2,728** | **~1,239** | **~1,026** | **463** |
 
-**Measured overall pass rate: ~82% of runnable cases (1,870 / 2,278)**
+**Measured overall pass rate: ~86% of runnable cases (1,968 / 2,278)**
 
 ### Combined test surface (measured)
 
@@ -312,7 +312,7 @@ estimates below are superseded by the measured totals in the "Combined test surf
 |---|---|---|---|---|---|
 | Comparison fixtures | 35 | 280 | 278 | 1 | 1 |
 | Spec tests (grep/sed/awk/jq) | 14 | 200 | 200 | 0 | 0 |
-| Oils spec tests | 142 (100 tested) | 2,278 | 1,870 | 329 | 79 |
+| Oils spec tests | 142 (100 tested) | 2,278 | 1,968 | 231 | 79 |
 | **Total** | **191** | **2,758** | **2,348** | **330** | **80** |
 
 The depth gap in comparison fixtures (−252 vs just-bash) is minor. The real gap is **implementation coverage** — as features land, Oils cases flip from xfail to pass automatically.
@@ -498,9 +498,9 @@ M6**, and only indirectly helps the rest of the roadmap.
 - [x] Apache 2.0 LICENSE attribution present
 - [x] `Cargo.toml` registers the new `oils_spec` test target with `harness = false`
 - [x] File-level skip list excludes CLI-only, non-applicable, and explicit non-goal files (42 files)
-- [x] Pass-list generated and maintained (1,870 entries in `pass-list.txt`)
+- [x] Pass-list generated and maintained (1,968 entries in `pass-list.txt`)
 - [x] `cargo test --test oils_spec` runs cleanly (0 unexpected failures)
 - [x] Per-file summary printed (pass/xfail/skip/unexpected-pass/fail per file)
-- [x] Initial baseline established: 802 pass / 1,393 xfail / 79 skip across 100 tested files (now 1,870 / 329 / 79)
+- [x] Initial baseline established: 802 pass / 1,393 xfail / 79 skip across 100 tested files (now 1,968 / 231 / 79)
 - [x] Unexpected passes force promotion (same unexpected-pass discipline as comparison fixtures)
 - [x] Documentation updated (guidebook chapters 9 and 10)

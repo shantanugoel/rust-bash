@@ -1068,6 +1068,7 @@ pub fn register_default_commands() -> HashMap<String, Arc<dyn VirtualCommand>> {
         Arc::new(file_ops::TeeCommand),
         Arc::new(file_ops::StatCommand),
         Arc::new(file_ops::ChmodCommand),
+        Arc::new(file_ops::MkfifoCommand),
         Arc::new(file_ops::LnCommand),
         // Phase 10b: text processing
         Arc::new(text::GrepCommand),

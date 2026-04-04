@@ -67,10 +67,15 @@ pub(crate) fn is_builtin(name: &str) -> bool {
     builtin_names().contains(&name)
 }
 
+const SPECIAL_BUILTINS: &[&str] = &[
+    ".", "source", ":", "colon", "break", "continue", "eval", "exec", "exit", "export", "readonly",
+    "return", "set", "shift", "trap", "unset",
+];
+
 const INTROSPECTION_ONLY_BUILTINS: &[&str] = &["echo", "pwd", "test", "[", "true", "false"];
 
-pub(crate) fn is_shell_builtin(name: &str) -> bool {
-    is_builtin(name) || INTROSPECTION_ONLY_BUILTINS.contains(&name)
+pub(crate) fn is_special_builtin(name: &str) -> bool {
+    SPECIAL_BUILTINS.contains(&name)
 }
 
 /// Check if `name` is a valid shell variable name (alphanumerics and underscores, no leading digit).
@@ -1015,6 +1020,13 @@ fn builtin_unset(
         {
             let name = &arg[..bracket_pos];
             let index_str = &arg[bracket_pos + 1..arg.len() - 1];
+            if !is_valid_var_name(name) {
+                return Ok(ExecResult {
+                    stderr: format!("unset: `{arg}': not a valid identifier\n"),
+                    exit_code: 1,
+                    ..ExecResult::default()
+                });
+            }
             if let Some(var) = state.env.get(name)
                 && var.readonly()
             {
@@ -1039,40 +1051,55 @@ fn builtin_unset(
                 .is_some_and(|v| matches!(v.value, VariableValue::Scalar(_)));
 
             if is_indexed {
-                if let Ok(idx) = crate::interpreter::arithmetic::eval_arithmetic(index_str, state) {
-                    let actual_idx = if idx < 0 {
-                        // Resolve negative index relative to max key.
-                        let max_key = state.env.get(name).and_then(|v| {
-                            if let VariableValue::IndexedArray(map) = &v.value {
-                                map.keys().next_back().copied()
-                            } else {
-                                None
-                            }
+                if index_str.contains('"') || index_str.contains('\'') {
+                    return Ok(ExecResult {
+                        stderr: format!("unset: {name}[{index_str}]: bad array subscript\n"),
+                        exit_code: 1,
+                        ..ExecResult::default()
+                    });
+                }
+                let idx = match crate::interpreter::arithmetic::eval_arithmetic(index_str, state) {
+                    Ok(idx) => idx,
+                    Err(_) => {
+                        return Ok(ExecResult {
+                            stderr: format!("unset: {name}[{index_str}]: bad array subscript\n"),
+                            exit_code: 1,
+                            ..ExecResult::default()
                         });
-                        if let Some(mk) = max_key {
-                            let resolved = mk as i64 + 1 + idx;
-                            if resolved < 0 {
-                                return Ok(ExecResult {
-                                    stderr: format!(
-                                        "unset: {name}[{index_str}]: bad array subscript\n"
-                                    ),
-                                    exit_code: 1,
-                                    ..ExecResult::default()
-                                });
-                            }
-                            Some(resolved as usize)
+                    }
+                };
+                let actual_idx = if idx < 0 {
+                    // Resolve negative index relative to max key.
+                    let max_key = state.env.get(name).and_then(|v| {
+                        if let VariableValue::IndexedArray(map) = &v.value {
+                            map.keys().next_back().copied()
                         } else {
                             None
                         }
+                    });
+                    if let Some(mk) = max_key {
+                        let resolved = mk as i64 + 1 + idx;
+                        if resolved < 0 {
+                            return Ok(ExecResult {
+                                stderr: format!(
+                                    "unset: {name}[{index_str}]: bad array subscript\n"
+                                ),
+                                exit_code: 1,
+                                ..ExecResult::default()
+                            });
+                        }
+                        Some(resolved as usize)
                     } else {
-                        Some(idx as usize)
-                    };
-                    if let Some(actual) = actual_idx
-                        && let Some(var) = state.env.get_mut(name)
-                        && let VariableValue::IndexedArray(map) = &mut var.value
-                    {
-                        map.remove(&actual);
+                        None
                     }
+                } else {
+                    Some(idx as usize)
+                };
+                if let Some(actual) = actual_idx
+                    && let Some(var) = state.env.get_mut(name)
+                    && let VariableValue::IndexedArray(map) = &mut var.value
+                {
+                    map.remove(&actual);
                 }
             } else if is_assoc {
                 // Expand variables and strip quotes in the key.
@@ -1087,13 +1114,27 @@ fn builtin_unset(
                 {
                     map.remove(&expanded_key);
                 }
-            } else if is_scalar
-                && index_str == "0"
-                && let Some(var) = state.env.get_mut(name)
-            {
-                var.value = VariableValue::Scalar(String::new());
+            } else if is_scalar {
+                if index_str == "0" {
+                    if let Some(var) = state.env.get_mut(name) {
+                        var.value = VariableValue::Scalar(String::new());
+                    }
+                } else {
+                    return Ok(ExecResult {
+                        stderr: format!("unset: {name}[{index_str}]: bad array subscript\n"),
+                        exit_code: 1,
+                        ..ExecResult::default()
+                    });
+                }
             }
             continue;
+        }
+        if !is_valid_var_name(arg) {
+            return Ok(ExecResult {
+                stderr: format!("unset: `{arg}': not a valid identifier\n"),
+                exit_code: 1,
+                ..ExecResult::default()
+            });
         }
         if let Some(var) = state.env.get(arg.as_str())
             && var.readonly()
@@ -1129,14 +1170,31 @@ fn builtin_unset(
         // In bash, bare `unset name` prefers variables. If no variable exists,
         // fall back to unsetting a function with the same name.
         if state.env.contains_key(arg.as_str()) {
-            let is_local = state
-                .local_scopes
-                .last()
-                .is_some_and(|scope| scope.contains_key(arg.as_str()));
+            let local_scope_match =
+                state
+                    .local_scopes
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find_map(|(idx, scope)| {
+                        scope.get(arg.as_str()).cloned().map(|saved| (idx, saved))
+                    });
             let temp_original = current_temp_binding_original(state, arg.as_str());
 
-            if !state.shopt_opts.localvar_unset && is_local {
-                if let Some(saved) = temp_original {
+            if !state.shopt_opts.localvar_unset
+                && let Some((scope_idx, saved_scope_value)) = local_scope_match
+            {
+                let current_scope_idx = state.local_scopes.len().saturating_sub(1);
+                if scope_idx < current_scope_idx {
+                    match saved_scope_value {
+                        Some(var) => {
+                            state.env.insert(arg.clone(), var);
+                        }
+                        None => {
+                            state.env.remove(arg.as_str());
+                        }
+                    }
+                } else if let Some(saved) = temp_original {
                     match saved {
                         Some(var) => {
                             state.env.insert(arg.clone(), var);
@@ -1150,14 +1208,17 @@ fn builtin_unset(
                         .env
                         .insert(arg.clone(), declared_only_shadow_variable(&var));
                 }
-            } else {
-                match temp_original {
-                    Some(Some(var)) => {
-                        state.env.insert(arg.clone(), var);
-                    }
-                    Some(None) | None => {
-                        state.env.remove(arg.as_str());
-                    }
+                continue;
+            }
+            match temp_original {
+                Some(Some(_)) if state.shell_opts.posix && state.in_function_depth == 0 => {
+                    state.env.remove(arg.as_str());
+                }
+                Some(Some(var)) => {
+                    state.env.insert(arg.clone(), var);
+                }
+                Some(None) | None => {
+                    state.env.remove(arg.as_str());
                 }
             }
         } else {
@@ -3267,6 +3328,18 @@ fn builtin_eval(
         return Ok(ExecResult::default());
     }
 
+    if let Some(first) = args.first()
+        && first.starts_with('-')
+        && first != "-"
+        && first != "--"
+    {
+        return Ok(ExecResult {
+            stderr: format!("eval: {first}: invalid option\neval: usage: eval [arg ...]\n"),
+            exit_code: 2,
+            ..ExecResult::default()
+        });
+    }
+
     let input = args.join(" ");
     if input.is_empty() {
         return Ok(ExecResult::default());
@@ -3999,7 +4072,14 @@ fn builtin_source(
         }
     };
 
-    let resolved = resolve_path(&state.cwd, path_arg);
+    let path_value = current_path(state);
+    let resolved = if path_arg.contains('/') {
+        resolve_path(&state.cwd, path_arg)
+    } else if let Some(path) = search_path_for_any_file_with_value(path_arg, &path_value, state) {
+        resolve_path(&state.cwd, &path)
+    } else {
+        resolve_path(&state.cwd, path_arg)
+    };
     let content = match state.fs.read_file(Path::new(&resolved)) {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(_) => {
@@ -4040,9 +4120,17 @@ fn builtin_source(
     };
     let saved_source = std::mem::replace(&mut state.current_source, resolved.clone());
     let saved_source_text = std::mem::replace(&mut state.current_source_text, content.clone());
+    let override_params = args.len() > 1;
+    let saved_params = override_params.then(|| state.positional_params.clone());
+    if override_params {
+        state.positional_params = args[1..].to_vec();
+    }
     let result = execute_program(&program, state);
     state.current_source = saved_source;
     state.current_source_text = saved_source_text;
+    if let Some(saved_params) = saved_params {
+        state.positional_params = saved_params;
+    }
     state.counters.call_depth -= 1;
     result
 }
@@ -4207,7 +4295,11 @@ fn builtin_local(
                     set_variable(state, name, value.to_string())?;
                 }
             } else {
-                set_variable(state, name, value.to_string())?;
+                if let Err(err) = set_variable(state, name, value.to_string()) {
+                    result_stderr.push_str(&format!("{err}\n"));
+                    exit_code = 1;
+                    continue;
+                }
             }
 
             // Apply attribute flags
@@ -4228,11 +4320,17 @@ fn builtin_local(
         } else {
             // `local VAR` with no value — declare it as local with empty value
             let saved = saved_local_restore_value(state, arg);
+            let already_local = state
+                .local_scopes
+                .last()
+                .is_some_and(|scope| scope.contains_key(arg.as_str()));
             if let Some(scope) = state.local_scopes.last_mut() {
                 scope.entry(arg.to_string()).or_insert(saved);
             }
             // Inside a function: always set to empty. Outside: only if undefined.
-            if state.in_function_depth > 0 || !state.env.contains_key(arg.as_str()) {
+            if !already_local
+                && (state.in_function_depth > 0 || !state.env.contains_key(arg.as_str()))
+            {
                 let value = if make_indexed_array {
                     VariableValue::IndexedArray(std::collections::BTreeMap::new())
                 } else if make_assoc_array {
@@ -4322,19 +4420,29 @@ fn builtin_let(args: &[String], state: &mut InterpreterState) -> Result<ExecResu
 // ── PATH resolution helper ─────────────────────────────────────────
 
 /// Search `$PATH` directories in the VFS for an executable file.
-fn search_path(cmd: &str, state: &InterpreterState) -> Option<String> {
+fn current_path(state: &InterpreterState) -> String {
+    state
+        .env
+        .get("PATH")
+        .map(|v| v.value.as_scalar().to_string())
+        .unwrap_or_else(|| "/usr/bin:/bin".to_string())
+}
+
+pub(crate) fn search_path_with_value(
+    cmd: &str,
+    path_value: &str,
+    state: &InterpreterState,
+) -> Option<String> {
+    if cmd.is_empty() {
+        return None;
+    }
+
     if cmd.contains('/') {
         let resolved = resolve_path(&state.cwd, cmd);
         return is_executable_path(&resolved, state).then(|| cmd.to_string());
     }
 
-    let path_var = state
-        .env
-        .get("PATH")
-        .map(|v| v.value.as_scalar().to_string())
-        .unwrap_or_else(|| "/usr/bin:/bin".to_string());
-
-    for dir in path_var.split(':') {
+    for dir in path_value.split(':') {
         let candidate = if dir.is_empty() {
             format!("./{cmd}")
         } else {
@@ -4344,14 +4452,24 @@ fn search_path(cmd: &str, state: &InterpreterState) -> Option<String> {
         if is_executable_path(&resolved, state) {
             return Some(candidate);
         }
-        if is_standard_command_dir(dir) && state.commands.contains_key(cmd) {
-            return Some(candidate);
-        }
     }
     None
 }
 
-fn search_path_for_any_file(cmd: &str, state: &InterpreterState) -> Option<String> {
+pub(crate) fn search_path(cmd: &str, state: &InterpreterState) -> Option<String> {
+    let path_value = current_path(state);
+    search_path_with_value(cmd, &path_value, state)
+}
+
+pub(crate) fn search_path_for_any_file_with_value(
+    cmd: &str,
+    path_value: &str,
+    state: &InterpreterState,
+) -> Option<String> {
+    if cmd.is_empty() {
+        return None;
+    }
+
     if cmd.contains('/') {
         let resolved = resolve_path(&state.cwd, cmd);
         return state
@@ -4361,13 +4479,7 @@ fn search_path_for_any_file(cmd: &str, state: &InterpreterState) -> Option<Strin
             .then(|| cmd.to_string());
     }
 
-    let path_var = state
-        .env
-        .get("PATH")
-        .map(|v| v.value.as_scalar().to_string())
-        .unwrap_or_else(|| "/usr/bin:/bin".to_string());
-
-    for dir in path_var.split(':') {
+    for dir in path_value.split(':') {
         let candidate = if dir.is_empty() {
             format!("./{cmd}")
         } else {
@@ -4381,21 +4493,195 @@ fn search_path_for_any_file(cmd: &str, state: &InterpreterState) -> Option<Strin
         {
             return Some(candidate);
         }
-        if is_standard_command_dir(dir) && state.commands.contains_key(cmd) {
-            return Some(candidate);
-        }
     }
     None
+}
+
+pub(crate) fn search_path_for_any_file(cmd: &str, state: &InterpreterState) -> Option<String> {
+    let path_value = current_path(state);
+    search_path_for_any_file_with_value(cmd, &path_value, state)
+}
+
+fn path_has_overlong_component(path: &str) -> bool {
+    path.split('/').any(|component| component.len() > 255)
+}
+
+fn command_stub_target(script: &str) -> Option<&str> {
+    script
+        .lines()
+        .find_map(|line| line.strip_prefix("# built-in: "))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+}
+
+pub(crate) fn execute_registered_command_by_name(
+    name: &str,
+    args: &[String],
+    state: &mut InterpreterState,
+    stdin: &str,
+    extra_input_fds: Option<&std::collections::HashMap<i32, String>>,
+) -> Result<ExecResult, RustBashError> {
+    if let Some(cmd) = state.commands.get(name) {
+        let mut env: std::collections::HashMap<String, String> = state
+            .env
+            .iter()
+            .filter(|(_, v)| v.exported() && matches!(v.value, VariableValue::Scalar(_)))
+            .map(|(k, v)| (k.clone(), v.value.as_scalar().to_string()))
+            .collect();
+        if let Some(extra_fds) = extra_input_fds {
+            for (fd, contents) in extra_fds {
+                if *fd == 0 {
+                    continue;
+                }
+                env.insert(format!("__RUST_BASH_FD_{fd}"), contents.clone());
+            }
+        }
+
+        let vars_clone = state.env.clone();
+        let fs = std::sync::Arc::clone(&state.fs);
+        let cwd = state.cwd.clone();
+        let limits = state.limits.clone();
+        let network_policy = state.network_policy.clone();
+        let binary_stdin = state.pipe_stdin_bytes.take();
+        let exec_callback = crate::interpreter::walker::make_exec_callback(state);
+
+        let ctx = crate::commands::CommandContext {
+            fs: &*fs,
+            cwd: &cwd,
+            env: &env,
+            variables: Some(&vars_clone),
+            stdin,
+            stdin_bytes: binary_stdin.as_deref(),
+            limits: &limits,
+            network_policy: &network_policy,
+            exec: Some(&exec_callback),
+            shell_opts: Some(&state.shell_opts),
+        };
+
+        let effective_args: Vec<String>;
+        let cmd_args: &[String] = if name == "echo" && state.shopt_opts.xpg_echo {
+            effective_args = std::iter::once("-e".to_string())
+                .chain(args.iter().cloned())
+                .collect();
+            &effective_args
+        } else {
+            args
+        };
+
+        let cmd_result = cmd.execute(cmd_args, &ctx);
+        return Ok(ExecResult {
+            stdout: cmd_result.stdout,
+            stderr: cmd_result.stderr,
+            exit_code: cmd_result.exit_code,
+            stdout_bytes: cmd_result.stdout_bytes,
+        });
+    }
+
+    Ok(ExecResult {
+        stderr: format!("{name}: command not found\n"),
+        exit_code: 127,
+        ..ExecResult::default()
+    })
+}
+
+pub(crate) fn execute_path_command(
+    invocation_name: &str,
+    args: &[String],
+    state: &mut InterpreterState,
+    stdin: &str,
+    extra_input_fds: Option<&std::collections::HashMap<i32, String>>,
+) -> Result<ExecResult, RustBashError> {
+    if path_has_overlong_component(invocation_name) {
+        return Ok(ExecResult {
+            stderr: format!("{invocation_name}: Permission denied\n"),
+            exit_code: 126,
+            ..ExecResult::default()
+        });
+    }
+
+    let resolved = resolve_path(&state.cwd, invocation_name);
+    let meta = match state.fs.stat(Path::new(&resolved)) {
+        Ok(meta) => meta,
+        Err(_) => {
+            return Ok(ExecResult {
+                stderr: format!("{invocation_name}: command not found\n"),
+                exit_code: 127,
+                ..ExecResult::default()
+            });
+        }
+    };
+
+    if meta.node_type == NodeType::Directory {
+        return Ok(ExecResult {
+            stderr: format!("{invocation_name}: Permission denied\n"),
+            exit_code: 126,
+            ..ExecResult::default()
+        });
+    }
+
+    if meta.mode & 0o111 == 0 {
+        return Ok(ExecResult {
+            stderr: format!("{invocation_name}: Permission denied\n"),
+            exit_code: 126,
+            ..ExecResult::default()
+        });
+    }
+
+    let bytes = match state.fs.read_file(Path::new(&resolved)) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return Ok(ExecResult {
+                stderr: format!("{invocation_name}: command not found\n"),
+                exit_code: 127,
+                ..ExecResult::default()
+            });
+        }
+    };
+    let script = String::from_utf8_lossy(&bytes).into_owned();
+
+    if let Some(target) = command_stub_target(&script) {
+        if let Some(help) = if args.first().map(|arg| arg.as_str()) == Some("--help") {
+            check_help(target, state)
+        } else {
+            None
+        } {
+            return Ok(help);
+        }
+        if let Some(result) = execute_builtin(target, args, state, stdin, extra_input_fds)? {
+            return Ok(result);
+        }
+        return execute_registered_command_by_name(target, args, state, stdin, extra_input_fds);
+    }
+
+    let program = match parse(&script) {
+        Ok(program) => program,
+        Err(err) => {
+            return Ok(ExecResult {
+                stderr: format!("{invocation_name}: {err}\n"),
+                exit_code: 126,
+                ..ExecResult::default()
+            });
+        }
+    };
+
+    run_in_subshell(
+        state,
+        &program,
+        SubshellConfig {
+            positional: args,
+            shell_name_override: Some(invocation_name),
+            source_override: Some(resolved),
+            source_text_override: Some(script),
+            invoked_with_c: false,
+            shell_process: true,
+        },
+    )
 }
 
 fn is_executable_path(path: &str, state: &InterpreterState) -> bool {
     state.fs.stat(Path::new(path)).is_ok_and(|meta| {
         matches!(meta.node_type, NodeType::File | NodeType::Symlink) && meta.mode & 0o111 != 0
     })
-}
-
-fn is_standard_command_dir(dir: &str) -> bool {
-    matches!(dir, "/bin" | "/usr/bin")
 }
 
 // ── type ────────────────────────────────────────────────────────────
@@ -4444,10 +4730,10 @@ fn builtin_type(
 
     for name in &names {
         let mut found = false;
+        let paths = type_search_paths(name, state);
 
         // -P: only search PATH (skip builtins, functions, aliases, keywords)
         if big_p_flag {
-            let paths = search_path_all(name, state);
             if paths.is_empty() {
                 exit_code = 1;
             } else {
@@ -4508,8 +4794,22 @@ fn builtin_type(
             }
         }
 
-        // Check builtin
-        if is_shell_builtin(name) {
+        if is_special_builtin(name) {
+            if t_flag {
+                stdout.push_str("builtin\n");
+            } else if !p_flag {
+                stdout.push_str(&format!("{name} is a shell builtin\n"));
+            }
+            found = true;
+            if !a_flag {
+                continue;
+            }
+        }
+
+        // Check regular builtin
+        if !is_special_builtin(name)
+            && (is_builtin(name) || INTROSPECTION_ONLY_BUILTINS.contains(name))
+        {
             if t_flag {
                 stdout.push_str("builtin\n");
             } else if !p_flag {
@@ -4522,7 +4822,6 @@ fn builtin_type(
         }
 
         // Check PATH — with -a, list all matches
-        let paths = search_path_all(name, state);
         if t_flag && paths.is_empty() {
             if search_path_for_any_file(name, state).is_some() {
                 stdout.push_str("file\n");
@@ -4561,6 +4860,52 @@ fn builtin_type(
         exit_code,
         stdout_bytes: None,
     })
+}
+
+fn type_search_paths(name: &str, state: &InterpreterState) -> Vec<String> {
+    search_path_all(name, state)
+        .into_iter()
+        .filter(|path| {
+            !type_ignores_shell_only_stub(name) || !is_synthetic_command_stub(path, name, state)
+        })
+        .collect()
+}
+
+fn type_ignores_shell_only_stub(name: &str) -> bool {
+    matches!(
+        name,
+        "." | ":"
+            | "alias"
+            | "builtin"
+            | "cd"
+            | "command"
+            | "declare"
+            | "eval"
+            | "exec"
+            | "exit"
+            | "export"
+            | "local"
+            | "readonly"
+            | "return"
+            | "set"
+            | "shift"
+            | "source"
+            | "trap"
+            | "type"
+            | "typeset"
+            | "unalias"
+            | "unset"
+    )
+}
+
+fn is_synthetic_command_stub(path: &str, name: &str, state: &InterpreterState) -> bool {
+    state
+        .fs
+        .read_file(Path::new(path))
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .and_then(|script| command_stub_target(&script).map(str::to_string))
+        .is_some_and(|target| target == name)
 }
 
 /// Format a function body for `type` output, mimicking bash's format.
@@ -4607,7 +4952,6 @@ fn search_path_all(cmd: &str, state: &InterpreterState) -> Vec<String> {
         .map(|v| v.value.as_scalar().to_string())
         .unwrap_or_else(|| "/usr/bin:/bin".to_string());
     let mut results = Vec::new();
-    let mut found_virtual_command = false;
     for dir in path_var.split(':') {
         let candidate = if dir.is_empty() {
             format!("./{cmd}")
@@ -4616,12 +4960,6 @@ fn search_path_all(cmd: &str, state: &InterpreterState) -> Vec<String> {
         };
         let resolved = resolve_path(&state.cwd, &candidate);
         if is_executable_path(&resolved, state) {
-            results.push(candidate);
-        } else if !found_virtual_command
-            && is_standard_command_dir(dir)
-            && state.commands.contains_key(cmd)
-        {
-            found_virtual_command = true;
             results.push(candidate);
         }
     }
@@ -4638,17 +4976,22 @@ fn builtin_command(
 ) -> Result<ExecResult, RustBashError> {
     let mut v_flag = false;
     let mut big_v_flag = false;
+    let mut p_flag = false;
     let mut cmd_start = 0;
 
     // Parse flags
     for (i, arg) in args.iter().enumerate() {
+        if arg == "--" && cmd_start == i {
+            cmd_start = i + 1;
+            break;
+        }
         if arg.starts_with('-') && cmd_start == i {
             let mut consumed = true;
             for c in arg[1..].chars() {
                 match c {
                     'v' => v_flag = true,
                     'V' => big_v_flag = true,
-                    'p' => { /* use default PATH — we ignore this in sandbox */ }
+                    'p' => p_flag = true,
                     _ => {
                         consumed = false;
                         break;
@@ -4670,19 +5013,35 @@ fn builtin_command(
         return Ok(ExecResult::default());
     }
 
-    let name = &remaining[0];
-
     // command -v: print how name would be resolved
-    if v_flag {
-        return command_v(name, state);
-    }
-
-    // command -V: verbose description
-    if big_v_flag {
-        return command_big_v(name, state);
+    if v_flag || big_v_flag {
+        let path_override = p_flag.then_some(crate::interpreter::DEFAULT_PATH);
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        let mut any_found = false;
+        for name in remaining {
+            let result = if v_flag {
+                command_v(name, state, path_override)?
+            } else {
+                command_big_v(name, state, path_override)?
+            };
+            stdout.push_str(&result.stdout);
+            stderr.push_str(&result.stderr);
+            if result.exit_code != 0 {
+                continue;
+            }
+            any_found = true;
+        }
+        return Ok(ExecResult {
+            stdout,
+            stderr,
+            exit_code: if any_found { 0 } else { 1 },
+            ..ExecResult::default()
+        });
     }
 
     // command name [args]: run bypassing functions — only builtins and commands
+    let name = &remaining[0];
     let cmd_args = &remaining[1..];
     let cmd_args_owned: Vec<String> = cmd_args.to_vec();
 
@@ -4698,41 +5057,18 @@ fn builtin_command(
         return Ok(result);
     }
 
-    // Try registered commands (skip functions)
-    if state.commands.contains_key(name.as_str()) {
-        // Re-dispatch through the normal path but the caller should skip functions.
-        // We replicate the command execution logic here.
-        let env: std::collections::HashMap<String, String> = state
-            .env
-            .iter()
-            .map(|(k, v)| (k.clone(), v.value.as_scalar().to_string()))
-            .collect();
-        let fs = std::sync::Arc::clone(&state.fs);
-        let cwd = state.cwd.clone();
-        let limits = state.limits.clone();
-        let network_policy = state.network_policy.clone();
+    if name.contains('/') {
+        return execute_path_command(name, &cmd_args_owned, state, stdin, extra_input_fds);
+    }
 
-        let ctx = crate::commands::CommandContext {
-            fs: &*fs,
-            cwd: &cwd,
-            env: &env,
-            variables: None,
-            stdin,
-            stdin_bytes: None,
-            limits: &limits,
-            network_policy: &network_policy,
-            exec: None,
-            shell_opts: None,
-        };
+    let path_value = if p_flag {
+        crate::interpreter::DEFAULT_PATH.to_string()
+    } else {
+        current_path(state)
+    };
 
-        let cmd = state.commands.get(name.as_str()).unwrap();
-        let cmd_result = cmd.execute(&cmd_args_owned, &ctx);
-        return Ok(ExecResult {
-            stdout: cmd_result.stdout,
-            stderr: cmd_result.stderr,
-            exit_code: cmd_result.exit_code,
-            stdout_bytes: cmd_result.stdout_bytes,
-        });
+    if let Some(path) = search_path_with_value(name, &path_value, state) {
+        return execute_path_command(&path, &cmd_args_owned, state, stdin, extra_input_fds);
     }
 
     // Not found
@@ -4753,7 +5089,11 @@ fn is_shell_keyword(name: &str) -> bool {
     SHELL_KEYWORDS.contains(&name)
 }
 
-fn command_v(name: &str, state: &InterpreterState) -> Result<ExecResult, RustBashError> {
+fn command_v(
+    name: &str,
+    state: &InterpreterState,
+    path_override: Option<&str>,
+) -> Result<ExecResult, RustBashError> {
     // Keyword
     if is_shell_keyword(name) {
         return Ok(ExecResult {
@@ -4778,25 +5118,27 @@ fn command_v(name: &str, state: &InterpreterState) -> Result<ExecResult, RustBas
         });
     }
 
-    // Builtin
-    if is_shell_builtin(name) {
+    if is_special_builtin(name) {
         return Ok(ExecResult {
             stdout: format!("{name}\n"),
             ..ExecResult::default()
         });
     }
 
-    // PATH search
-    if let Some(path) = search_path(name, state) {
+    // Regular builtin
+    if is_builtin(name) || INTROSPECTION_ONLY_BUILTINS.contains(&name) {
+        return Ok(ExecResult {
+            stdout: format!("{name}\n"),
+            ..ExecResult::default()
+        });
+    }
+
+    let path = path_override
+        .and_then(|value| search_path_with_value(name, value, state))
+        .or_else(|| search_path(name, state));
+    if let Some(path) = path {
         return Ok(ExecResult {
             stdout: format!("{path}\n"),
-            ..ExecResult::default()
-        });
-    }
-
-    if state.commands.contains_key(name) {
-        return Ok(ExecResult {
-            stdout: format!("{name}\n"),
             ..ExecResult::default()
         });
     }
@@ -4807,7 +5149,11 @@ fn command_v(name: &str, state: &InterpreterState) -> Result<ExecResult, RustBas
     })
 }
 
-fn command_big_v(name: &str, state: &InterpreterState) -> Result<ExecResult, RustBashError> {
+fn command_big_v(
+    name: &str,
+    state: &InterpreterState,
+    path_override: Option<&str>,
+) -> Result<ExecResult, RustBashError> {
     if is_shell_keyword(name) {
         return Ok(ExecResult {
             stdout: format!("{name} is a shell keyword\n"),
@@ -4822,30 +5168,36 @@ fn command_big_v(name: &str, state: &InterpreterState) -> Result<ExecResult, Rus
         });
     }
 
-    if state.functions.contains_key(name) {
+    if let Some(func) = state.functions.get(name) {
         return Ok(ExecResult {
-            stdout: format!("{name} is a function\n"),
+            stdout: format!(
+                "{name} is a function\n{}\n",
+                format_function_body(name, func)
+            ),
             ..ExecResult::default()
         });
     }
 
-    if is_shell_builtin(name) {
+    if is_special_builtin(name) {
         return Ok(ExecResult {
             stdout: format!("{name} is a shell builtin\n"),
             ..ExecResult::default()
         });
     }
 
-    if let Some(path) = search_path(name, state) {
+    if is_builtin(name) || INTROSPECTION_ONLY_BUILTINS.contains(&name) {
         return Ok(ExecResult {
-            stdout: format!("{name} is {path}\n"),
+            stdout: format!("{name} is a shell builtin\n"),
             ..ExecResult::default()
         });
     }
 
-    if state.commands.contains_key(name) {
+    let path = path_override
+        .and_then(|value| search_path_with_value(name, value, state))
+        .or_else(|| search_path(name, state));
+    if let Some(path) = path {
         return Ok(ExecResult {
-            stdout: format!("{name} is {name}\n"),
+            stdout: format!("{name} is {path}\n"),
             ..ExecResult::default()
         });
     }
@@ -4865,6 +5217,12 @@ fn builtin_builtin(
     stdin: &str,
     extra_input_fds: Option<&std::collections::HashMap<i32, String>>,
 ) -> Result<ExecResult, RustBashError> {
+    let args = if args.first().map(|arg| arg.as_str()) == Some("--") {
+        &args[1..]
+    } else {
+        args
+    };
+
     if args.is_empty() {
         return Ok(ExecResult::default());
     }
@@ -4884,38 +5242,9 @@ fn builtin_builtin(
         return Ok(result);
     }
 
-    // Also try registered commands (echo, printf, etc. are implemented as commands)
-    if let Some(cmd) = state.commands.get(name.as_str()) {
-        let env: std::collections::HashMap<String, String> = state
-            .env
-            .iter()
-            .map(|(k, v)| (k.clone(), v.value.as_scalar().to_string()))
-            .collect();
-        let fs = std::sync::Arc::clone(&state.fs);
-        let cwd = state.cwd.clone();
-        let limits = state.limits.clone();
-        let network_policy = state.network_policy.clone();
-
-        let ctx = crate::commands::CommandContext {
-            fs: &*fs,
-            cwd: &cwd,
-            env: &env,
-            variables: None,
-            stdin,
-            stdin_bytes: None,
-            limits: &limits,
-            network_policy: &network_policy,
-            exec: None,
-            shell_opts: None,
-        };
-
-        let cmd_result = cmd.execute(&sub_args, &ctx);
-        return Ok(ExecResult {
-            stdout: cmd_result.stdout,
-            stderr: cmd_result.stderr,
-            exit_code: cmd_result.exit_code,
-            stdout_bytes: cmd_result.stdout_bytes,
-        });
+    // A handful of shell builtins are implemented as registered commands.
+    if INTROSPECTION_ONLY_BUILTINS.contains(&name.as_str()) {
+        return execute_registered_command_by_name(name, &sub_args, state, stdin, extra_input_fds);
     }
 
     Ok(ExecResult {
@@ -5562,10 +5891,11 @@ fn builtin_hash(
             });
         }
         let mut stdout = String::new();
+        stdout.push_str("hits\tcommand\n");
         let mut entries: Vec<(&String, &String)> = state.command_hash.iter().collect();
         entries.sort_by_key(|(k, _)| k.as_str());
-        for (name, path) in entries {
-            stdout.push_str(&format!("{name}={path}\n"));
+        for (_name, path) in entries {
+            stdout.push_str(&format!("   1\t{path}\n"));
         }
         return Ok(ExecResult {
             stdout,
@@ -5802,11 +6132,14 @@ fn builtin_sh(
         return run_in_subshell(
             state,
             &program,
-            &[],
-            None,
-            None,
-            Some(stdin.to_string()),
-            false,
+            SubshellConfig {
+                positional: &[],
+                shell_name_override: None,
+                source_override: None,
+                source_text_override: Some(stdin.to_string()),
+                invoked_with_c: false,
+                shell_process: true,
+            },
         );
     }
 
@@ -5833,11 +6166,14 @@ fn builtin_sh(
                     return run_in_subshell(
                         state,
                         &program,
-                        &positional,
-                        shell_name_override,
-                        None,
-                        Some(cmd.to_string()),
-                        true,
+                        SubshellConfig {
+                            positional: &positional,
+                            shell_name_override,
+                            source_override: None,
+                            source_text_override: Some(cmd.to_string()),
+                            invoked_with_c: true,
+                            shell_process: true,
+                        },
                     );
                 }
                 return Ok(ExecResult {
@@ -5938,11 +6274,14 @@ fn builtin_sh(
                     return run_in_subshell(
                         state,
                         &program,
-                        &positional,
-                        Some(arg.as_str()),
-                        Some(path),
-                        Some(script),
-                        false,
+                        SubshellConfig {
+                            positional: &positional,
+                            shell_name_override: Some(arg.as_str()),
+                            source_override: Some(path),
+                            source_text_override: Some(script),
+                            invoked_with_c: false,
+                            shell_process: true,
+                        },
                     );
                 }
                 Err(e) => {
@@ -5960,11 +6299,14 @@ fn builtin_sh(
             return run_in_subshell(
                 state,
                 &program,
-                &[],
-                None,
-                None,
-                Some(stdin.to_string()),
-                false,
+                SubshellConfig {
+                    positional: &[],
+                    shell_name_override: None,
+                    source_override: None,
+                    source_text_override: Some(stdin.to_string()),
+                    invoked_with_c: false,
+                    shell_process: true,
+                },
             );
         }
 
@@ -5980,23 +6322,42 @@ fn builtin_sh(
 
 /// Execute a parsed program in an isolated subshell, returning only
 /// stdout/stderr/exit_code. Mirrors `execute_subshell` in walker.rs.
-fn run_in_subshell(
-    state: &mut InterpreterState,
-    program: &brush_parser::ast::Program,
-    positional: &[String],
-    shell_name_override: Option<&str>,
+struct SubshellConfig<'a> {
+    positional: &'a [String],
+    shell_name_override: Option<&'a str>,
     source_override: Option<String>,
     source_text_override: Option<String>,
     invoked_with_c: bool,
+    shell_process: bool,
+}
+
+fn run_in_subshell(
+    state: &mut InterpreterState,
+    program: &brush_parser::ast::Program,
+    config: SubshellConfig<'_>,
 ) -> Result<ExecResult, RustBashError> {
     use std::collections::HashMap;
     let cloned_fs = state.fs.deep_clone();
     let child_pid = next_child_pid(state);
+    let env = if config.shell_process {
+        state
+            .env
+            .iter()
+            .filter(|(_, var)| var.exported())
+            .map(|(name, var)| (name.clone(), var.clone()))
+            .collect()
+    } else {
+        state.env.clone()
+    };
     let mut sub_state = InterpreterState {
         fs: cloned_fs,
-        env: state.env.clone(),
+        env,
         cwd: state.cwd.clone(),
-        functions: state.functions.clone(),
+        functions: if config.shell_process {
+            HashMap::new()
+        } else {
+            state.functions.clone()
+        },
         last_exit_code: state.last_exit_code,
         commands: crate::interpreter::walker::clone_commands(&state.commands),
         shell_opts: state.shell_opts.clone(),
@@ -6013,12 +6374,13 @@ fn run_in_subshell(
         should_exit: false,
         loop_depth: 0,
         control_flow: None,
-        positional_params: if positional.is_empty() {
+        positional_params: if config.positional.is_empty() {
             state.positional_params.clone()
         } else {
-            positional.to_vec()
+            config.positional.to_vec()
         },
-        shell_name: shell_name_override
+        shell_name: config
+            .shell_name_override
             .map(|s| s.to_string())
             .unwrap_or_else(|| state.shell_name.clone()),
         shell_pid: state.shell_pid,
@@ -6028,7 +6390,7 @@ fn run_in_subshell(
         last_background_pid: None,
         last_background_status: None,
         interactive_shell: state.interactive_shell,
-        invoked_with_c,
+        invoked_with_c: config.invoked_with_c,
         random_seed: state.random_seed,
         local_scopes: Vec::new(),
         temp_binding_scopes: Vec::new(),
@@ -6041,10 +6403,17 @@ fn run_in_subshell(
         current_stdin_persistent_fd: None,
         dir_stack: state.dir_stack.clone(),
         command_hash: state.command_hash.clone(),
-        aliases: state.aliases.clone(),
+        aliases: if config.shell_process {
+            HashMap::new()
+        } else {
+            state.aliases.clone()
+        },
         current_lineno: state.current_lineno,
-        current_source: source_override.unwrap_or_else(|| state.current_source.clone()),
-        current_source_text: source_text_override
+        current_source: config
+            .source_override
+            .unwrap_or_else(|| state.current_source.clone()),
+        current_source_text: config
+            .source_text_override
             .unwrap_or_else(|| state.current_source_text.clone()),
         last_verbose_line: state.last_verbose_line,
         shell_start_time: state.shell_start_time,

@@ -1,7 +1,7 @@
 # Ordered Oils fix queue as of 2026-04-03.
 # Source of truth: current `tests/fixtures/oils/pass-list.txt` plus `tests/oils_spec.rs`
 # skip rules and `tests/common/oils_format.rs` case parsing.
-# Current totals: 1916 pass / 283 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
+# Current totals: 1968 pass / 231 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
 #
 # ── How the Oils test infra works ──
 # Runner:      tests/oils_spec.rs (datatest_stable harness, discovers .test.sh files)
@@ -26,12 +26,6 @@
 # `builtin-cd.test` and `redirect.test` stay on the queue, but expect a small VFS/symlink/fd tail to remain until M9.
 
 ## Builtins, Shell State, Options, Control, Tracing
-- command_.test (xfail=11) command lookup / PATH / cache / script execution behavior
-- builtin-meta.test (xfail=7) `command -v/-V`, `builtin`, `command -p`
-- builtin-eval-source.test (xfail=7) `eval` / `source` option and PATH semantics
-- builtin-vars.test (xfail=7) `unset`, `local`, export / scope edge cases
-- builtin-bracket.test (xfail=10) `test` / `[` predicate fidelity
-- builtin-special.test (xfail=8) POSIX special builtin semantics
 - strict-options.test (xfail=5) strict mode control-flow / argv behavior
 - builtin-getopts.test (xfail=6) `getopts`, `OPTIND`, `OPTARG` edge cases
 - loop.test (xfail=5) `break` / `continue` / loop validation tail

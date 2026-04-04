@@ -1299,13 +1299,16 @@ fn test_size_zero() {
 }
 
 #[test]
-fn test_readable_writable_executable() {
+fn test_readable_writable_and_executable_bits() {
     let mut sh = shell();
     sh.exec("touch /file.txt").unwrap();
     let r = sh.exec("[ -r /file.txt ]").unwrap();
     assert_eq!(r.exit_code, 0);
     let r = sh.exec("[ -w /file.txt ]").unwrap();
     assert_eq!(r.exit_code, 0);
+    let r = sh.exec("[ -x /file.txt ]").unwrap();
+    assert_eq!(r.exit_code, 1);
+    sh.exec("chmod +x /file.txt").unwrap();
     let r = sh.exec("[ -x /file.txt ]").unwrap();
     assert_eq!(r.exit_code, 0);
 }
@@ -5951,6 +5954,14 @@ fn which_reports_builtin_when_no_path_match() {
     let r = sh.exec("which cd").unwrap();
     assert!(r.stdout.contains("shell built-in command"));
     assert_eq!(r.exit_code, 0);
+}
+
+#[test]
+fn type_a_special_builtin_only_prints_builtin_once() {
+    let mut sh = shell();
+    let r = sh.exec("type -a export").unwrap();
+    assert_eq!(r.exit_code, 0);
+    assert_eq!(r.stdout.matches("export is a shell builtin\n").count(), 1);
 }
 
 #[test]
