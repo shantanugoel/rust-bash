@@ -1,7 +1,7 @@
-# Ordered Oils fix queue as of 2026-04-03.
+# Ordered Oils fix queue as of 2026-04-04.
 # Source of truth: current `tests/fixtures/oils/pass-list.txt` plus `tests/oils_spec.rs`
 # skip rules and `tests/common/oils_format.rs` case parsing.
-# Current totals: 2064 pass / 135 xfail / 11 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
+# Current backlog below: 132 xfails across 21 files, with 42 whole-file skips in `tests/oils_spec.rs`.
 #
 # ── How the Oils test infra works ──
 # Runner:      tests/oils_spec.rs (datatest_stable harness, discovers .test.sh files)
@@ -19,38 +19,37 @@
 # Override precedence in .test.sh format: N-I > BUG > OK > default (per-shell).
 #
 # ── Backlog ──
-# This is a file-level backlog, ordered by recommended implementation sequence.
+# This is a file-level backlog grouped by the current suspected blocker.
 # Each line is one Oils `.test.sh` file with remaining xfails.
-# Permanent whole-file skips are intentionally excluded.
-# `nul-bytes.test` and `unicode.test` stay deferred to Milestone 9 work.
-# `builtin-cd.test` and `redirect.test` stay on the queue, but expect a small VFS/symlink/fd tail to remain until M9.
+# Permanent whole-file skips and complete files are intentionally excluded.
+# `nul-bytes.test` and `unicode.test` still map to Milestone 9 fidelity work.
 
 
-## Execution, Redirects, Globs, Filesystem Fidelity
-- sh-usage.test (xfail=2) `sh` / `bash` invocation and argument handling (remaining: locale tests)
+## Fully local (67 xfails / 16 files)
+- sh-usage.test (xfail=2) `sh` / `bash` invocation and locale handling
 - bugs.test (xfail=4) mixed regression bucket; remaining: NUL byte, /dev/zero, arith code injection (x2)
-- redirect.test (xfail=4) redirection semantics; remaining: mkfifo, {var} parsing, fd leak, xtrace routing
-- builtin-cd.test (xfail=7) `cd` / `pwd` semantics; ALL symlink-related (M9/VFS)
-- glob.test (xfail=3) remaining: command-as-glob (external path), escaped `-` in charclass, LC_COLLATE
-- globignore.test (xfail=3) remaining: subdirectory patterns (x2), charclass `[[:alnum:]]`
-- process-sub.test (xfail=2) remaining: output process substitution `>()` (x2)
-- extglob-match.test (xfail=1) remaining: `!(str)` in `[[ ]]` changes meaning (parser-level)
-- pipeline.test (xfail=1) remaining: SIGPIPE (exit 141 = 128+13, needs signal infrastructure)
-
-## Deferred Until Milestone 9
-- nul-bytes.test (xfail=9) binary/NUL semantics; maps to M9 binary-encoding work
-- unicode.test (xfail=6) Unicode escape / invalid-codepoint fidelity; keep with M9 binary/text fidelity work
-
-## Parser-Adjacent Backlog
-- alias.test (xfail=26) keep at the end; current blocker is moving alias expansion earlier than the post-AST `split_whitespace()` hack in `src/interpreter/walker.rs`, likely between tokenization and parsing in `src/interpreter/mod.rs` and/or by changing `RustBash::exec()` parse granularity; this is not proven to require `brush_parser` changes
-- parse-errors.test (xfail=6) remaining: long token (needs python2), `${%}` parser literal, `}` on second line, interactive parse error, array literal inside array
-- command-sub.test (xfail=15) command-sub quoting and newline semantics; exit-code propagation fixed
+- redirect.test (xfail=4) redirection semantics; remaining: mkfifo, `{var}` parsing edge cases, fd leak, xtrace routing
+- builtin-cd.test (xfail=7) `cd` / `pwd` symlink fidelity (M9/VFS)
+- glob.test (xfail=3) command-as-glob, escaped `-` in charclass, LC_COLLATE
+- globignore.test (xfail=3) subdirectory patterns (x2), charclass `[[:alnum:]]`
+- process-sub.test (xfail=2) standalone and redirected `>()` plumbing
+- pipeline.test (xfail=1) SIGPIPE (exit 141 = 128+13)
+- nul-bytes.test (xfail=9) binary/NUL semantics (M9 binary fidelity)
+- unicode.test (xfail=6) Unicode escape / invalid-codepoint fidelity (M9 text fidelity)
 - array-sparse.test (xfail=2) compgen -F, non-numeric keys in indexed init
-- var-ref.test (xfail=12) indirect expansion: subscripts, suffix ops, @Q, code injection, tilde
-- array.test (xfail=4) parser-blocked: space before (, env bindings, multiple subscripts
-- nameref.test (xfail=3) a[expr], a[@] subscript namerefs, ref[0]= mutation
-- regex.test (xfail=7) parser-blocked (6): spaces in patterns, operator chars; interpreter (1): quoted char-class
-- array-assign.test (xfail=10) ALL parser-blocked: spaces in subscripts, nested subscripts, etc.
-- array-assoc.test (xfail=4) hash-order-dependent slicing/quoting, parser-blocked brace expansion, surprising indexed-literal reset
-- introspect.test (xfail=1) BASH_LINENO off-by-2 in sourced files
-- array-compat.test (xfail=0) COMPLETE
+- var-ref.test (xfail=12) indirect expansion: subscripts, suffix ops, `@Q`, code injection, tilde
+- array.test (xfail=4) env-binding rejection, space-before-`(` behavior, multiple subscripts
+- nameref.test (xfail=3) `a[expr]`, `a[@]`, and invalid mutation through nameref
+- array-assoc.test (xfail=4) slicing/quoting, assoc reset semantics, brace-expansion interaction, `${a[@]@Q}`
+- introspect.test (xfail=1) `BASH_LINENO` / `BASH_SOURCE` off-by-2 in sourced files
+
+## Local but parser-adjacent (65 xfails / 6 files)
+- extglob-match.test (xfail=1) `!(str)` in `[[ ]]` changes meaning after `shopt -s extglob`
+- alias.test (xfail=26) move alias expansion before parse; replace the post-AST `split_whitespace()` hack
+- parse-errors.test (xfail=6) `${%}`, `}` on second line, `sh -i -c` parse error mapping, array literal inside array, and long-token cases currently blocked by external-command (`python2`) unavailability in VFS
+- command-sub.test (xfail=15) backtick quoting and newline semantics; likely needs local rewrite / normalization before parse
+- regex.test (xfail=7) `[[ =~ ]]` spacing/operator parsing plus quoted char-class fidelity (1 case may still need upstream regex-lexer investigation)
+- array-assign.test (xfail=10) spaces and nesting in LHS subscripts, plus context-sensitive array assignment parsing
+
+## Need upstream changes (0 xfails / 0 files)
+- None currently. Revisit this section if any remaining row stops looking locally fixable.
