@@ -230,47 +230,47 @@ fn execute_oils_case(file_stem: &str, case: &OilsTestCase, legacy_tmp_dir: bool)
         ),
         (
             "/repo/spec/testdata/return-helper.sh".into(),
-            include_bytes!("../oil/spec/testdata/return-helper.sh").to_vec(),
+            include_bytes!("fixtures/oils/testdata/return-helper.sh").to_vec(),
         ),
         (
             "/repo/spec/testdata/top-level-control-flow.sh".into(),
-            include_bytes!("../oil/spec/testdata/top-level-control-flow.sh").to_vec(),
+            include_bytes!("fixtures/oils/testdata/top-level-control-flow.sh").to_vec(),
         ),
         (
             "/repo/spec/testdata/getopts-1523.sh".into(),
-            include_bytes!("../oil/spec/testdata/getopts-1523.sh").to_vec(),
+            include_bytes!("fixtures/oils/testdata/getopts-1523.sh").to_vec(),
         ),
         (
             "/repo/spec/testdata/continue.sh".into(),
-            include_bytes!("../oil/spec/testdata/continue.sh").to_vec(),
+            include_bytes!("fixtures/oils/testdata/continue.sh").to_vec(),
         ),
         (
             "/repo/spec/testdata/break.sh".into(),
-            include_bytes!("../oil/spec/testdata/break.sh").to_vec(),
+            include_bytes!("fixtures/oils/testdata/break.sh").to_vec(),
         ),
         (
             "/repo/spec/testdata/return.sh".into(),
-            include_bytes!("../oil/spec/testdata/return.sh").to_vec(),
+            include_bytes!("fixtures/oils/testdata/return.sh").to_vec(),
         ),
         (
             "/repo/spec/testdata/echo-funcname.sh".into(),
-            include_bytes!("../oil/spec/testdata/echo-funcname.sh").to_vec(),
+            include_bytes!("fixtures/oils/testdata/echo-funcname.sh").to_vec(),
         ),
         (
             "/repo/spec/testdata/bash-source-string.sh".into(),
-            include_bytes!("../oil/spec/testdata/bash-source-string.sh").to_vec(),
+            include_bytes!("fixtures/oils/testdata/bash-source-string.sh").to_vec(),
         ),
         (
             "/repo/spec/testdata/bash-source-string2.sh".into(),
-            include_bytes!("../oil/spec/testdata/bash-source-string2.sh").to_vec(),
+            include_bytes!("fixtures/oils/testdata/bash-source-string2.sh").to_vec(),
         ),
         (
             "/repo/spec/testdata/bash-source-pushtemp.sh".into(),
-            include_bytes!("../oil/spec/testdata/bash-source-pushtemp.sh").to_vec(),
+            include_bytes!("fixtures/oils/testdata/bash-source-pushtemp.sh").to_vec(),
         ),
         (
             "/repo/spec/testdata/bash-source-source.sh".into(),
-            include_bytes!("../oil/spec/testdata/bash-source-source.sh").to_vec(),
+            include_bytes!("fixtures/oils/testdata/bash-source-source.sh").to_vec(),
         ),
     ]));
 

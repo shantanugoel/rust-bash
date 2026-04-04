@@ -113,7 +113,9 @@ Spec tests verify command implementations (`grep`, `sed`, `awk`, `jq`) against m
 
 The [Oils project](https://github.com/oils-for-unix/oils) (formerly Oil Shell) maintains the most comprehensive open-source bash conformance test suite: **2,846 test cases across 142 `.test.sh` files**. These tests are licensed under Apache 2.0 and imported from upstream Oils commit `7789e21d81537a5b47bacbd4267edf7c659a9366`.
 
-**File location**: `tests/fixtures/oils/` — the `.test.sh` files plus a `LICENSE` attribution and `pass-list.txt`.
+**File location**: `tests/fixtures/oils/` — the `.test.sh` files, a `LICENSE`
+attribution, `pass-list.txt`, and a tracked `testdata/` subset of upstream
+helper scripts that referenced cases need at runtime.
 
 **Runner**: `tests/oils_spec.rs` uses `datatest-stable` to discover all `.test.sh` files and generate one `#[test]` per file. Within each file, all cases run sequentially with per-file summaries.
 
