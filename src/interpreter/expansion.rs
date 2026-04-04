@@ -438,6 +438,9 @@ fn execute_command_substitution(
         local_scopes: Vec::new(),
         temp_binding_scopes: Vec::new(),
         in_function_depth: 0,
+        source_depth: state.source_depth,
+        getopts_subpos: state.getopts_subpos,
+        getopts_args_signature: state.getopts_args_signature.clone(),
         traps: HashMap::new(),
         in_trap: false,
         errexit_suppressed: state.errexit_suppressed,
@@ -2229,9 +2232,7 @@ fn shell_quote(val: &str) -> String {
             '\x0C' => out.push_str("\\f"),
             '\x0B' => out.push_str("\\v"),
             '\x1B' => out.push_str("\\E"),
-            c if c.is_ascii_control() => {
-                out.push_str(&format!("\\x{:02x}", c as u32));
-            }
+            c if c.is_ascii_control() => out.push_str(&format!("\\{:03o}", c as u32)),
             c => out.push(c),
         }
     }
@@ -4524,6 +4525,14 @@ pub(crate) fn expand_pattern_string(
     Ok(finalize_no_split_pattern(words).join(" "))
 }
 
+pub(crate) fn expand_pattern_word_mut(
+    word: &ast::Word,
+    state: &mut InterpreterState,
+) -> Result<String, RustBashError> {
+    let words = expand_word_segments_mut(word, state)?;
+    Ok(finalize_no_split_pattern(words).join(" "))
+}
+
 /// Expand a replacement string from a `${var//pattern/replacement}` operator.
 ///
 /// Quote removal is performed but glob characters are NOT escaped,
@@ -4795,6 +4804,9 @@ mod tests {
             local_scopes: Vec::new(),
             temp_binding_scopes: Vec::new(),
             in_function_depth: 0,
+            source_depth: 0,
+            getopts_subpos: 0,
+            getopts_args_signature: String::new(),
             traps: HashMap::new(),
             in_trap: false,
             errexit_suppressed: 0,

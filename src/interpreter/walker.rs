@@ -3,7 +3,9 @@
 use crate::commands::CommandResult;
 use crate::error::RustBashError;
 use crate::interpreter::builtins::{self, resolve_path};
-use crate::interpreter::expansion::{expand_word_mut, expand_word_to_string_mut};
+use crate::interpreter::expansion::{
+    expand_pattern_word_mut, expand_word_mut, expand_word_to_string_mut,
+};
 use crate::interpreter::{
     CallFrame, ExecResult, ExecutionCounters, FunctionDef, InterpreterState, PersistentFd,
     Variable, VariableAttrs, VariableValue, ensure_shell_internal_vars, execute_trap,
@@ -1566,6 +1568,22 @@ fn word_is_simply_quoted_literal(word: &ast::Word) -> bool {
         || (value.starts_with('"') && value.ends_with('"') && value.len() >= 2)
 }
 
+fn redirects_dup_stderr_to_stdout(redirects: &[&ast::IoRedirect]) -> bool {
+    redirects.iter().any(|redir| match redir {
+        ast::IoRedirect::File(
+            fd,
+            ast::IoFileRedirectKind::DuplicateOutput,
+            ast::IoFileRedirectTarget::Fd(1),
+        ) => fd.unwrap_or(1) == 2,
+        ast::IoRedirect::File(
+            fd,
+            ast::IoFileRedirectKind::DuplicateOutput,
+            ast::IoFileRedirectTarget::Duplicate(word),
+        ) => fd.unwrap_or(1) == 2 && word.value == "1",
+        _ => false,
+    })
+}
+
 fn expand_alias_command(cmd_name: &str, state: &InterpreterState) -> (String, Vec<String>) {
     if !state.shopt_opts.expand_aliases {
         return (cmd_name.to_string(), Vec::new());
@@ -1870,8 +1888,16 @@ fn execute_simple_command(
                 Err(other) => return Err(other),
             }
         }
+        let quoted_empty_command = cmd
+            .word_or_name
+            .as_ref()
+            .is_some_and(word_is_simply_quoted_literal);
         let mut result = ExecResult {
-            exit_code: state.last_exit_code,
+            exit_code: if quoted_empty_command {
+                127
+            } else {
+                state.last_exit_code
+            },
             ..ExecResult::default()
         };
         for a in expanded {
@@ -2027,6 +2053,12 @@ fn execute_simple_command(
         };
         let saved_stdin_offset = state.stdin_offset;
         let saved_current_stdin_persistent_fd = state.current_stdin_persistent_fd;
+        let merge_stderr_to_stdout = redirects_dup_stderr_to_stdout(&redirects);
+        let saved_fd2 = if merge_stderr_to_stdout {
+            state.persistent_fds.insert(2, PersistentFd::DupStdFd(1))
+        } else {
+            None
+        };
         if input_redirects.contains_key(&0) {
             state.stdin_offset = 0;
         }
@@ -2066,6 +2098,13 @@ fn execute_simple_command(
             state.stdin_offset = saved_stdin_offset;
         }
         state.current_stdin_persistent_fd = saved_current_stdin_persistent_fd;
+        if merge_stderr_to_stdout {
+            if let Some(saved_fd2) = saved_fd2 {
+                state.persistent_fds.insert(2, saved_fd2);
+            } else {
+                state.persistent_fds.remove(&2);
+            }
+        }
         let mut result = dispatch_result?;
 
         // 7a. Emit xtrace to stderr
@@ -2132,8 +2171,18 @@ fn execute_simple_command(
                     trace.push_str(&format!("{ps4}{assignment}\n"));
                 }
             }
-            // Prepend trace so it appears before the command's own stderr
-            result.stderr = format!("{trace}{}", result.stderr);
+            if merge_stderr_to_stdout
+                || matches!(
+                    state.persistent_fds.get(&2),
+                    Some(PersistentFd::DupStdFd(1))
+                )
+            {
+                result.stdout = format!("{trace}{}", result.stdout);
+                result.stdout_bytes = None;
+            } else {
+                // Prepend trace so it appears before the command's own stderr
+                result.stderr = format!("{trace}{}", result.stderr);
+            }
         }
 
         // 8. Apply output redirections
@@ -2392,12 +2441,29 @@ fn execute_for(
     }
 
     state.current_lineno = loop_lineno;
+    let explicit_empty_word_list = if for_clause.values.is_none() {
+        char_range_slice(
+            &state.current_source_text,
+            for_clause.loc.start.index,
+            for_clause.loc.end.index,
+        )
+        .map(|snippet| {
+            let header = snippet.split("do").next().unwrap_or(snippet);
+            header.contains(" in ;") || header.contains(" in\n") || header.contains(" in\r\n")
+        })
+        .unwrap_or(false)
+    } else {
+        false
+    };
+
     let values: Vec<String> = if let Some(words) = &for_clause.values {
         let mut vals = Vec::new();
         for w in words {
             vals.extend(expand_word_mut(w, state)?);
         }
         vals
+    } else if explicit_empty_word_list {
+        Vec::new()
     } else {
         // No word list → iterate over positional parameters
         state.positional_params.clone()
@@ -2963,6 +3029,9 @@ fn execute_subshell(
         local_scopes: state.local_scopes.clone(),
         temp_binding_scopes: state.temp_binding_scopes.clone(),
         in_function_depth: state.in_function_depth,
+        source_depth: state.source_depth,
+        getopts_subpos: state.getopts_subpos,
+        getopts_args_signature: state.getopts_args_signature.clone(),
         traps: state.traps.clone(),
         in_trap: false,
         errexit_suppressed: state.errexit_suppressed,
@@ -3044,6 +3113,9 @@ fn make_pipeline_stage_state(state: &mut InterpreterState) -> InterpreterState {
         local_scopes: state.local_scopes.clone(),
         temp_binding_scopes: state.temp_binding_scopes.clone(),
         in_function_depth: state.in_function_depth,
+        source_depth: state.source_depth,
+        getopts_subpos: state.getopts_subpos,
+        getopts_args_signature: state.getopts_args_signature.clone(),
         traps: state.traps.clone(),
         in_trap: false,
         errexit_suppressed: state.errexit_suppressed,
@@ -3094,7 +3166,7 @@ fn execute_case(
         } else {
             let mut m = false;
             for pattern_word in &case_item.patterns {
-                let pattern = expand_word_to_string_mut(pattern_word, state)?;
+                let pattern = expand_pattern_word_mut(pattern_word, state)?;
                 let matched_pattern = if state.shopt_opts.nocasematch {
                     if state.shopt_opts.extglob {
                         crate::interpreter::pattern::extglob_match_nocase(&pattern, &value)
@@ -3246,6 +3318,9 @@ pub(crate) fn make_exec_callback(
             local_scopes: Vec::new(),
             temp_binding_scopes: Vec::new(),
             in_function_depth: 0,
+            source_depth: 0,
+            getopts_subpos: 0,
+            getopts_args_signature: String::new(),
             traps: HashMap::new(),
             in_trap: false,
             errexit_suppressed: 0,
@@ -4829,6 +4904,9 @@ fn make_proc_sub_state(state: &mut InterpreterState) -> InterpreterState {
         local_scopes: Vec::new(),
         temp_binding_scopes: Vec::new(),
         in_function_depth: 0,
+        source_depth: state.source_depth,
+        getopts_subpos: state.getopts_subpos,
+        getopts_args_signature: state.getopts_args_signature.clone(),
         traps: HashMap::new(),
         in_trap: false,
         errexit_suppressed: state.errexit_suppressed,

@@ -56,7 +56,7 @@ pub(crate) fn execute_builtin(
         "printf" => builtin_printf(args, state).map(Some),
         "sh" | "bash" => builtin_sh(args, state, stdin).map(Some),
         "help" => builtin_help(args, state).map(Some),
-        "history" => Ok(Some(ExecResult::default())),
+        "history" => builtin_history(args, state).map(Some),
         _ => Ok(None),
     }
 }
@@ -650,7 +650,12 @@ fn builtin_break(
     let n = parse_loop_level("break", args)?;
     let n = match n {
         Ok(level) => level,
-        Err(result) => return Ok(result),
+        Err(result) => {
+            if state.loop_depth > 0 {
+                state.should_exit = true;
+            }
+            return Ok(result);
+        }
     };
     if state.loop_depth == 0 {
         return Ok(ExecResult {
@@ -669,10 +674,22 @@ fn builtin_continue(
     args: &[String],
     state: &mut InterpreterState,
 ) -> Result<ExecResult, RustBashError> {
+    if args.len() > 1 && state.loop_depth > 0 {
+        // Bash treats `continue 1 2 3` as a successful break-like escape from
+        // the current loop, which the imported Oils fixture models as a bug.
+        state.control_flow = Some(ControlFlow::Break(1));
+        return Ok(ExecResult::default());
+    }
+
     let n = parse_loop_level("continue", args)?;
     let n = match n {
         Ok(level) => level,
-        Err(result) => return Ok(result),
+        Err(result) => {
+            if state.loop_depth > 0 {
+                state.should_exit = true;
+            }
+            return Ok(result);
+        }
     };
     if state.loop_depth == 0 {
         return Ok(ExecResult {
@@ -3372,7 +3389,7 @@ fn builtin_eval(
             });
         }
     };
-    let saved_source_text = std::mem::replace(&mut state.current_source_text, input.clone());
+    let saved_source_text = std::mem::replace(&mut state.current_source_text, input);
     let result = execute_program(&program, state);
     state.current_source_text = saved_source_text;
     state.counters.call_depth -= 1;
@@ -4125,14 +4142,30 @@ fn builtin_source(
     if override_params {
         state.positional_params = args[1..].to_vec();
     }
+    state.source_depth += 1;
     let result = execute_program(&program, state);
+    state.source_depth = state.source_depth.saturating_sub(1);
     state.current_source = saved_source;
     state.current_source_text = saved_source_text;
     if let Some(saved_params) = saved_params {
         state.positional_params = saved_params;
     }
     state.counters.call_depth -= 1;
-    result
+    match result {
+        Ok(mut result) => {
+            match state.control_flow.take() {
+                Some(ControlFlow::Return(code)) => {
+                    result.exit_code = code;
+                }
+                Some(other) => {
+                    state.control_flow = Some(other);
+                }
+                None => {}
+            }
+            Ok(result)
+        }
+        Err(err) => Err(err),
+    }
 }
 
 // ── local ────────────────────────────────────────────────────────────
@@ -4368,17 +4401,17 @@ fn builtin_return(
     args: &[String],
     state: &mut InterpreterState,
 ) -> Result<ExecResult, RustBashError> {
-    if state.in_function_depth == 0 {
+    if state.in_function_depth == 0 && state.source_depth == 0 {
         return Ok(ExecResult {
             stderr: "return: can only `return' from a function or sourced script\n".to_string(),
-            exit_code: 1,
+            exit_code: 2,
             ..ExecResult::default()
         });
     }
 
     let code = if let Some(arg) = args.first() {
-        match arg.parse::<i32>() {
-            Ok(n) => n & 0xFF,
+        match arg.parse::<i64>() {
+            Ok(n) => n.rem_euclid(256) as i32,
             Err(_) => {
                 return Ok(ExecResult {
                     stderr: format!("return: {arg}: numeric argument required\n"),
@@ -5237,6 +5270,17 @@ fn builtin_builtin(
         return Ok(help);
     }
 
+    if matches!(name.as_str(), "declare" | "typeset")
+        && sub_args
+            .iter()
+            .any(|arg| arg.contains("=(") || arg.contains("+=("))
+    {
+        return Ok(ExecResult {
+            exit_code: 1,
+            ..ExecResult::default()
+        });
+    }
+
     // Try shell builtins first
     if let Some(result) = execute_builtin(name, &sub_args, state, stdin, extra_input_fds)? {
         return Ok(result);
@@ -5270,6 +5314,7 @@ fn builtin_getopts(
 
     let optstring = &args[0];
     let var_name = &args[1];
+    let invalid_var_name = !is_valid_var_name(var_name);
 
     // If extra args provided, use them; otherwise use positional params
     let option_args: Vec<String> = if args.len() > 2 {
@@ -5277,20 +5322,42 @@ fn builtin_getopts(
     } else {
         state.positional_params.clone()
     };
+    let args_signature = option_args.join("\u{1f}");
+    let previous_args_signature =
+        std::mem::replace(&mut state.getopts_args_signature, args_signature.clone());
 
     // Loop instead of recursion: advance to the next argument when the
     // sub-position within bundled flags has been exhausted.
     loop {
-        let optind: usize = state
+        let mut optind: usize = state
             .env
             .get("OPTIND")
             .and_then(|v| v.value.as_scalar().parse().ok())
             .unwrap_or(1);
+        if optind == 0 {
+            optind = 1;
+        }
+
+        let reset_due_to_new_args =
+            previous_args_signature != args_signature && optind > option_args.len();
+        if reset_due_to_new_args {
+            set_variable(state, "OPTIND", "1".to_string())?;
+            state.getopts_subpos = 0;
+            optind = 1;
+        }
 
         let idx = optind.saturating_sub(1);
 
         if idx >= option_args.len() {
-            set_variable(state, var_name, "?".to_string())?;
+            state.getopts_subpos = 0;
+            if !invalid_var_name {
+                set_variable(state, var_name, "?".to_string())?;
+            }
+            if state.env.contains_key("OPTARG") {
+                set_variable(state, "OPTARG", String::new())?;
+            } else {
+                state.env.remove("OPTARG");
+            }
             return Ok(ExecResult {
                 exit_code: 1,
                 ..ExecResult::default()
@@ -5300,7 +5367,15 @@ fn builtin_getopts(
         let current_arg = &option_args[idx];
 
         if !current_arg.starts_with('-') || current_arg == "-" || current_arg == "--" {
-            set_variable(state, var_name, "?".to_string())?;
+            state.getopts_subpos = 0;
+            if !invalid_var_name {
+                set_variable(state, var_name, "?".to_string())?;
+            }
+            if state.env.contains_key("OPTARG") {
+                set_variable(state, "OPTARG", String::new())?;
+            } else {
+                state.env.remove("OPTARG");
+            }
             if current_arg == "--" {
                 set_variable(state, "OPTIND", (optind + 1).to_string())?;
             }
@@ -5311,16 +5386,11 @@ fn builtin_getopts(
         }
 
         let opt_chars: Vec<char> = current_arg[1..].chars().collect();
-
-        let sub_pos: usize = state
-            .env
-            .get("__GETOPTS_SUBPOS")
-            .and_then(|v| v.value.as_scalar().parse().ok())
-            .unwrap_or(0);
+        let sub_pos = state.getopts_subpos;
 
         if sub_pos >= opt_chars.len() {
             // Advance to next argument and retry (loop, not recurse).
-            set_variable(state, "__GETOPTS_SUBPOS", "0".to_string())?;
+            state.getopts_subpos = 0;
             set_variable(state, "OPTIND", (optind + 1).to_string())?;
             continue;
         }
@@ -5337,51 +5407,87 @@ fn builtin_getopts(
                 let rest: String = opt_chars[sub_pos + 1..].iter().collect();
                 if !rest.is_empty() {
                     set_variable(state, "OPTARG", rest)?;
-                    set_variable(state, "__GETOPTS_SUBPOS", "0".to_string())?;
+                    state.getopts_subpos = 0;
                     set_variable(state, "OPTIND", (optind + 1).to_string())?;
                 } else if idx + 1 < option_args.len() {
                     set_variable(state, "OPTARG", option_args[idx + 1].clone())?;
-                    set_variable(state, "__GETOPTS_SUBPOS", "0".to_string())?;
+                    state.getopts_subpos = 0;
                     set_variable(state, "OPTIND", (optind + 2).to_string())?;
                 } else {
                     // Missing argument
-                    set_variable(state, "__GETOPTS_SUBPOS", "0".to_string())?;
+                    state.getopts_subpos = 0;
                     set_variable(state, "OPTIND", (optind + 1).to_string())?;
-                    if silent {
-                        set_variable(state, var_name, ":".to_string())?;
-                        set_variable(state, "OPTARG", opt_char.to_string())?;
-                        return Ok(ExecResult::default());
+                    if reset_due_to_new_args {
+                        if state.env.contains_key("OPTARG") {
+                            set_variable(state, "OPTARG", String::new())?;
+                        } else {
+                            state.env.remove("OPTARG");
+                        }
+                        if !invalid_var_name {
+                            set_variable(state, var_name, "?".to_string())?;
+                        }
+                        return Ok(ExecResult {
+                            exit_code: 1,
+                            ..ExecResult::default()
+                        });
                     }
-                    set_variable(state, var_name, "?".to_string())?;
+                    if silent {
+                        if !invalid_var_name {
+                            set_variable(state, var_name, ":".to_string())?;
+                        }
+                        set_variable(state, "OPTARG", opt_char.to_string())?;
+                        return Ok(ExecResult {
+                            exit_code: if invalid_var_name { 1 } else { 0 },
+                            ..ExecResult::default()
+                        });
+                    }
+                    if !invalid_var_name {
+                        set_variable(state, var_name, "?".to_string())?;
+                    }
                     return Ok(ExecResult {
                         stderr: format!("getopts: option requires an argument -- '{opt_char}'\n"),
+                        exit_code: if invalid_var_name { 1 } else { 0 },
                         ..ExecResult::default()
                     });
                 }
             } else {
-                state.env.remove("OPTARG");
-                if sub_pos + 1 < opt_chars.len() {
-                    set_variable(state, "__GETOPTS_SUBPOS", (sub_pos + 1).to_string())?;
+                if state.env.contains_key("OPTARG") {
+                    set_variable(state, "OPTARG", String::new())?;
                 } else {
-                    set_variable(state, "__GETOPTS_SUBPOS", "0".to_string())?;
+                    state.env.remove("OPTARG");
+                }
+                if sub_pos + 1 < opt_chars.len() {
+                    state.getopts_subpos = sub_pos + 1;
+                } else {
+                    state.getopts_subpos = 0;
                     set_variable(state, "OPTIND", (optind + 1).to_string())?;
                 }
             }
-            set_variable(state, var_name, opt_char.to_string())?;
-            return Ok(ExecResult::default());
+            if !invalid_var_name {
+                set_variable(state, var_name, opt_char.to_string())?;
+            }
+            return Ok(ExecResult {
+                exit_code: if invalid_var_name { 1 } else { 0 },
+                ..ExecResult::default()
+            });
         }
 
         // Invalid option
         if silent {
-            set_variable(state, var_name, "?".to_string())?;
+            if !invalid_var_name {
+                set_variable(state, var_name, "?".to_string())?;
+            }
             set_variable(state, "OPTARG", opt_char.to_string())?;
         } else {
-            set_variable(state, var_name, "?".to_string())?;
+            if !invalid_var_name {
+                set_variable(state, var_name, "?".to_string())?;
+            }
+            set_variable(state, "OPTARG", String::new())?;
         }
         if sub_pos + 1 < opt_chars.len() {
-            set_variable(state, "__GETOPTS_SUBPOS", (sub_pos + 1).to_string())?;
+            state.getopts_subpos = sub_pos + 1;
         } else {
-            set_variable(state, "__GETOPTS_SUBPOS", "0".to_string())?;
+            state.getopts_subpos = 0;
             set_variable(state, "OPTIND", (optind + 1).to_string())?;
         }
         let stderr = if silent {
@@ -5391,6 +5497,7 @@ fn builtin_getopts(
         };
         return Ok(ExecResult {
             stderr,
+            exit_code: if invalid_var_name { 1 } else { 0 },
             ..ExecResult::default()
         });
     }
@@ -5407,6 +5514,7 @@ fn builtin_mapfile(
     let mut delimiter = '\n';
     let mut max_count: Option<usize> = None;
     let mut skip_count: usize = 0;
+    let mut origin: usize = 0;
     let mut array_name = "MAPFILE".to_string();
     let mut i = 0;
 
@@ -5458,12 +5566,27 @@ fn builtin_mapfile(
                         skip_count = count_str.parse().unwrap_or(0);
                         break;
                     }
-                    'C' | 'c' | 'O' | 'u' => {
-                        // -C callback, -c quantum, -O origin, -u fd — skip values
+                    'C' | 'c' | 'u' => {
+                        // -C callback, -c quantum, -u fd — skip values
                         let rest: String = chars.collect();
                         if rest.is_empty() {
                             i += 1; // skip the argument value
                         }
+                        break;
+                    }
+                    'O' => {
+                        let rest: String = chars.collect();
+                        let origin_str = if rest.is_empty() {
+                            i += 1;
+                            if i < args.len() {
+                                args[i].as_str()
+                            } else {
+                                "0"
+                            }
+                        } else {
+                            &rest
+                        };
+                        origin = origin_str.parse().unwrap_or(0);
                         break;
                     }
                     _ => {
@@ -5483,15 +5606,23 @@ fn builtin_mapfile(
 
     // Split stdin by delimiter
     let lines: Vec<&str> = if delimiter == '\0' {
-        // NUL delimiter: split on NUL
-        stdin.split('\0').collect()
+        stdin.split_terminator('\0').collect()
     } else {
         split_keeping_delimiter(stdin, delimiter)
     };
 
-    // Build the array
-    let mut map = std::collections::BTreeMap::new();
-    let mut count = 0;
+    let mut map = if origin == 0 {
+        std::collections::BTreeMap::new()
+    } else {
+        match state.env.get(array_name.as_str()) {
+            Some(var) => match &var.value {
+                VariableValue::IndexedArray(existing) => existing.clone(),
+                _ => std::collections::BTreeMap::new(),
+            },
+            None => std::collections::BTreeMap::new(),
+        }
+    };
+    let mut count = 0usize;
 
     for (line_idx, line) in lines.iter().enumerate() {
         if line_idx < skip_count {
@@ -5516,7 +5647,7 @@ fn builtin_mapfile(
                 actual_value: map.len() + 1,
             });
         }
-        map.insert(count, value);
+        map.insert(origin + count, value);
         count += 1;
     }
 
@@ -5661,19 +5792,18 @@ fn builtin_popd(
     args: &[String],
     state: &mut InterpreterState,
 ) -> Result<ExecResult, RustBashError> {
-    if state.dir_stack.is_empty() {
-        return Ok(ExecResult {
-            stderr: "popd: directory stack empty\n".to_string(),
-            exit_code: 1,
-            ..ExecResult::default()
-        });
-    }
-
     if !args.is_empty() {
         let arg = &args[0];
 
         // `--` terminates options
         if arg == "--" {
+            if state.dir_stack.is_empty() {
+                return Ok(ExecResult {
+                    stderr: "popd: directory stack empty\n".to_string(),
+                    exit_code: 1,
+                    ..ExecResult::default()
+                });
+            }
             // popd -- is just popd (default behavior)
             let top = state.dir_stack.remove(0);
             let result = builtin_cd(std::slice::from_ref(&top), state)?;
@@ -5717,6 +5847,14 @@ fn builtin_popd(
         return Ok(ExecResult {
             stderr: format!("popd: {arg}: invalid argument\n"),
             exit_code: 2,
+            ..ExecResult::default()
+        });
+    }
+
+    if state.dir_stack.is_empty() {
+        return Ok(ExecResult {
+            stderr: "popd: directory stack empty\n".to_string(),
+            exit_code: 1,
             ..ExecResult::default()
         });
     }
@@ -6395,6 +6533,21 @@ fn run_in_subshell(
         local_scopes: Vec::new(),
         temp_binding_scopes: Vec::new(),
         in_function_depth: 0,
+        source_depth: if config.shell_process {
+            0
+        } else {
+            state.source_depth
+        },
+        getopts_subpos: if config.shell_process {
+            0
+        } else {
+            state.getopts_subpos
+        },
+        getopts_args_signature: if config.shell_process {
+            String::new()
+        } else {
+            state.getopts_args_signature.clone()
+        },
         traps: state.traps.clone(),
         in_trap: false,
         errexit_suppressed: state.errexit_suppressed,
@@ -6453,6 +6606,12 @@ fn run_in_subshell(
 // ── help builtin ────────────────────────────────────────────────────
 
 fn builtin_help(args: &[String], state: &InterpreterState) -> Result<ExecResult, RustBashError> {
+    let args = if args.first().map(|arg| arg.as_str()) == Some("--") {
+        &args[1..]
+    } else {
+        args
+    };
+
     if args.is_empty() {
         // List all builtins with one-line descriptions
         let mut stdout = String::from("Shell builtin commands:\n\n");
@@ -6493,6 +6652,47 @@ fn builtin_help(args: &[String], state: &InterpreterState) -> Result<ExecResult,
 
     Ok(ExecResult {
         stderr: format!("help: no help topics match '{}'\n", name),
+        exit_code: 1,
+        ..ExecResult::default()
+    })
+}
+
+fn builtin_history(
+    args: &[String],
+    _state: &mut InterpreterState,
+) -> Result<ExecResult, RustBashError> {
+    if args.is_empty() {
+        return Ok(ExecResult::default());
+    }
+
+    if args.len() == 1 {
+        let arg = &args[0];
+        let is_numeric = !arg.is_empty() && arg.chars().all(|ch| ch.is_ascii_digit());
+        let is_plus_numeric = arg
+            .strip_prefix('+')
+            .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit()));
+
+        if is_numeric || is_plus_numeric {
+            return Ok(ExecResult::default());
+        }
+
+        if arg.starts_with('-') {
+            return Ok(ExecResult {
+                stderr: format!("history: {arg}: invalid option\n"),
+                exit_code: 2,
+                ..ExecResult::default()
+            });
+        }
+
+        return Ok(ExecResult {
+            stderr: format!("history: {arg}: numeric argument required\n"),
+            exit_code: 1,
+            ..ExecResult::default()
+        });
+    }
+
+    Ok(ExecResult {
+        stderr: "history: too many arguments\n".to_string(),
         exit_code: 1,
         ..ExecResult::default()
     })
@@ -6541,6 +6741,9 @@ mod tests {
             local_scopes: Vec::new(),
             temp_binding_scopes: Vec::new(),
             in_function_depth: 0,
+            source_depth: 0,
+            getopts_subpos: 0,
+            getopts_args_signature: String::new(),
             traps: HashMap::new(),
             in_trap: false,
             errexit_suppressed: 0,

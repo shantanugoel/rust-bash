@@ -476,11 +476,14 @@ bugs.test:(( status bug
 bugs.test:subshell while running a script (regression)
 bugs.test:Turn an array into an integer.
 bugs.test:unset readonly -- one line
+builtin-bash.test:help
 builtin-bash.test:mapfile
 builtin-bash.test:mapfile (array name): arr
+builtin-bash.test:mapfile (delimiter): -d '' (null-separated)
 builtin-bash.test:mapfile (delimiter): -d delim
 builtin-bash.test:mapfile (input range): -s start -n count
 builtin-bash.test:mapfile / readarray stdin  TODO: Fix me.
+builtin-bash.test:mapfile (store position): -O start
 builtin-bash.test:mapfile -t bugs (ble.sh)
 builtin-bash.test:mapfile -t doesn't remove \r
 builtin-bash.test:mapfile (truncate delim): -t
@@ -566,6 +569,7 @@ builtin-dirs.test:dirs test of path alias `.`
 builtin-dirs.test:dirs tilde test when $HOME is exactly $PWD
 builtin-dirs.test:dirs to print using tilde-prefix format
 builtin-dirs.test:dirs -v to print numbered stack, one entry per line
+builtin-dirs.test:popd usage error
 builtin-dirs.test:popd returns error on empty directory stack
 builtin-dirs.test:pushd does not take more than one argument
 builtin-dirs.test:pushd/popd
@@ -621,6 +625,8 @@ builtin-eval-source.test:source works for files in current directory (bash only)
 builtin-eval-source.test:source works for files in subdirectory
 builtin-eval-source.test:sourcing along PATH should ignore directories
 builtin-getopts.test:Basic getopts invocation
+builtin-getopts.test:flag and arg: -c10
+builtin-getopts.test:getopts bug #1523
 builtin-getopts.test:getopts doesn't look for flags after args
 builtin-getopts.test:getopts empty
 builtin-getopts.test:getopts handles '--' #2579
@@ -636,15 +642,20 @@ builtin-getopts.test:getopts silent error reporting - missing required argument
 builtin-getopts.test:getopts three invocations
 builtin-getopts.test:getopts with explicit args
 builtin-getopts.test:getopts with invalid flag
+builtin-getopts.test:getopts with invalid variable name
 builtin-getopts.test:getopts with with -
 builtin-getopts.test:Local OPTIND
+builtin-getopts.test:More regression for #1523
 builtin-getopts.test:More Smooshing 1
 builtin-getopts.test:More Smooshing 2
 builtin-getopts.test:OPTARG is empty (not unset) after parsing a flag doesn't take an arg
 builtin-getopts.test:OPTIND
+builtin-getopts.test:OPTIND after multiple getopts with different spec
+builtin-getopts.test:OPTIND after multiple getopts with same spec
 builtin-getopts.test:OPTIND narrowed down
 builtin-getopts.test:OPTIND should be >= 1 (regression)
 builtin-getopts.test:two flags: -ab
+builtin-meta-assign.test:builtin declare a=(x y) is allowed
 builtin-meta-assign.test:\builtin declare - ble.sh relies on it
 builtin-meta-assign.test:builtin declare,local
 builtin-meta-assign.test:builtin typeset, export,readonly
@@ -672,8 +683,10 @@ builtin-meta.test:command -v doesn't find non-executable file
 builtin-meta.test:command -v executable, builtin
 builtin-meta.test:command -V nonexistent
 builtin-meta.test:command -v with multiple names
+builtin-misc.test:history builtin usage
 builtin-misc.test:Invalid shift argument
 builtin-misc.test:Print shell strings with normal chars: set and printf %q and ${x@Q}
+builtin-misc.test:Print shell strings with weird chars: set and printf %q and ${x@Q}
 builtin-misc.test:shift
 builtin-misc.test:Shifting too far
 builtin-misc.test:time pipeline
@@ -913,8 +926,10 @@ case_.test:case \n bug regression
 case_.test:Case statement
 case_.test:Case statement with ;&
 case_.test:Case with empty condition
+case_.test:\(\) in pattern (regression)
 case_.test:Match a literal with a glob character
 case_.test:Match a literal with a glob character with a dynamic pattern
+case_.test:Quoted literal in glob pattern
 case_.test:matching every byte against itself
 case_.test:matching the byte 0xff against empty string - DISABLED - CI only bug?
 case_.test:Multiple Patterns Match
@@ -1062,11 +1077,14 @@ errexit.test:simple command / assign - redir failure DOES respect errexit
 errexit.test:simple command that's an alias - redir failure checked
 errexit.test:while loop - redirect failure checked
 exit-status.test:Exit code when command sub evaluates to empty str, e.g. `false` (#2416)
+exit-status.test:func subshell OverflowError https://github.com/oilshell/oil/issues/996
+exit-status.test:If empty command
 exit-status.test:If subshell false -- exit code is propagated in a weird way (strict_argv prevents)
 exit-status.test:If subshell true
 exit-status.test:If subshell true WITH ARGUMENT
 exit-status.test:If subshell true WITH OUTPUT is different
 exit-status.test:More test cases with empty argv
+exit-status.test:subshell OverflowError https://github.com/oilshell/oil/issues/996
 exit-status.test:Truncating 'exit' status
 exit-status.test:Truncating 'return' status
 extglob-files.test:Escaping of pipe (glibc bug, see demo/glibc_fnmatch.c)
@@ -1252,9 +1270,11 @@ introspect.test:operators on FUNCNAME
 let.test:let
 let.test:let with ()
 loop.test:$b break, $c continue, $r return, $e exit
+loop.test:bad arg to break
 loop.test:break
 loop.test:\break \continue \return \exit
 loop.test:break/continue within eval
+loop.test:break/continue within source
 loop.test:break in condition of loop
 loop.test:break in condition of nested loop
 loop.test:builtin,command break,continue,return,exit
@@ -1262,12 +1282,15 @@ loop.test:continue
 loop.test:continue at top level
 loop.test:continue in subshell
 loop.test:continue in subshell aborts with errexit
+loop.test:empty for loop (has "in")
 loop.test:for loop with invalid identifier
 loop.test:implicit for loop
 loop.test:multi-level break with argument
 loop.test:multi-level continue
 loop.test:return within eval
 loop.test:the word 'in' can be the loop variable
+loop.test:too many args to continue
+loop.test:top-level break/continue/return (without strict_control_flow)
 loop.test:until loop
 loop.test:using loop var outside loop
 loop.test:while in pipe
@@ -1520,6 +1543,8 @@ sh-func.test:Subshell function
 sh-options-bash.test:If shopt --set xtrace is allowed, it should update SHELLOPTS, not BASHOPTS
 sh-options-bash.test:OSH calling bash with SHELLOPTS does not change braceexpand
 sh-options-bash.test:SHELLOPTS and BASHOPTS are non-empty
+sh-options-bash.test:export SHELLOPTS does cross-process tracing
+sh-options-bash.test:export SHELLOPTS does cross-process tracing with bash
 sh-options-bash.test:SHELLOPTS is readonly
 sh-options-bash.test:SHELLOPTS is updated when options are changed
 sh-options-bash.test:SHELLOPTS reflects flags like sh -x
@@ -1598,13 +1623,18 @@ strict-options.test:automatically creating arrays are INDEXED, not associative
 strict-options.test:automatically creating arrays WITHOUT strict_array
 strict-options.test:break at top level is NOT an error
 strict-options.test:continue at top level is NOT an error
+strict-options.test:Control flow must be static in YSH (strict_control_flow)
+strict-options.test:empty argv WITHOUT strict_argv
 strict-options.test:empty argv WITH strict_argv
+strict-options.test:errexit and top-level control flow
 strict-options.test:return at top level is an error
 strict-options.test:shopt -s strict_binding: Persistent prefix bindings not allowed on special builtins
 strict-options.test:shopt -s strict_control_flow
 strict-options.test:simple_eval_builtin
+strict-options.test:Sourcing a script that returns at the top level
 strict-options.test:strict_arith option
 strict-options.test:strict_parse_slice means you need explicit  length
+strict-options.test:top level control flow
 subshell.test:Subshell exit code
 subshell.test:Subshell with redirects
 temp-binding.test:FOO=bar $unset - temp binding, then empty argv from unquoted unset var (#2411)

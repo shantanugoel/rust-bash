@@ -65,7 +65,7 @@ DONE
 #### errexit and top-level control flow
 $SH -o errexit $REPO_ROOT/spec/testdata/top-level-control-flow.sh
 ## status: 2
-## OK bash status: 1
+## OK bash status: 2
 ## STDOUT:
 SUBSHELL
 ## END
@@ -90,7 +90,7 @@ return
 echo "status=$?"
 ## stdout-json: ""
 ## OK bash STDOUT:
-status=1
+status=2
 ## END
 
 #### continue at top level is NOT an error

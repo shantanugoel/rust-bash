@@ -173,6 +173,13 @@ fn command_not_found_exit_127() {
     assert!(r.stderr.contains("command not found"));
 }
 
+#[test]
+fn quoted_empty_command_exit_127() {
+    let mut sh = shell();
+    let r = sh.exec(r#""""#).unwrap();
+    assert_eq!(r.exit_code, 127);
+}
+
 // ── 12. While loop ─────────────────────────────────────────────────
 
 #[test]
@@ -1185,6 +1192,15 @@ fn source_script_can_source_another() {
     sh.exec("source /outer.sh").unwrap();
     let r = sh.exec("echo $INNER").unwrap();
     assert_eq!(r.stdout, "yes\n");
+}
+
+#[test]
+fn shell_process_started_from_source_does_not_inherit_source_context() {
+    let mut sh = shell();
+    sh.exec(r#"echo "sh -c 'return 7' >/dev/null 2>&1; echo status=\$?" > /script.sh"#)
+        .unwrap();
+    let r = sh.exec("source /script.sh").unwrap();
+    assert_eq!(r.stdout, "status=2\n");
 }
 
 // ── exec callback on CommandContext ─────────────────────────────────
@@ -2460,8 +2476,17 @@ fn function_return_no_args_uses_last_exit_code() {
 fn function_return_outside_function_error() {
     let mut sh = shell();
     let r = sh.exec("return 0").unwrap();
-    assert_eq!(r.exit_code, 1);
+    assert_eq!(r.exit_code, 2);
     assert!(r.stderr.contains("return"));
+}
+
+#[test]
+fn getopts_internal_state_is_not_exposed_as_shell_variables() {
+    let mut sh = shell();
+    let r = sh
+        .exec("getopts ab opt -ab >/dev/null; echo ${__GETOPTS_ARGSIG-unset}:${__GETOPTS_SUBPOS-unset}")
+        .unwrap();
+    assert_eq!(r.stdout, "unset:unset\n");
 }
 
 #[test]
@@ -5693,6 +5718,23 @@ fn xtrace_set_plus_x_is_traced() {
         r.stderr
     );
     assert_eq!(r.stdout, "done\n");
+}
+
+#[test]
+fn xtrace_per_command_stderr_to_stdout_preserves_trace_order() {
+    let mut sh = shell();
+    let r = sh.exec("set -x; echo hello 2>&1").unwrap();
+    assert_eq!(r.stdout, "+ echo hello\nhello\n");
+    assert_eq!(r.stderr, "");
+}
+
+#[test]
+fn shell_process_does_not_inherit_getopts_cursor_state() {
+    let mut sh = shell();
+    let r = sh
+        .exec(r#"getopts ab opt -ab >/dev/null; sh -c 'getopts ab opt -ab; echo "$opt"' "#)
+        .unwrap();
+    assert_eq!(r.stdout, "a\n");
 }
 
 #[test]

@@ -380,6 +380,12 @@ pub struct InterpreterState {
     pub(crate) temp_binding_scopes: Vec<HashMap<String, Option<Variable>>>,
     /// How many function calls deep we are (for `local`/`return` validation).
     pub(crate) in_function_depth: usize,
+    /// Nesting depth of active `source` / `.` executions.
+    pub(crate) source_depth: usize,
+    /// Internal `getopts` index within the current clustered short-option argument.
+    pub(crate) getopts_subpos: usize,
+    /// Signature of the argv vector most recently parsed by `getopts`.
+    pub(crate) getopts_args_signature: String,
     /// Registered trap handlers: signal/event name → command string.
     pub(crate) traps: HashMap<String, String>,
     /// True while executing a trap handler (prevents recursive re-trigger).
@@ -1575,6 +1581,9 @@ mod tests {
             local_scopes: Vec::new(),
             temp_binding_scopes: Vec::new(),
             in_function_depth: 0,
+            source_depth: 0,
+            getopts_subpos: 0,
+            getopts_args_signature: String::new(),
             traps: HashMap::new(),
             in_trap: false,
             errexit_suppressed: 0,

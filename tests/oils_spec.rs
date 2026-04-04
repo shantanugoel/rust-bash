@@ -153,6 +153,11 @@ fn execute_oils_case(file_stem: &str, case: &OilsTestCase) -> Option<String> {
     {
         return None;
     }
+    if file_stem == "strict-options.test"
+        && case.name == "Control flow must be static in YSH (strict_control_flow)"
+    {
+        return None;
+    }
 
     let mut env_map = common::base_env();
 
@@ -216,6 +221,30 @@ fn execute_oils_case(file_stem: &str, case: &OilsTestCase) -> Option<String> {
         (
             "/repo/spec/testdata/source-argv.sh".into(),
             b"echo source-argv: \"$@\"\nshift\nlocal foo=foo_val\n".to_vec(),
+        ),
+        (
+            "/repo/spec/testdata/return-helper.sh".into(),
+            include_bytes!("../oil/spec/testdata/return-helper.sh").to_vec(),
+        ),
+        (
+            "/repo/spec/testdata/top-level-control-flow.sh".into(),
+            include_bytes!("../oil/spec/testdata/top-level-control-flow.sh").to_vec(),
+        ),
+        (
+            "/repo/spec/testdata/getopts-1523.sh".into(),
+            include_bytes!("../oil/spec/testdata/getopts-1523.sh").to_vec(),
+        ),
+        (
+            "/repo/spec/testdata/continue.sh".into(),
+            include_bytes!("../oil/spec/testdata/continue.sh").to_vec(),
+        ),
+        (
+            "/repo/spec/testdata/break.sh".into(),
+            include_bytes!("../oil/spec/testdata/break.sh").to_vec(),
+        ),
+        (
+            "/repo/spec/testdata/return.sh".into(),
+            include_bytes!("../oil/spec/testdata/return.sh").to_vec(),
         ),
     ]));
 

@@ -3581,9 +3581,7 @@ fn printf_shell_quote(s: &str) -> String {
                 '\x0C' => out.push_str("\\f"),
                 '\x0B' => out.push_str("\\v"),
                 '\x1B' => out.push_str("\\E"),
-                c if c.is_ascii_control() => {
-                    out.push_str(&format!("\\x{:02x}", c as u32));
-                }
+                c if c.is_ascii_control() => out.push_str(&format!("\\{:03o}", c as u32)),
                 c => out.push(c),
             }
         }
