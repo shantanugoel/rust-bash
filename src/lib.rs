@@ -103,7 +103,7 @@ pub mod ffi;
 #[cfg(feature = "cli")]
 pub mod mcp;
 
-#[cfg(feature = "wasm")]
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub mod wasm;
 
 #[cfg(test)]
