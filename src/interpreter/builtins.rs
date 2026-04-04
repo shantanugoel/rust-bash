@@ -2,7 +2,7 @@
 
 use crate::commands::CommandMeta;
 use crate::error::RustBashError;
-use crate::interpreter::walker::execute_program;
+use crate::interpreter::walker::{execute_program, execute_program_with_stdin};
 use crate::interpreter::{
     ControlFlow, ExecResult, InterpreterState, Variable, VariableAttrs, VariableValue,
     ensure_nested_shell_startup_vars, fold_child_process_state, next_child_pid, parse,
@@ -31,7 +31,7 @@ pub(crate) fn execute_builtin(
         "readonly" => builtin_readonly(args, state).map(Some),
         "declare" | "typeset" => builtin_declare(args, state).map(Some),
         "read" => builtin_read(args, state, stdin, extra_input_fds).map(Some),
-        "eval" => builtin_eval(args, state).map(Some),
+        "eval" => builtin_eval(args, state, stdin).map(Some),
         "source" | "." => builtin_source(args, state).map(Some),
         "break" => builtin_break(args, state).map(Some),
         "continue" => builtin_continue(args, state).map(Some),
@@ -1773,7 +1773,13 @@ fn builtin_declare(
                     'f' => func_mode = true,
                     'F' => func_names_mode = true,
                     'g' => global_mode = true,
-                    _ => {}
+                    _ => {
+                        return Ok(ExecResult {
+                            stderr: format!("rust-bash: declare: -{c}: invalid option\n"),
+                            exit_code: 2,
+                            ..Default::default()
+                        });
+                    }
                 }
             }
         } else if let Some(flags) = arg.strip_prefix('+') {
@@ -1782,7 +1788,13 @@ fn builtin_declare(
                     'x' => remove_exported = true,
                     'r' => remove_readonly = true,
                     'n' => remove_nameref = true,
-                    _ => {}
+                    _ => {
+                        return Ok(ExecResult {
+                            stderr: format!("rust-bash: declare: +{c}: invalid option\n"),
+                            exit_code: 2,
+                            ..Default::default()
+                        });
+                    }
                 }
             }
         } else {
@@ -2187,15 +2199,21 @@ fn format_declare_line(name: &str, var: &Variable) -> String {
             if var.attrs.contains(VariableAttrs::DECLARED_ONLY) {
                 format!("declare {flag_str}{name}\n")
             } else {
-                format!("declare {flag_str}{name}=\"{s}\"\n")
+                let quoted = shell_quote_for_set_array_value(s);
+                format!("declare {flag_str}{name}={quoted}\n")
             }
         }
         VariableValue::IndexedArray(map) => {
             if var.attrs.contains(VariableAttrs::DECLARED_ONLY) {
                 format!("declare {flag_str}{name}\n")
             } else {
-                let elems: Vec<String> =
-                    map.iter().map(|(k, v)| format!("[{k}]=\"{v}\"")).collect();
+                let elems: Vec<String> = map
+                    .iter()
+                    .map(|(k, v)| {
+                        let quoted = shell_quote_for_set_array_value(v);
+                        format!("[{k}]={quoted}")
+                    })
+                    .collect();
                 format!("declare {flag_str}{name}=({})\n", elems.join(" "))
             }
         }
@@ -2218,7 +2236,11 @@ fn format_declare_line(name: &str, var: &Variable) -> String {
                 }
                 let elems: Vec<String> = entries
                     .iter()
-                    .map(|(k, v)| format!("[{k}]=\"{v}\""))
+                    .map(|(k, v)| {
+                        let quoted_key = shell_quote_for_set_assoc_key(k);
+                        let quoted_val = shell_quote_for_set_array_value(v);
+                        format!("[{quoted_key}]={quoted_val}")
+                    })
                     .collect();
                 if elems.is_empty() {
                     format!("declare {flag_str}{name}=()\n")
@@ -3419,6 +3441,7 @@ fn assign_read_fields_to_vars(
 fn builtin_eval(
     args: &[String],
     state: &mut InterpreterState,
+    stdin: &str,
 ) -> Result<ExecResult, RustBashError> {
     if args.is_empty() {
         return Ok(ExecResult::default());
@@ -3480,7 +3503,7 @@ fn builtin_eval(
         }
     };
     let saved_source_text = std::mem::replace(&mut state.current_source_text, input);
-    let result = execute_program(&program, state);
+    let result = execute_program_with_stdin(&program, state, stdin);
     state.current_source_text = saved_source_text;
     state.counters.call_depth -= 1;
     result
@@ -6385,135 +6408,176 @@ fn builtin_sh(
     let saved_interactive_shell = state.interactive_shell;
 
     let result = (|| {
+        // Phase 1: Parse all invocation options.  `-c` sets a flag rather
+        // than immediately consuming the next argument so that subsequent
+        // flags (e.g. `-x`, `-e`) are still processed, matching bash.
+        let mut command_mode = false;
         let mut i = 0;
-        while i < args.len() {
+
+        'opts: while i < args.len() {
             let arg = &args[i];
-            if arg == "-c" {
+
+            // `--` and bare `-` terminate option processing.
+            if arg == "--" || arg == "-" {
                 i += 1;
-                if i < args.len() {
-                    let cmd = &args[i];
-                    let extra = &args[i + 1..];
-                    let shell_name_override = extra.first().map(|s| s.as_str());
-                    let positional: Vec<String> = if extra.len() > 1 {
-                        extra[1..].to_vec()
-                    } else {
-                        Vec::new()
-                    };
-                    let program = parse(cmd)?;
-                    return run_in_subshell(
-                        state,
-                        &program,
-                        SubshellConfig {
-                            positional: &positional,
-                            shell_name_override,
-                            source_override: None,
-                            source_text_override: Some(cmd.to_string()),
-                            invoked_with_c: true,
-                            shell_process: true,
-                        },
-                    );
+                break;
+            }
+
+            // Long options (must be checked before the generic `-…` branch
+            // so that e.g. `--login` is not parsed char-by-char).
+            if arg.starts_with("--") {
+                match arg.as_str() {
+                    "--rcfile" | "--init-file" => {
+                        i += 1;
+                        if i >= args.len() {
+                            return Ok(ExecResult {
+                                stderr: format!("sh: {arg}: option requires an argument\n"),
+                                exit_code: 2,
+                                ..ExecResult::default()
+                            });
+                        }
+                        i += 1;
+                        continue;
+                    }
+                    "--norc" | "--noprofile" | "--login" => {
+                        i += 1;
+                        continue;
+                    }
+                    _ => {
+                        // Unknown long option — stop option processing so
+                        // it becomes the first operand (script / -c string).
+                        // (Short flags use an error instead; the asymmetry
+                        // mirrors bash, which rejects `-z` but treats
+                        // `--unknown` as a filename operand.)
+                        break;
+                    }
                 }
+            }
+
+            // Short option groups: `-xef`, `+o name`, `-oo a b`, `-c`, etc.
+            if (arg.starts_with('-') || arg.starts_with('+')) && arg.len() > 1 {
+                let enable = arg.starts_with('-');
+                let mut extra_consumed: usize = 0;
+
+                for ch in arg[1..].chars() {
+                    match ch {
+                        'c' => command_mode = true,
+                        // Accepted invocation-only flags (silently consumed).
+                        'l' | 's' | 'r' | 'D' | 'h' | 'b' | 'B' | 'H' | 'P' | 'T' => {}
+                        'i' => {
+                            if enable {
+                                state.interactive_shell = true;
+                                state.shell_opts.emacs_mode = true;
+                                state.shell_opts.vi_mode = false;
+                            } else {
+                                state.interactive_shell = false;
+                            }
+                        }
+                        'a' | 'e' | 'f' | 'n' | 'u' | 'v' | 'x' | 'C' => {
+                            apply_option_char(ch, enable, state);
+                        }
+                        'o' | 'O' => {
+                            let name_idx = i + 1 + extra_consumed;
+                            if name_idx >= args.len() {
+                                let flag_str = if enable {
+                                    format!("-{ch}")
+                                } else {
+                                    format!("+{ch}")
+                                };
+                                return Ok(ExecResult {
+                                    stderr: format!(
+                                        "sh: {flag_str}: option requires an argument\n"
+                                    ),
+                                    exit_code: 2,
+                                    ..ExecResult::default()
+                                });
+                            }
+                            let name = &args[name_idx];
+                            let ok = if ch == 'O' {
+                                set_shopt(state, name, enable)
+                            } else if get_set_option(name, state).is_some() {
+                                apply_option_name(name, enable, state);
+                                true
+                            } else {
+                                false
+                            };
+                            if !ok {
+                                return Ok(ExecResult {
+                                    stderr: format!("sh: {name}: invalid option name\n"),
+                                    exit_code: 2,
+                                    ..ExecResult::default()
+                                });
+                            }
+                            extra_consumed += 1;
+                        }
+                        _ => {
+                            let prefix = if enable { '-' } else { '+' };
+                            return Ok(ExecResult {
+                                stderr: format!("sh: {prefix}{ch}: invalid option\n"),
+                                exit_code: 2,
+                                ..ExecResult::default()
+                            });
+                        }
+                    }
+                }
+
+                i += 1 + extra_consumed;
+                continue 'opts;
+            }
+
+            // Non-option argument — stop processing.
+            break;
+        }
+
+        // Phase 2: Dispatch on the remaining (non-option) arguments.
+        let remaining = &args[i..];
+
+        if command_mode {
+            if remaining.is_empty() {
                 return Ok(ExecResult {
                     stderr: "sh: -c: option requires an argument\n".into(),
                     exit_code: 2,
                     ..ExecResult::default()
                 });
             }
+            let cmd = &remaining[0];
+            let extra = &remaining[1..];
+            let shell_name_override = extra.first().map(|s| s.as_str());
+            let positional: Vec<String> = if extra.len() > 1 {
+                extra[1..].to_vec()
+            } else {
+                Vec::new()
+            };
+            let program = parse(cmd)?;
+            return run_in_subshell(
+                state,
+                &program,
+                SubshellConfig {
+                    positional: &positional,
+                    shell_name_override,
+                    source_override: None,
+                    source_text_override: Some(cmd.to_string()),
+                    invoked_with_c: true,
+                    shell_process: true,
+                },
+            );
+        }
 
-            if arg == "--rcfile" {
-                i += 1;
-                if i >= args.len() {
-                    return Ok(ExecResult {
-                        stderr: "sh: --rcfile: option requires an argument\n".into(),
-                        exit_code: 2,
-                        ..ExecResult::default()
-                    });
-                }
-                i += 1;
-                continue;
-            }
-
-            if matches!(arg.as_str(), "--norc" | "--noprofile") {
-                i += 1;
-                continue;
-            }
-
-            if matches!(arg.as_str(), "-o" | "+o" | "-O" | "+O") {
-                let enable = !arg.starts_with('+');
-                let shopt_mode = arg.ends_with('O');
-                i += 1;
-                if i >= args.len() {
-                    return Ok(ExecResult {
-                        stderr: format!("sh: {arg}: option requires an argument\n"),
-                        exit_code: 2,
-                        ..ExecResult::default()
-                    });
-                }
-                let name = &args[i];
-                let ok = if shopt_mode {
-                    set_shopt(state, name, enable)
-                } else if get_set_option(name, state).is_some() {
-                    apply_option_name(name, enable, state);
-                    true
-                } else {
-                    false
-                };
-                if !ok {
-                    return Ok(ExecResult {
-                        stderr: format!("sh: {name}: invalid option name\n"),
-                        exit_code: 2,
-                        ..ExecResult::default()
-                    });
-                }
-                i += 1;
-                continue;
-            }
-
-            if arg.starts_with('-') && arg.len() > 1 {
-                for flag in arg[1..].chars() {
-                    match flag {
-                        'i' => {
-                            state.interactive_shell = true;
-                            state.shell_opts.emacs_mode = true;
-                            state.shell_opts.vi_mode = false;
-                        }
-                        'a' | 'e' | 'f' | 'n' | 'u' | 'v' | 'x' | 'C' => {
-                            apply_option_char(flag, true, state);
-                        }
-                        _ => {}
-                    }
-                }
-                i += 1;
-                continue;
-            }
-
-            if arg.starts_with('+') && arg.len() > 1 {
-                for flag in arg[1..].chars() {
-                    match flag {
-                        'i' => state.interactive_shell = false,
-                        'a' | 'e' | 'f' | 'n' | 'u' | 'v' | 'x' | 'C' => {
-                            apply_option_char(flag, false, state);
-                        }
-                        _ => {}
-                    }
-                }
-                i += 1;
-                continue;
-            }
-
-            let path = crate::interpreter::builtins::resolve_path(&state.cwd, arg);
+        // Script-file mode.
+        if let Some(script_arg) = remaining.first() {
+            let path = crate::interpreter::builtins::resolve_path(&state.cwd, script_arg);
             let path_buf = std::path::PathBuf::from(&path);
             match state.fs.read_file(&path_buf) {
                 Ok(bytes) => {
                     let script = String::from_utf8_lossy(&bytes).to_string();
-                    let positional = args[i + 1..].to_vec();
+                    let positional = remaining[1..].to_vec();
                     let program = parse(&script)?;
                     return run_in_subshell(
                         state,
                         &program,
                         SubshellConfig {
                             positional: &positional,
-                            shell_name_override: Some(arg.as_str()),
+                            shell_name_override: Some(script_arg.as_str()),
                             source_override: Some(path),
                             source_text_override: Some(script),
                             invoked_with_c: false,
@@ -6523,7 +6587,7 @@ fn builtin_sh(
                 }
                 Err(e) => {
                     return Ok(ExecResult {
-                        stderr: format!("sh: {}: {}\n", arg, e),
+                        stderr: format!("sh: {}: {}\n", script_arg, e),
                         exit_code: 127,
                         ..ExecResult::default()
                     });
@@ -6531,6 +6595,7 @@ fn builtin_sh(
             }
         }
 
+        // No operands — read from stdin.
         if !stdin.is_empty() {
             let program = parse(stdin)?;
             return run_in_subshell(
@@ -6619,6 +6684,7 @@ fn run_in_subshell(
         },
         network_policy: state.network_policy.clone(),
         should_exit: false,
+        abort_command_list: false,
         loop_depth: 0,
         control_flow: None,
         positional_params: if config.positional.is_empty() {
@@ -6659,8 +6725,16 @@ fn run_in_subshell(
         },
         traps: state.traps.clone(),
         in_trap: false,
-        errexit_suppressed: state.errexit_suppressed,
-        errexit_bang_suppressed: state.errexit_bang_suppressed,
+        errexit_suppressed: if config.shell_process {
+            0
+        } else {
+            state.errexit_suppressed
+        },
+        errexit_bang_suppressed: if config.shell_process {
+            0
+        } else {
+            state.errexit_bang_suppressed
+        },
         stdin_offset: 0,
         current_stdin_persistent_fd: None,
         dir_stack: state.dir_stack.clone(),
@@ -6679,7 +6753,11 @@ fn run_in_subshell(
         current_source_text: config
             .source_text_override
             .unwrap_or_else(|| state.current_source_text.clone()),
-        last_verbose_line: state.last_verbose_line,
+        last_verbose_line: if config.shell_process {
+            0
+        } else {
+            state.last_verbose_line
+        },
         shell_start_time: state.shell_start_time,
         last_argument: state.last_argument.clone(),
         call_stack: state.call_stack.clone(),
@@ -6838,6 +6916,7 @@ mod tests {
             counters: ExecutionCounters::default(),
             network_policy: NetworkPolicy::default(),
             should_exit: false,
+            abort_command_list: false,
             loop_depth: 0,
             control_flow: None,
             positional_params: Vec::new(),

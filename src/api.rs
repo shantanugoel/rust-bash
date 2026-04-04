@@ -87,6 +87,11 @@ impl RustBash {
         self.state.positional_params = params;
     }
 
+    /// Removes a variable from the environment.
+    pub fn unset_env(&mut self, name: &str) {
+        self.state.env.remove(name);
+    }
+
     // ── VFS convenience methods ──────────────────────────────────────
 
     /// Returns a reference to the virtual filesystem.
@@ -407,6 +412,7 @@ impl RustBashBuilder {
             counters: ExecutionCounters::default(),
             network_policy: self.network_policy.unwrap_or_default(),
             should_exit: false,
+            abort_command_list: false,
             loop_depth: 0,
             control_flow: None,
             positional_params: Vec::new(),

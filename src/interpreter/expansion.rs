@@ -2,6 +2,7 @@
 //! IFS-based word splitting, and quoting correctness.
 
 use crate::error::RustBashError;
+use crate::interpreter::builtins::resolve_path;
 use crate::interpreter::pattern;
 use crate::interpreter::walker::{clone_commands, execute_program};
 use crate::interpreter::{
@@ -120,7 +121,10 @@ fn expand_word_segments(
 ) -> Result<Vec<WordInProgress>, RustBashError> {
     validate_length_transform_syntax(&word.value)?;
     validate_empty_slice_syntax(&word.value)?;
-    let options = parser_options();
+    let mut options = parser_options();
+    // Tilde expansion after ':' is only valid in assignment context, not in
+    // regular command arguments (e.g., `echo foo:~` should NOT expand).
+    options.tilde_expansion_after_colon = false;
     let rewritten = rewrite_special_case_word_syntax(&word.value, state);
     let assignment_like = expand_assignment_like_tilde_bug(&rewritten, state);
     let pieces = brush_parser::word::parse(&assignment_like, &options)
@@ -147,7 +151,8 @@ fn expand_word_segments_mut(
 ) -> Result<Vec<WordInProgress>, RustBashError> {
     validate_length_transform_syntax(&word.value)?;
     validate_empty_slice_syntax(&word.value)?;
-    let options = parser_options();
+    let mut options = parser_options();
+    options.tilde_expansion_after_colon = false;
     let rewritten = rewrite_special_case_word_syntax(&word.value, state);
     let assignment_like = expand_assignment_like_tilde_bug(&rewritten, state);
     let pieces = brush_parser::word::parse(&assignment_like, &options)
@@ -168,6 +173,9 @@ fn expand_word_segments_mut(
     Ok(words)
 }
 
+/// Pre-expand tilde prefixes in assignment-like words (e.g. `VAR=~/path`
+/// and `VAR=foo:~/bar`). This operates on the raw word string BEFORE the
+/// parser runs, so the parser sees the expanded HOME path as literal text.
 fn expand_assignment_like_tilde_bug(word: &str, state: &InterpreterState) -> String {
     if word.contains(['"', '\'', '\\', '$', '`']) {
         return word.to_string();
@@ -177,21 +185,61 @@ fn expand_assignment_like_tilde_bug(word: &str, state: &InterpreterState) -> Str
         return word.to_string();
     };
 
-    if !is_assignment_like_name(name) || !value.starts_with('~') {
+    if !is_assignment_like_name(name) {
         return word.to_string();
     }
 
-    let rest = &value[1..];
-    if !rest.is_empty() && !rest.starts_with('/') {
-        return word.to_string();
-    }
-
+    // Expand tilde prefixes in each colon-separated segment of the value.
     let home = get_var(state, "HOME").unwrap_or_default();
-    if home.is_empty() {
-        return word.to_string();
+    let mut out = String::with_capacity(word.len());
+    let mut any_expanded = false;
+    let mut first = true;
+    for segment in value.split(':') {
+        if !first {
+            out.push(':');
+        }
+        first = false;
+        if let Some(after_tilde) = segment.strip_prefix('~')
+            && let Some(expanded) = expand_tilde_prefix_in_assignment(after_tilde, &home, state)
+        {
+            out.push_str(&expanded);
+            any_expanded = true;
+            continue;
+        }
+        out.push_str(segment);
     }
+    if any_expanded {
+        format!("{name}={out}")
+    } else {
+        word.to_string()
+    }
+}
 
-    format!("{name}={home}{rest}")
+/// Try to expand a tilde prefix. `after_tilde` is the text after the `~`.
+/// Returns Some(expanded_segment) or None if the tilde shouldn't expand.
+fn expand_tilde_prefix_in_assignment(
+    after_tilde: &str,
+    home: &str,
+    state: &InterpreterState,
+) -> Option<String> {
+    // Split at the first '/' to get the username portion
+    let (user, rest) = match after_tilde.find('/') {
+        Some(pos) => (&after_tilde[..pos], &after_tilde[pos..]),
+        None => (after_tilde, ""),
+    };
+    match user {
+        "" if !home.is_empty() => Some(format!("{home}{rest}")),
+        "root" => Some(format!("/root{rest}")),
+        "+" => {
+            let pwd = get_var(state, "PWD").unwrap_or_default();
+            Some(format!("{pwd}{rest}"))
+        }
+        "-" => {
+            let oldpwd = get_var(state, "OLDPWD").unwrap_or_default();
+            Some(format!("{oldpwd}{rest}"))
+        }
+        _ => None,
+    }
 }
 
 fn rewrite_special_case_word_syntax(word: &str, state: &InterpreterState) -> String {
@@ -322,9 +370,18 @@ fn rewrite_parameter_body_ambiguous_slice(body: &str) -> String {
 }
 
 fn is_assignment_like_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && !name.starts_with(|c: char| c.is_ascii_digit())
+    // Accept plain variable names and array subscripts like `a[0]`, `A['x']`.
+    let base = if let Some(bracket_pos) = name.find('[') {
+        if !name.ends_with(']') {
+            return false;
+        }
+        &name[..bracket_pos]
+    } else {
+        name
+    };
+    !base.is_empty()
+        && base.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !base.starts_with(|c: char| c.is_ascii_digit())
 }
 
 // ── Segment helpers ─────────────────────────────────────────────────
@@ -374,6 +431,53 @@ fn start_new_word(words: &mut Vec<WordInProgress>) {
     words.push(Vec::new());
 }
 
+/// Check if a parsed program is a redirect-only simple command (no command
+/// word, just input redirections like `< file`).  If so, return the filename
+/// `Word` from the first input redirect.  This supports the `$(< file)` idiom
+/// where bash reads the file contents directly instead of executing a command.
+fn try_extract_redirect_only_filename(program: &ast::Program) -> Option<&ast::Word> {
+    // Must be exactly one complete command
+    let items = &program.complete_commands;
+    if items.len() != 1 {
+        return None;
+    }
+    let compound_list = &items[0];
+    if compound_list.0.len() != 1 {
+        return None;
+    }
+    let and_or = &compound_list.0[0].0;
+    // No AND/OR chaining
+    if !and_or.additional.is_empty() {
+        return None;
+    }
+    let pipeline = &and_or.first;
+    // No pipeline chaining, no bang/time
+    if pipeline.seq.len() != 1 || pipeline.bang || pipeline.timed.is_some() {
+        return None;
+    }
+    let cmd = match &pipeline.seq[0] {
+        ast::Command::Simple(sc) => sc,
+        _ => return None,
+    };
+    // No command word, no suffix (no args)
+    if cmd.word_or_name.is_some() || cmd.suffix.is_some() {
+        return None;
+    }
+    // Prefix must exist and contain exactly one item: an input file redirect
+    let prefix = cmd.prefix.as_ref()?;
+    if prefix.0.len() != 1 {
+        return None;
+    }
+    match &prefix.0[0] {
+        ast::CommandPrefixOrSuffixItem::IoRedirect(ast::IoRedirect::File(
+            None | Some(0),
+            ast::IoFileRedirectKind::Read,
+            ast::IoFileRedirectTarget::Filename(word),
+        )) => Some(word),
+        _ => None,
+    }
+}
+
 /// Execute a command substitution: parse and run the command in a subshell,
 /// capture stdout, strip trailing newlines, and update `$?` in the parent.
 fn execute_command_substitution(
@@ -399,6 +503,24 @@ fn execute_command_substitution(
         }
     };
 
+    // Special case: $(< file) idiom — read file contents directly
+    if let Some(word) = try_extract_redirect_only_filename(&program) {
+        let result = (|| -> Result<String, RustBashError> {
+            let filename = expand_word_to_string_mut(word, state)?;
+            let path = resolve_path(&state.cwd, &filename);
+            let content = state
+                .fs
+                .read_file(std::path::Path::new(&path))
+                .map_err(|e| RustBashError::RedirectFailed(format!("{filename}: {e}")))?;
+            state.last_exit_code = 0;
+            let output = String::from_utf8_lossy(&content);
+            let trimmed = output.trim_end_matches('\n');
+            Ok(trimmed.to_string())
+        })();
+        state.counters.substitution_depth -= 1;
+        return result;
+    }
+
     // Create an isolated subshell state
     let cloned_fs = state.fs.deep_clone();
     let child_pid = crate::interpreter::next_child_pid(state);
@@ -422,6 +544,7 @@ fn execute_command_substitution(
         },
         network_policy: state.network_policy.clone(),
         should_exit: false,
+        abort_command_list: false,
         loop_depth: 0,
         control_flow: None,
         positional_params: state.positional_params.clone(),
@@ -602,7 +725,30 @@ fn expand_word_piece(
             }
         }
         WordPiece::TildeExpansion(expr) => {
-            expand_tilde(expr, words, state);
+            if in_dq {
+                // Tilde expansion does not occur inside double quotes.
+                use brush_parser::word::TildeExpr;
+                match expr {
+                    TildeExpr::Home => push_segment(words, "~", true, true),
+                    TildeExpr::WorkingDir => push_segment(words, "~+", true, true),
+                    TildeExpr::OldWorkingDir => push_segment(words, "~-", true, true),
+                    TildeExpr::UserHome(user) => {
+                        push_segment(words, &format!("~{user}"), true, true);
+                    }
+                    TildeExpr::NthDirFromTopOfDirStack { n, plus_used } => {
+                        if *plus_used {
+                            push_segment(words, &format!("~+{n}"), true, true);
+                        } else {
+                            push_segment(words, &format!("~{n}"), true, true);
+                        }
+                    }
+                    TildeExpr::NthDirFromBottomOfDirStack { n } => {
+                        push_segment(words, &format!("~-{n}"), true, true);
+                    }
+                }
+            } else {
+                expand_tilde(expr, words, state);
+            }
         }
         WordPiece::ParameterExpansion(expr) => {
             at_empty = expand_parameter(expr, words, state, in_dq)?;
@@ -2081,19 +2227,20 @@ fn glob_expand_words(
 
     let cwd = PathBuf::from(&state.cwd);
     let max = state.limits.max_glob_results;
-    let opts = GlobOptions {
-        dotglob: state.shopt_opts.dotglob,
-        nocaseglob: state.shopt_opts.nocaseglob,
-        globstar: state.shopt_opts.globstar,
-        extglob: state.shopt_opts.extglob,
-    };
-
     // Parse GLOBIGNORE patterns (colon-separated list)
     let globignore_patterns: Vec<String> = get_var(state, "GLOBIGNORE")
         .filter(|s| !s.is_empty())
         .map(|s| s.split(':').map(String::from).collect())
         .unwrap_or_default();
     let has_globignore = !globignore_patterns.is_empty();
+    let opts = GlobOptions {
+        // When GLOBIGNORE is set, bash implicitly enables dotglob
+        dotglob: state.shopt_opts.dotglob || has_globignore,
+        nocaseglob: state.shopt_opts.nocaseglob,
+        globstar: state.shopt_opts.globstar,
+        extglob: state.shopt_opts.extglob,
+        globskipdots: state.shopt_opts.globskipdots,
+    };
 
     let mut result = Vec::new();
 
@@ -2118,8 +2265,9 @@ fn glob_expand_words(
                     // Apply GLOBIGNORE filtering
                     if has_globignore {
                         let basename = s.rsplit('/').next().unwrap_or(&s);
-                        // When GLOBIGNORE is set, . and .. are automatically excluded
-                        if basename == "." || basename == ".." {
+                        // When GLOBIGNORE is set, . and .. are automatically excluded.
+                        // Also skip empty entries (. after path stripping).
+                        if basename == "." || basename == ".." || s.is_empty() {
                             continue;
                         }
                         // Match GLOBIGNORE patterns against the full path
@@ -4737,6 +4885,36 @@ fn expand_replacement_string(
     let mut result = String::new();
     let mut chars = repl.chars().peekable();
 
+    // Tilde expansion at the start of the replacement string (bash feature)
+    if chars.peek() == Some(&'~') {
+        chars.next(); // consume '~'
+        let mut user = String::new();
+        while let Some(&ch) = chars.peek() {
+            if ch == '/' || ch == ':' {
+                break;
+            }
+            user.push(ch);
+            chars.next();
+        }
+        let expanded = if user.is_empty() {
+            get_var(state, "HOME")
+        } else if user == "+" {
+            get_var(state, "PWD")
+        } else if user == "-" {
+            get_var(state, "OLDPWD")
+        } else if user == "root" {
+            Some("/root".to_string())
+        } else {
+            None
+        };
+        if let Some(home) = expanded {
+            result.push_str(&home);
+        } else {
+            result.push('~');
+            result.push_str(&user);
+        }
+    }
+
     while let Some(c) = chars.next() {
         match c {
             '\\' => {
@@ -4981,6 +5159,7 @@ mod tests {
             counters: ExecutionCounters::default(),
             network_policy: NetworkPolicy::default(),
             should_exit: false,
+            abort_command_list: false,
             loop_depth: 0,
             control_flow: None,
             positional_params: Vec::new(),

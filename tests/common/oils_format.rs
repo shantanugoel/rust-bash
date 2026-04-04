@@ -14,6 +14,8 @@ pub struct OilsTestCase {
 pub struct OilsTestFile {
     pub cases: Vec<OilsTestCase>,
     pub tags: Vec<String>,
+    /// When true, the test file expects a relative `_tmp` directory under cwd.
+    pub legacy_tmp_dir: bool,
 }
 
 /// Parse an Oils `.test.sh` file into an `OilsTestFile`.
@@ -21,6 +23,7 @@ pub fn parse_oils_file(content: &str) -> OilsTestFile {
     let lines: Vec<&str> = content.lines().collect();
     let mut tags: Vec<String> = Vec::new();
     let mut cases: Vec<OilsTestCase> = Vec::new();
+    let mut legacy_tmp_dir = false;
 
     // Find where test cases begin (first `#### ` line).
     let first_case_idx = lines
@@ -32,6 +35,9 @@ pub fn parse_oils_file(content: &str) -> OilsTestFile {
     for line in &lines[..first_case_idx] {
         if let Some(rest) = line.strip_prefix("## tags: ") {
             tags.extend(rest.split_whitespace().map(String::from));
+        }
+        if line.starts_with("## legacy_tmp_dir:") {
+            legacy_tmp_dir = true;
         }
         // Other file-level annotations (compare_shells, oils_failures_allowed, etc.) are ignored.
     }
@@ -54,7 +60,11 @@ pub fn parse_oils_file(content: &str) -> OilsTestFile {
         cases.push(case);
     }
 
-    OilsTestFile { cases, tags }
+    OilsTestFile {
+        cases,
+        tags,
+        legacy_tmp_dir,
+    }
 }
 
 /// Parse a single test case from the lines between two `#### ` delimiters.

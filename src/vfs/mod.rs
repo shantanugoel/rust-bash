@@ -84,7 +84,7 @@ pub enum FsNode {
 }
 
 /// Options that modify glob expansion behavior.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct GlobOptions {
     /// Include dot-files even when the pattern doesn't start with `.`.
     pub dotglob: bool,
@@ -95,6 +95,20 @@ pub struct GlobOptions {
     pub globstar: bool,
     /// Enable extended glob patterns: `@(...)`, `+(...)`, `*(...)`, `?(...)`, `!(...)`.
     pub extglob: bool,
+    /// When true (default), `.` and `..` are excluded from glob results.
+    pub globskipdots: bool,
+}
+
+impl Default for GlobOptions {
+    fn default() -> Self {
+        Self {
+            dotglob: false,
+            nocaseglob: false,
+            globstar: false,
+            extglob: false,
+            globskipdots: true,
+        }
+    }
 }
 
 /// Trait abstracting all filesystem operations.

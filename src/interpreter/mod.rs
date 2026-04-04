@@ -354,6 +354,9 @@ pub struct InterpreterState {
     pub counters: ExecutionCounters,
     pub network_policy: NetworkPolicy,
     pub(crate) should_exit: bool,
+    /// When set, the current compound list (semicolon-separated command sequence)
+    /// is aborted. Cleared at the end of each compound list.
+    pub(crate) abort_command_list: bool,
     pub(crate) loop_depth: usize,
     pub(crate) control_flow: Option<ControlFlow>,
     pub positional_params: Vec<String>,
@@ -1585,6 +1588,7 @@ mod tests {
             counters: ExecutionCounters::default(),
             network_policy: NetworkPolicy::default(),
             should_exit: false,
+            abort_command_list: false,
             loop_depth: 0,
             control_flow: None,
             positional_params: Vec::new(),

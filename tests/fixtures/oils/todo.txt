@@ -1,7 +1,7 @@
 # Ordered Oils fix queue as of 2026-04-03.
 # Source of truth: current `tests/fixtures/oils/pass-list.txt` plus `tests/oils_spec.rs`
 # skip rules and `tests/common/oils_format.rs` case parsing.
-# Current totals: 2176 pass / 165 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
+# Current totals: 2064 pass / 135 xfail / 11 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
 #
 # ── How the Oils test infra works ──
 # Runner:      tests/oils_spec.rs (datatest_stable harness, discovers .test.sh files)
@@ -27,22 +27,15 @@
 
 
 ## Execution, Redirects, Globs, Filesystem Fidelity
-- sh-usage.test (xfail=8) `sh` / `bash` invocation and argument handling
-- bugs.test (xfail=6) mixed regression bucket; sweep after core semantics are stable
-- redirect.test (xfail=6) redirection semantics; leave the final fd/VFS tail for M9
-- builtin-cd.test (xfail=7) `cd` / `pwd` semantics; leave the final symlink/PWD fidelity tail for M9
-- redirect-multi.test (xfail=1) multi-redirect word expansion and ambiguity tail
-- glob.test (xfail=4) remaining glob semantics and locale/order edge cases
-- tilde.test (xfail=3) tilde expansion tail
-- globignore.test (xfail=4) `GLOBIGNORE` interaction semantics
-- process-sub.test (xfail=3) process substitution semantics
-- serialize.test (xfail=4) shell state serialization / `%q` / `set` output fidelity
-- redirect-command.test (xfail=2) command + redirect interaction semantics
-- redir-order.test (xfail=4) redirect ordering semantics
-- extglob-files.test (xfail=2) extglob filesystem matching tail
-- extglob-match.test (xfail=1) extglob matcher semantics
-- pipeline.test (xfail=4) pipeline execution semantics
-- glob-bash.test (xfail=1) bash-specific glob behavior tail
+- sh-usage.test (xfail=2) `sh` / `bash` invocation and argument handling (remaining: locale tests)
+- bugs.test (xfail=4) mixed regression bucket; remaining: NUL byte, /dev/zero, arith code injection (x2)
+- redirect.test (xfail=4) redirection semantics; remaining: mkfifo, {var} parsing, fd leak, xtrace routing
+- builtin-cd.test (xfail=7) `cd` / `pwd` semantics; ALL symlink-related (M9/VFS)
+- glob.test (xfail=3) remaining: command-as-glob (external path), escaped `-` in charclass, LC_COLLATE
+- globignore.test (xfail=3) remaining: subdirectory patterns (x2), charclass `[[:alnum:]]`
+- process-sub.test (xfail=2) remaining: output process substitution `>()` (x2)
+- extglob-match.test (xfail=1) remaining: `!(str)` in `[[ ]]` changes meaning (parser-level)
+- pipeline.test (xfail=1) remaining: SIGPIPE (exit 141 = 128+13, needs signal infrastructure)
 
 ## Deferred Until Milestone 9
 - nul-bytes.test (xfail=9) binary/NUL semantics; maps to M9 binary-encoding work

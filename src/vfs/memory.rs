@@ -870,7 +870,18 @@ impl VirtualFs for InMemoryFs {
         if !is_absolute {
             results = results
                 .into_iter()
-                .filter_map(|p| p.strip_prefix(cwd).ok().map(|r| r.to_path_buf()))
+                .filter_map(|p| {
+                    p.strip_prefix(cwd).ok().map(|r| {
+                        // Rust's strip_prefix normalizes "/cwd/." to "/cwd" before
+                        // stripping, yielding an empty path instead of ".".  Restore
+                        // the "." so that `echo .*` shows the current-directory entry.
+                        if r.as_os_str().is_empty() {
+                            PathBuf::from(".")
+                        } else {
+                            r.to_path_buf()
+                        }
+                    })
+                })
                 .collect();
         }
 
@@ -950,6 +961,29 @@ fn glob_collect(
         let effective_pattern = if pattern == "**" { "*" } else { pattern };
 
         if let FsNode::Directory { children, .. } = resolved {
+            // When globskipdots is off, include synthetic . and .. entries
+            if !opts.globskipdots && rest.is_empty() {
+                let match_fn = |name: &str| -> bool {
+                    if opts.extglob && opts.nocaseglob {
+                        extglob_match_nocase(effective_pattern, name)
+                    } else if opts.extglob {
+                        extglob_match(effective_pattern, name)
+                    } else if opts.nocaseglob {
+                        glob_match_nocase(effective_pattern, name)
+                    } else {
+                        glob_match(effective_pattern, name)
+                    }
+                };
+                for dot_name in &[".", ".."] {
+                    if (effective_pattern.starts_with('.') || opts.dotglob)
+                        && match_fn(dot_name)
+                        && results.len() < max
+                    {
+                        results.push(current_path.join(dot_name));
+                    }
+                }
+            }
+
             for (name, child) in children {
                 if results.len() >= max {
                     return;

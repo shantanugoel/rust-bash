@@ -143,7 +143,7 @@ fn status_matches(file_stem: &str, expected_status: i32, actual_status: i32) -> 
     }
 }
 
-fn execute_oils_case(file_stem: &str, case: &OilsTestCase) -> Option<String> {
+fn execute_oils_case(file_stem: &str, case: &OilsTestCase, legacy_tmp_dir: bool) -> Option<String> {
     // This Oils case is guarded by an early `case $SH in ... exit ;; esac`, but
     // rust-bash parses the whole script up front, so the unreachable YSH-only
     // syntax would fail before that guard can run. Short-circuit it to the
@@ -285,12 +285,30 @@ fn execute_oils_case(file_stem: &str, case: &OilsTestCase) -> Option<String> {
     sh.set_shell_name("bash".to_string());
 
     // Pre-create directories that oils spec tests expect to exist.
+    // Only use absolute paths — relative ones would create dirs inside the cwd
+    // (/_tmp/spec-tmp) and pollute glob results.
     let _ = sh.exec(
-        "mkdir -p /_tmp _tmp /_tmp/spec-tmp _tmp/spec-tmp /repo /repo/bin /repo/spec/testdata /repo/_tmp/spec-tmp",
+        "mkdir -p /_tmp /_tmp/spec-tmp /repo /repo/bin /repo/spec/testdata /repo/_tmp/spec-tmp",
     );
+    // Some test files (e.g., glob.test) expect a relative `_tmp` under cwd for
+    // `touch _tmp/foo` commands.  Create it only when the file declares
+    // `## legacy_tmp_dir: yes`.
+    if legacy_tmp_dir {
+        let _ = sh.exec("mkdir -p _tmp _tmp/spec-tmp");
+    }
     let _ = sh.exec("hash -r");
+    // Reset PIPESTATUS so tests start with a clean initial state, like a fresh shell.
+    // We use unset_env() instead of exec("unset PIPESTATUS") because exec() itself
+    // runs a pipeline which re-sets PIPESTATUS to (0).
+    sh.unset_env("PIPESTATUS");
 
-    match sh.exec(&case.code) {
+    // Strip code after `if test $SH != osh; then\n  exit\nfi` blocks.
+    // Since rust-bash parses the whole script up front (unlike bash which
+    // reads line-by-line), OSH-only syntax after an exit guard would cause
+    // parse errors even though the code is unreachable at runtime.
+    let code = strip_osh_guarded_tail(&case.code);
+
+    match sh.exec(&code) {
         Ok(r) => {
             let mut mismatches: Vec<String> = Vec::new();
 
@@ -333,6 +351,29 @@ fn execute_oils_case(file_stem: &str, case: &OilsTestCase) -> Option<String> {
         }
         Err(e) => Some(format!("[{}] exec() returned Err: {e}", case.name)),
     }
+}
+
+// ---------------------------------------------------------------------------
+// OSH-guard stripping
+// ---------------------------------------------------------------------------
+
+/// Remove trailing code that is guarded by an `if test $SH != osh; then exit fi`
+/// block. In bash, `exit` runs before the parser sees the subsequent lines because
+/// bash reads line-by-line. Our parser reads the whole script up front, so
+/// OSH-only syntax after the guard causes parse errors.
+fn strip_osh_guarded_tail(code: &str) -> String {
+    // Look for patterns like: `if test $SH != osh; then\n  exit\nfi`
+    // Everything after the `fi` is OSH-only and can be removed.
+    let markers = [
+        "if test $SH != osh; then\n  exit\nfi",
+        "if test $SH != osh; then\nexit\nfi",
+    ];
+    for marker in &markers {
+        if let Some(pos) = code.find(marker) {
+            return code[..pos + marker.len()].to_string();
+        }
+    }
+    code.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -438,7 +479,7 @@ fn run_oils_spec_file(path: &Path) -> datatest_stable::Result<()> {
                 continue;
             }
             let mismatch = match panic::catch_unwind(AssertUnwindSafe(|| {
-                execute_oils_case(file_stem, case)
+                execute_oils_case(file_stem, case, test_file.legacy_tmp_dir)
             })) {
                 Ok(result) => result,
                 Err(_) => Some(format!("[{}] panicked during execution", case.name)),
@@ -468,11 +509,12 @@ fn run_oils_spec_file(path: &Path) -> datatest_stable::Result<()> {
             continue;
         }
 
-        let mismatch =
-            match panic::catch_unwind(AssertUnwindSafe(|| execute_oils_case(file_stem, case))) {
-                Ok(result) => result,
-                Err(_) => Some(format!("[{}] panicked during execution", case.name)),
-            };
+        let mismatch = match panic::catch_unwind(AssertUnwindSafe(|| {
+            execute_oils_case(file_stem, case, test_file.legacy_tmp_dir)
+        })) {
+            Ok(result) => result,
+            Err(_) => Some(format!("[{}] panicked during execution", case.name)),
+        };
 
         match (in_pass_list, &mismatch) {
             // In pass-list and matches: pass.

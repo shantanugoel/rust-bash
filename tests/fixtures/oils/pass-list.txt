@@ -207,7 +207,6 @@ array-literal.test:non-index forms of element (BashAssoc)
 array-literal.test:(strict_array) assoc=(key value ...) is not allowed
 array-literal.test:(strict_array) declare -A s+=()
 array-literal.test:(strict_array) s+=()
-array-literal.test:Tilde expansions in RHS of [k]=v (BashArray)
 array-literal.test:Tilde expansions in RHS of [k]=v (BashAssoc)
 array-sparse.test:+=
 array-sparse.test:"${a[*]}"
@@ -321,7 +320,6 @@ array.test:Tilde expansion within array
 array.test:Using an array itself as the index on LHS
 array.test:Using an array itself as the index on RHS
 array.test:[[ -v a[i] ]]
-assign-extended.test:ble.sh: eval -- "$(declare -p var arr)"
 assign-extended.test:declare
 assign-extended.test:declare -a
 assign-extended.test:declare -f exit code indicates function existence
@@ -472,6 +470,8 @@ brace-expansion.test:triple expansion
 brace-expansion.test:triple nested brace expansion
 brace-expansion.test:Two kinds of tilde expansion
 bugs.test:assign readonly -- multiple lines
+bugs.test:assign readonly -- multiple lines -- set -o posix
+bugs.test:assign readonly -- one line
 bugs.test:autoconf arithmetic - relaxed eval_unsafe_arith (#1450)
 bugs.test:autoconf word split (#1449)
 bugs.test:autotools as_fn_arith bug in configure
@@ -1059,7 +1059,6 @@ empty-bodies.test:Empty case/esac
 empty-bodies.test:Empty do/done
 empty-bodies.test:Empty then/fi
 errexit.test:background processes respect errexit
-errexit.test:bash atoms [[ (( - redir failure checked
 errexit.test:brace group - redir failure checked
 errexit.test:Command sub exit code is lost
 errexit.test:errexit aborts early
@@ -1106,6 +1105,7 @@ exit-status.test:Truncating 'exit' status
 exit-status.test:Truncating 'return' status
 extglob-files.test:Escaping of pipe (glibc bug, see demo/glibc_fnmatch.c)
 extglob-files.test:Extended glob as argument to ${undef:-} (dynamic globbing)
+extglob-files.test:Extended glob in assignment builtin
 extglob-files.test:Extended glob in same word as array
 extglob-files.test:Extended glob patterns with spaces
 extglob-files.test:Extended glob with word splitting
@@ -1123,6 +1123,7 @@ extglob-files.test:Nested extended glob pattern
 extglob-files.test:no_dash_glob
 extglob-files.test:No extended glob with simple_word_eval (YSH evaluation)
 extglob-files.test:noglob
+extglob-files.test:no match
 extglob-files.test:nullglob with extended glob
 extglob-files.test:Two adjacent alternations
 extglob-match.test:[[ $x == !($str) ]]
@@ -1181,6 +1182,7 @@ func-parsing.test:Nested definition
 func-parsing.test:subshell function
 func-parsing.test:Unbraced function body.
 glob-bash.test:dotglob (bash option that no_dash_glob is roughly consistent with)
+glob-bash.test:shopt -s failglob behavior on single line with semicolon
 glob-bash.test:shopt -s failglob exits properly in command context with set -e
 glob-bash.test:shopt -s failglob exits properly in loop context with set -e
 glob-bash.test:shopt -s failglob in array literal context
@@ -1191,6 +1193,7 @@ globignore.test:. and .. always filtered when GLOBIGNORE is set
 globignore.test:Don't glob flags on file system with GLOBIGNORE
 globignore.test:Extended glob expansion combined with GLOBIGNORE
 globignore.test:Ignore *
+globignore.test:Ignore .:..
 globignore.test:Ignore globs with char patterns like [!ab]
 globignore.test:Ignore *.o:*.h
 globignore.test:Ignore single file src/__main__.py
@@ -1239,6 +1242,7 @@ glob.test:pattern starting with . does not return . and ..
 glob.test:quoted var expansion with glob meta characters
 glob.test:set -o noglob
 glob.test:set -o noglob (bug #698)
+glob.test:shopt -u globskipdots shows . and ..
 glob.test:Splitting/Globbing doesn't happen on local assignment
 glob.test:store literal globs in array then expand
 here-doc.test:Compound command here doc
@@ -1390,15 +1394,18 @@ parse-errors.test:} is a parse error
 parse-errors.test:{ is its own word, needs a space
 parse-errors.test:misplaced ;;
 parse-errors.test:misplaced parentheses are not a subshell
+pipeline.test:|&
 pipeline.test:bash/dash/mksh run the last command is run in its own process
 pipeline.test:Brace group in pipeline
 pipeline.test:Evaluation of argv[0] in pipeline occurs in child
 pipeline.test:Exit code is last status
 pipeline.test:For loop starts pipeline
 pipeline.test:! in if
+pipeline.test:Initial value of PIPESTATUS is empty string
 pipeline.test:! is not a command
 pipeline.test:Nested pipelines
 pipeline.test:Pipeline comments
+pipeline.test:Pipeline in eval
 pipeline.test:PIPESTATUS
 pipeline.test:PIPESTATUS is set on simple commands
 pipeline.test:PIPESTATUS with shopt -s lastpipe
@@ -1412,6 +1419,7 @@ pipeline.test:While Loop ends pipeline
 pipeline.test:! with ( )
 pipeline.test:! with { }
 pipeline.test:! with ||
+process-sub.test:$(<file) idiom with process sub
 process-sub.test:Process sub from external process to stdin
 process-sub.test:process sub in background &
 process-sub.test:Process sub input
@@ -1453,6 +1461,8 @@ quote.test:Var substitution
 quote.test:Var substitution with braces
 quote.test:Var substitution with braces, quoted
 quote.test:YSH allows unquoted foo\ bar too
+redirect-command.test:$(< $file) yields the contents of the file
+redirect-command.test:`< $file` behaves like $(< file)
 redirect-command.test:$(< file; end) is not a special case
 redirect-command.test:>$file touches a file
 redirect-command.test:Brace group redirect
@@ -1477,6 +1487,7 @@ redirect-multi.test:Extended glob that doesn't match anything
 redirect-multi.test:File redirects have word splitting too!
 redirect-multi.test:File redirects with glob args (bash and zsh only)
 redirect-multi.test:File redirect that globs to more than one file (bash and zsh only)
+redirect-multi.test:File redirect to $var with glob char
 redirect-multi.test:File redirect with extended glob
 redirect-multi.test:File redirect without matching any file
 redirect-multi.test:File redirect without matching any file, with failglob
@@ -1497,6 +1508,7 @@ redirect.test:3>&- << EOF (OSH regression: fail to restore fds)
 redirect.test:>& and <& are the same
 redirect.test:&>> appends stdout and stderr
 redirect.test:can't mention big file descriptor
+redirect.test:Descriptor redirect with filename
 redirect.test:Descriptor redirect with spaces
 redirect.test:: >/dev/null 2> / (OSH regression: fail to pop fd frame)
 redirect.test:Double digit fd (20> file)
@@ -1519,7 +1531,12 @@ redirect.test:Redirect echo to stderr, and then redirect all of stdout somewhere
 redirect.test:&> redirects stdout and stderr
 redirect.test:Redirect to empty string
 redirect.test:Redirect to file descriptor that's not open
+redirect.test:>&word redirects stdout and stderr when word is not a number or -
+redir-order.test:case word + redirect order
 redir-order.test:echo `cat OSCFLAGS` "world" > OSCFLAGS (from Alpine imap)
+redir-order.test:for word + redirect order
+redir-order.test:[[ + redirect order
+redir-order.test:subshell + redirect order
 regex.test:BASH_REMATCH
 regex.test:Bug: Nix idiom with closing ) next to pattern
 regex.test:c|a unquoted
@@ -1551,9 +1568,13 @@ regex.test:regex with unprintable characters
 regex.test:Unicode in pattern
 regex.test:Unquoted { is a regex parse error
 serialize.test:${var@Q}
+serialize.test:declare
+serialize.test:printf %q invalid unicode
 serialize.test:printf %q newline
 serialize.test:printf %q quotes
 serialize.test:printf %q spaces
+serialize.test:printf %q unicode
+serialize.test:printf %q unprintable
 serialize.test:set
 serialize.test:xtrace
 shell-grammar.test:Case all on one line without trailing ;; or ;
@@ -1629,10 +1650,16 @@ sh-usage.test:exit with no args
 sh-usage.test:osh --eval
 sh-usage.test:Other flag parsers are not affected by - rule
 sh-usage.test:--rcfile in non-interactive shell prints warnings
+sh-usage.test:sh - and sh -- stop flag processing
 sh-usage.test:sh -c
+sh-usage.test:sh -c -- 'echo hi' does not run anything (#2637)
+sh-usage.test:sh +c is accepted
 sh-usage.test:sh -c with multiple -- args
 sh-usage.test:sh -c with no arg after --
+sh-usage.test:sh -c -x 'echo hi' - order is reversed
+sh-usage.test:'sh -c -z' does not try to run -z
 sh-usage.test:shell obeys --help (regression for OSH)
+sh-usage.test:weird flag parsing -oo errexit noglob
 smoke.test:"$@" "$*"
 smoke.test:$@ $*
 smoke.test:and-or chains
@@ -1674,6 +1701,8 @@ temp-binding.test:FOO=bar $unset - temp binding, then empty argv from unquoted u
 temp-binding.test:More eval 'local v='
 temp-binding.test:Temp bindings with local
 temp-binding.test:Temp bindings with unset
+tilde.test:${undef:-~}
+tilde.test:${x//~/~root}
 tilde.test:a[x]=foo:~ has tilde expansion
 tilde.test:~ expansion in assignment
 tilde.test:~ expansion in readonly assignment
@@ -1685,6 +1714,7 @@ tilde.test:temp assignment x=~ env
 tilde.test:tilde expansion an assignment keyword
 tilde.test:tilde expansion of word after redirect
 tilde.test:x=${undef-~:~}
+tilde.test:x=foo:~ has tilde expansion
 unicode.test:Unicode escapes \u03bc \U000003bc in $'', echo -e, printf
 var-num.test:$0 with -c
 var-num.test:$0 with filename

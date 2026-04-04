@@ -381,13 +381,21 @@ pub fn execute_program(
     program: &ast::Program,
     state: &mut InterpreterState,
 ) -> Result<ExecResult, RustBashError> {
+    execute_program_with_stdin(program, state, "")
+}
+
+pub fn execute_program_with_stdin(
+    program: &ast::Program,
+    state: &mut InterpreterState,
+    stdin: &str,
+) -> Result<ExecResult, RustBashError> {
     let mut result = ExecResult::default();
 
     for complete_command in &program.complete_commands {
         if state.should_exit {
             break;
         }
-        let r = execute_compound_list(complete_command, state, "")?;
+        let r = execute_compound_list(complete_command, state, stdin)?;
         state.counters.output_size += r.stdout.len() + r.stderr.len();
         check_limits(state)?;
         result.stdout.push_str(&r.stdout);
@@ -418,7 +426,7 @@ fn execute_compound_list(
 
     let mut i = 0usize;
     while i < list.0.len() {
-        if state.should_exit || state.control_flow.is_some() {
+        if state.should_exit || state.control_flow.is_some() || state.abort_command_list {
             break;
         }
         let item = &list.0[i];
@@ -505,6 +513,21 @@ fn execute_compound_list(
                     ..Default::default()
                 }
             }
+            Err(RustBashError::FailGlob { pattern }) => {
+                // failglob: abort the rest of the commands on the same line
+                state.last_command_had_error = true;
+                state.last_exit_code = 1;
+                check_errexit(state);
+                let error_line = state.current_lineno;
+                while i + 1 < list.0.len() && item_line(&list.0[i + 1]) == error_line {
+                    i += 1;
+                }
+                ExecResult {
+                    stderr: format!("rust-bash: no match: {pattern}\n"),
+                    exit_code: 1,
+                    ..Default::default()
+                }
+            }
             Err(e) => return Err(e),
         };
         result.stdout.push_str(&r.stdout);
@@ -537,6 +560,7 @@ fn execute_compound_list(
         }
         i += 1;
     }
+    state.abort_command_list = false;
 
     Ok(result)
 }
@@ -704,18 +728,27 @@ fn execute_pipeline(
     };
 
     // Set PIPESTATUS indexed array with each command's exit code.
-    // Overwritten on every pipeline (including single commands).
-    let mut pipestatus_map = std::collections::BTreeMap::new();
-    for (i, code) in exit_codes.iter().enumerate() {
-        pipestatus_map.insert(i, code.to_string());
+    // Bash only updates PIPESTATUS for multi-element pipelines and for
+    // simple/function commands. Standalone compound commands (case, for, if,
+    // while, etc.) do NOT update PIPESTATUS.
+    let should_set_pipestatus = pipeline.seq.len() > 1
+        || pipeline
+            .seq
+            .first()
+            .is_some_and(|cmd| matches!(cmd, ast::Command::Simple(_) | ast::Command::Function(_)));
+    if should_set_pipestatus {
+        let mut pipestatus_map = std::collections::BTreeMap::new();
+        for (i, code) in exit_codes.iter().enumerate() {
+            pipestatus_map.insert(i, code.to_string());
+        }
+        state.env.insert(
+            "PIPESTATUS".to_string(),
+            Variable {
+                value: VariableValue::IndexedArray(pipestatus_map),
+                attrs: VariableAttrs::empty(),
+            },
+        );
     }
-    state.env.insert(
-        "PIPESTATUS".to_string(),
-        Variable {
-            value: VariableValue::IndexedArray(pipestatus_map),
-            attrs: VariableAttrs::empty(),
-        },
-    );
 
     // Emit timing output for `time` keyword
     if let Some(start) = start {
@@ -804,6 +837,12 @@ fn execute_command(
             Err(e) => Err(e),
         },
         ast::Command::ExtendedTest(ext_test, redirects) => {
+            // Pre-truncate output redirect targets so command substitutions
+            // inside the test expression see the truncated files.
+            if let Some(redir_list) = redirects {
+                let redir_refs: Vec<&ast::IoRedirect> = redir_list.0.iter().collect();
+                pre_truncate_output_files(&redir_refs, state)?;
+            }
             let mut result = execute_extended_test(&ext_test.expr, state)?;
             if !state.pending_cmdsub_stderr.is_empty() {
                 let cmdsub_stderr = std::mem::take(&mut state.pending_cmdsub_stderr);
@@ -842,14 +881,9 @@ fn execute_command(
                 ..Default::default()
             })
         }
-        Err(RustBashError::FailGlob { pattern }) => {
-            state.last_command_had_error = true;
-            state.last_exit_code = 1;
-            Ok(ExecResult {
-                stderr: format!("{verbose_trace}rust-bash: no match: {pattern}\n"),
-                exit_code: 1,
-                ..Default::default()
-            })
+        Err(RustBashError::FailGlob { .. }) => {
+            // Let FailGlob propagate to execute_compound_list for line-skipping
+            result
         }
         Err(RustBashError::RedirectFailed(msg)) => {
             state.last_command_had_error = true;
@@ -916,6 +950,39 @@ impl Assignment {
     }
 }
 
+/// Expand an assignment value word with tilde-after-colon support.
+///
+/// Assignment values need tilde expansion after colons (e.g. `PATH=~:~root`).
+/// The word parser only does this when it sees the full `name=value` form.
+/// Since the AST already split name/value, we prepend a synthetic `_=` prefix
+/// so the existing `expand_assignment_like_tilde_bug` (called inside the
+/// expansion pipeline) recognises the assignment context.  The `_=` prefix
+/// is stripped from the result.
+fn expand_assignment_value_with_tilde(
+    w: &ast::Word,
+    state: &mut InterpreterState,
+) -> Result<String, RustBashError> {
+    // Use synthetic `_=` prefix only for simple values (no $, backtick, etc.)
+    // so expand_assignment_like_tilde_bug can handle colon-separated tildes.
+    // For values with $ or `, the parser already handles tilde at value start
+    // and inside parameter expansion defaults.
+    if w.value.contains('~')
+        && !w.value.starts_with('\'')
+        && !w.value.starts_with('"')
+        && !w.value.contains('$')
+        && !w.value.contains('`')
+    {
+        let synth = ast::Word {
+            value: format!("_={}", w.value),
+            loc: w.loc.clone(),
+        };
+        let expanded = expand_word_to_string_mut(&synth, state)?;
+        Ok(expanded.strip_prefix("_=").unwrap_or(&expanded).to_string())
+    } else {
+        expand_word_to_string_mut(w, state)
+    }
+}
+
 /// Process an AST assignment into our internal Assignment type.
 fn process_assignment(
     assignment: &ast::Assignment,
@@ -924,7 +991,7 @@ fn process_assignment(
 ) -> Result<Assignment, RustBashError> {
     match (&assignment.name, &assignment.value) {
         (ast::AssignmentName::VariableName(name), ast::AssignmentValue::Scalar(w)) => {
-            let value = expand_word_to_string_mut(w, state)?;
+            let value = expand_assignment_value_with_tilde(w, state)?;
             if append {
                 Ok(Assignment::AppendScalar {
                     name: name.clone(),
@@ -970,8 +1037,7 @@ fn process_assignment(
             ast::AssignmentName::ArrayElementName(name, index_str),
             ast::AssignmentValue::Scalar(w),
         ) => {
-            let value = expand_word_to_string_mut(w, state)?;
-            // Expand index — it may contain variable references
+            let value = expand_assignment_value_with_tilde(w, state)?;
             let index_word = ast::Word {
                 value: index_str.clone(),
                 loc: None,
@@ -1692,14 +1758,6 @@ fn execute_simple_command(
             match item {
                 ast::CommandPrefixOrSuffixItem::Word(w) => match expand_word_mut(w, state) {
                     Ok(expanded) => args.extend(expanded),
-                    Err(RustBashError::FailGlob { pattern }) => {
-                        state.last_exit_code = 1;
-                        return Ok(ExecResult {
-                            stderr: format!("rust-bash: no match: {pattern}\n"),
-                            exit_code: 1,
-                            ..Default::default()
-                        });
-                    }
                     Err(e) => return Err(e),
                 },
                 ast::CommandPrefixOrSuffixItem::IoRedirect(redir) => {
@@ -1723,7 +1781,7 @@ fn execute_simple_command(
                     };
                     match &assignment.value {
                         ast::AssignmentValue::Scalar(w) => {
-                            let value = expand_word_to_string_mut(w, state)?;
+                            let value = expand_assignment_value_with_tilde(w, state)?;
                             let op = if assignment.append { "+=" } else { "=" };
                             args.push(format!("{name}{op}{value}"));
                         }
@@ -1846,6 +1904,10 @@ fn execute_simple_command(
             for a in assignments {
                 apply_assignment_shell_error(a, state, &mut result)?;
                 if result.exit_code != 0 {
+                    state.abort_command_list = true;
+                    if state.shell_opts.posix {
+                        state.should_exit = true;
+                    }
                     break;
                 }
             }
@@ -1856,8 +1918,6 @@ fn execute_simple_command(
                 let cmdsub_stderr = std::mem::take(&mut state.pending_cmdsub_stderr);
                 result.stderr = format!("{cmdsub_stderr}{}", result.stderr);
             }
-            // Preserve command sub exit code if one ran during expansion;
-            // otherwise bare assignments reset $? to 0 (like bash).
             if result.exit_code == 0 && state.last_exit_code != exit_before_prefix {
                 result.exit_code = state.last_exit_code;
             }
@@ -1867,6 +1927,10 @@ fn execute_simple_command(
         for a in assignments {
             apply_assignment_shell_error(a, state, &mut result)?;
             if result.exit_code != 0 {
+                state.abort_command_list = true;
+                if state.shell_opts.posix {
+                    state.should_exit = true;
+                }
                 break;
             }
         }
@@ -2284,6 +2348,52 @@ fn execute_simple_command(
 
 // ── Compound commands ───────────────────────────────────────────────
 
+/// Pre-truncate output redirect targets before a compound command body executes.
+/// This ensures command substitutions inside the body (e.g. `cat file`) see the
+/// already-truncated file, matching bash's redirect ordering semantics.
+/// Only applies to write-mode (`>`, `>|`) redirects, not append (`>>`).
+fn pre_truncate_output_files(
+    redirects: &[&ast::IoRedirect],
+    state: &mut InterpreterState,
+) -> Result<(), RustBashError> {
+    for redir in redirects {
+        match redir {
+            ast::IoRedirect::File(
+                _fd,
+                ast::IoFileRedirectKind::Write | ast::IoFileRedirectKind::Clobber,
+                target,
+            ) => {
+                let filename = match target {
+                    ast::IoFileRedirectTarget::Filename(word) => {
+                        expand_word_to_string_mut(word, state)?
+                    }
+                    _ => continue,
+                };
+                if filename.is_empty() {
+                    continue;
+                }
+                let path = resolve_path(&state.cwd, &filename);
+                if !is_dev_null(&path) && !is_special_dev_path(&path) {
+                    write_or_append(state, &path, "", false)?;
+                }
+            }
+            ast::IoRedirect::OutputAndError(word, append) => {
+                if !*append {
+                    let filename = expand_word_to_string_mut(word, state)?;
+                    if !filename.is_empty() {
+                        let path = resolve_path(&state.cwd, &filename);
+                        if !is_dev_null(&path) && !is_special_dev_path(&path) {
+                            write_or_append(state, &path, "", false)?;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn execute_compound_command(
     compound: &ast::CompoundCommand,
     redirects: Option<&ast::RedirectList>,
@@ -2314,6 +2424,13 @@ fn execute_compound_command(
     } else {
         None
     };
+
+    // Pre-truncate output redirect targets so command substitutions inside
+    // the body see the truncated files (bash redirect ordering semantics).
+    if let Some(redir_list) = redirects {
+        let redir_refs: Vec<&ast::IoRedirect> = redir_list.0.iter().collect();
+        pre_truncate_output_files(&redir_refs, state)?;
+    }
 
     let mut result = match compound {
         ast::CompoundCommand::IfClause(if_clause) => {
@@ -3029,6 +3146,7 @@ fn execute_subshell(
         },
         network_policy: state.network_policy.clone(),
         should_exit: false,
+        abort_command_list: false,
         loop_depth: 0,
         control_flow: None,
         positional_params: state.positional_params.clone(),
@@ -3115,6 +3233,7 @@ fn make_pipeline_stage_state(state: &mut InterpreterState) -> InterpreterState {
         },
         network_policy: state.network_policy.clone(),
         should_exit: false,
+        abort_command_list: false,
         loop_depth: 0,
         control_flow: None,
         positional_params: state.positional_params.clone(),
@@ -3322,6 +3441,7 @@ pub(crate) fn make_exec_callback(
             },
             network_policy: network_policy.clone(),
             should_exit: false,
+            abort_command_list: false,
             loop_depth: 0,
             control_flow: None,
             positional_params: positional_params.clone(),
@@ -4366,7 +4486,7 @@ fn apply_persistent_fd_fallback(
                 }
             }
             PersistentFd::DupStdFd(1) => {
-                result.stdout.push_str(&result.stderr);
+                result.stdout = format!("{}{}", result.stderr, result.stdout);
                 result.stderr.clear();
             }
             PersistentFd::DevNull | PersistentFd::Closed => {
@@ -4443,8 +4563,7 @@ fn apply_file_redirect(
             apply_write_redirect(fd_num, &path, result, state, true, deferred_errors)?;
         }
         ast::IoFileRedirectKind::DuplicateOutput => {
-            let fd_num = fd.unwrap_or(1);
-            if !apply_duplicate_output(fd_num, target, result, state)? {
+            if !apply_duplicate_output(fd, target, result, state)? {
                 return Ok(false);
             }
         }
@@ -4454,7 +4573,7 @@ fn apply_file_redirect(
                 // <&N for stdin — handled in collect_input_redirects
             } else {
                 // N<&M where N != 0 — acts like N>&M (duplicate)
-                if !apply_duplicate_output(fd_num, target, result, state)? {
+                if !apply_duplicate_output(Some(fd_num), target, result, state)? {
                     return Ok(false);
                 }
             }
@@ -4578,14 +4697,16 @@ fn write_to_persistent_fd(
     Ok(())
 }
 
-/// Handle DuplicateOutput redirect (>&N, 2>&1, N>&M-, etc.)
+/// Handle DuplicateOutput redirect (>&N, 2>&1, N>&M-, >&word, etc.)
+/// `fd` is the original fd from the AST: None means bare `>&`, Some(n) means `N>&`.
 /// Returns Ok(true) to continue, Ok(false) if the redirect failed.
 fn apply_duplicate_output(
-    fd_num: i32,
+    fd: Option<i32>,
     target: &ast::IoFileRedirectTarget,
     result: &mut ExecResult,
     state: &mut InterpreterState,
 ) -> Result<bool, RustBashError> {
+    let fd_num = fd.unwrap_or(1);
     let dup_target_str = match target {
         ast::IoFileRedirectTarget::Duplicate(word) => {
             let words = expand_word_mut(word, state)?;
@@ -4654,14 +4775,29 @@ fn apply_duplicate_output(
         }
         apply_dup_fd(fd_num, target_fd, result, state)?;
     } else {
-        if fd_num == 1 {
-            result.stdout.clear();
+        // >&word where word is not a number: redirect to file (bash behavior).
+        // Bare >&word (fd=None) redirects both stdout and stderr (like &>word).
+        // N>&word (fd=Some(N)) redirects only fd N to the file (like N>word).
+        let path = resolve_path(&state.cwd, &dup_target_str);
+        if fd.is_none() {
+            // Bare >&word: redirect both stdout and stderr to file
+            let combined = format!("{}{}", result.stdout, result.stderr);
+            if is_dev_null(&path) {
+                result.stdout.clear();
+                result.stderr.clear();
+            } else {
+                write_or_append(state, &path, &combined, false)?;
+                result.stdout.clear();
+                result.stderr.clear();
+            }
+        } else {
+            // N>&word: redirect fd N to file
+            let mut deferred_errors = Vec::new();
+            apply_write_redirect(fd_num, &path, result, state, false, &mut deferred_errors)?;
+            for err in deferred_errors {
+                result.stderr.push_str(&err);
+            }
         }
-        result.stderr.push_str(&format!(
-            "rust-bash: {dup_target_str}: ambiguous redirect\n"
-        ));
-        result.exit_code = 1;
-        return Ok(false);
     }
     Ok(true)
 }
@@ -4675,9 +4811,11 @@ fn apply_dup_fd(
 ) -> Result<(), RustBashError> {
     // Standard FD duplication
     if target_fd == 1 && fd_num == 2 {
-        // 2>&1: merge stderr into stdout
+        // 2>&1: merge stderr into stdout.
+        // Prepend stderr before stdout: in real shells stderr is unbuffered and
+        // typically flushed before stdout, and `|&` tests rely on this ordering.
         if !result.stderr.is_empty() {
-            result.stdout.push_str(&result.stderr);
+            result.stdout = format!("{}{}", result.stderr, result.stdout);
             result.stderr.clear();
             result.stdout_bytes = None;
         }
@@ -4910,6 +5048,7 @@ fn make_proc_sub_state(state: &mut InterpreterState) -> InterpreterState {
         },
         network_policy: state.network_policy.clone(),
         should_exit: false,
+        abort_command_list: false,
         loop_depth: 0,
         control_flow: None,
         positional_params: state.positional_params.clone(),

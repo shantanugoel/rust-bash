@@ -1556,7 +1556,8 @@ impl super::VirtualCommand for HeadCommand {
         if let Some(count) = num_bytes {
             let mut stdout = String::new();
             let mut stdout_bytes = Vec::new();
-            for (multi_index, file) in files.iter().enumerate() {
+            let effective_byte_files: Vec<&str> = if files.is_empty() { vec!["-"] } else { files };
+            for (multi_index, file) in effective_byte_files.iter().enumerate() {
                 let (label, bytes) = if *file == "-" || *file == "/dev/stdin" {
                     (
                         "(standard input)".to_string(),
@@ -1578,7 +1579,7 @@ impl super::VirtualCommand for HeadCommand {
                     }
                 };
 
-                if files.len() > 1 {
+                if effective_byte_files.len() > 1 {
                     if multi_index > 0 {
                         stdout.push('\n');
                     }
@@ -1598,28 +1599,68 @@ impl super::VirtualCommand for HeadCommand {
             };
         }
 
-        let inputs = match read_input(&files, ctx) {
-            Ok(i) => i,
-            Err(r) => return r,
-        };
-        let multi = inputs.len() > 1;
-
+        let effective_files: Vec<&str> = if files.is_empty() { vec!["-"] } else { files };
+        let multi = effective_files.len() > 1;
         let mut stdout = String::new();
-        for (idx, (filename, content)) in inputs.iter().enumerate() {
-            if multi {
-                if idx > 0 {
+        let mut stderr = String::new();
+        let mut exit_code = 0;
+        let mut file_index = 0;
+
+        for file in &effective_files {
+            if *file == "-" || *file == "/dev/stdin" {
+                if multi {
+                    if file_index > 0 {
+                        stdout.push('\n');
+                    }
+                    stdout.push_str("==> (standard input) <==\n");
+                }
+                for line in ctx.stdin.lines().take(num_lines) {
+                    stdout.push_str(line);
                     stdout.push('\n');
                 }
-                stdout.push_str(&format!("==> {} <==\n", filename));
-            }
-            for line in content.lines().take(num_lines) {
-                stdout.push_str(line);
-                stdout.push('\n');
+                file_index += 1;
+            } else if *file == "/dev/null"
+                || *file == "/dev/zero"
+                || *file == "/dev/full"
+                || *file == "/dev/stdout"
+                || *file == "/dev/stderr"
+            {
+                if multi {
+                    if file_index > 0 {
+                        stdout.push('\n');
+                    }
+                    stdout.push_str(&format!("==> {} <==\n", file));
+                }
+                file_index += 1;
+            } else {
+                let path = resolve_path(file, ctx.cwd);
+                match ctx.fs.read_file(&path) {
+                    Ok(bytes) => {
+                        let content = String::from_utf8_lossy(&bytes);
+                        if multi {
+                            if file_index > 0 {
+                                stdout.push('\n');
+                            }
+                            stdout.push_str(&format!("==> {} <==\n", file));
+                        }
+                        for line in content.lines().take(num_lines) {
+                            stdout.push_str(line);
+                            stdout.push('\n');
+                        }
+                        file_index += 1;
+                    }
+                    Err(e) => {
+                        stderr.push_str(&format!("{}: {}\n", file, e));
+                        exit_code = 1;
+                    }
+                }
             }
         }
 
         CommandResult {
             stdout,
+            stderr,
+            exit_code,
             ..Default::default()
         }
     }
@@ -3565,29 +3606,80 @@ fn printf_shell_quote(s: &str) -> String {
     if s.is_empty() {
         return "''".to_string();
     }
-    // If string contains control characters, use $'...' notation
-    let has_control = s.chars().any(|c| c.is_ascii_control());
-    if has_control {
+
+    // Check if string needs $'...' quoting (control chars or shell byte markers)
+    let has_special = s
+        .chars()
+        .any(|c| c.is_ascii_control() || crate::shell_bytes::marker_byte(c).is_some());
+
+    if has_special {
         let mut out = String::from("$'");
-        for ch in s.chars() {
-            match ch {
-                '\'' => out.push_str("\\'"),
-                '\\' => out.push_str("\\\\"),
-                '\n' => out.push_str("\\n"),
-                '\t' => out.push_str("\\t"),
-                '\r' => out.push_str("\\r"),
-                '\x07' => out.push_str("\\a"),
-                '\x08' => out.push_str("\\b"),
-                '\x0C' => out.push_str("\\f"),
-                '\x0B' => out.push_str("\\v"),
-                '\x1B' => out.push_str("\\E"),
-                c if c.is_ascii_control() => out.push_str(&format!("\\{:03o}", c as u32)),
-                c => out.push(c),
+        let chars: Vec<char> = s.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            // Collect consecutive shell_bytes markers and try to decode as UTF-8
+            if crate::shell_bytes::marker_byte(chars[i]).is_some() {
+                let mut raw_bytes = Vec::new();
+                while i < chars.len() {
+                    if let Some(byte) = crate::shell_bytes::marker_byte(chars[i]) {
+                        raw_bytes.push(byte);
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                // Try to decode the byte sequence as UTF-8; emit decoded chars
+                // literally when valid, octal escapes when invalid.
+                let mut pos = 0;
+                while pos < raw_bytes.len() {
+                    // Try decoding from pos forward (up to 4 bytes for one UTF-8 char)
+                    let mut decoded = false;
+                    for len in (1..=4).rev() {
+                        if pos + len > raw_bytes.len() {
+                            continue;
+                        }
+                        if let Ok(decoded_str) = std::str::from_utf8(&raw_bytes[pos..pos + len]) {
+                            let ch = decoded_str.chars().next().unwrap();
+                            if len > 1 || !ch.is_ascii() || (len == 1 && ch.is_ascii_graphic()) {
+                                // Valid multi-byte UTF-8 or printable ASCII: emit literally
+                                printf_shell_quote_char(ch, &mut out);
+                                pos += len;
+                                decoded = true;
+                                break;
+                            }
+                        }
+                    }
+                    if !decoded {
+                        // Single byte that's not valid UTF-8 start: emit as octal
+                        out.push_str(&format!("\\{:03o}", raw_bytes[pos]));
+                        pos += 1;
+                    }
+                }
+                continue;
             }
+            printf_shell_quote_char(chars[i], &mut out);
+            i += 1;
         }
         out.push('\'');
+
+        // If the result contains ONLY printable chars (no escapes), check if we
+        // can drop the $'' wrapper entirely (e.g., valid UTF-8 that needs no quoting)
+        let inner = &out[2..out.len() - 1];
+        let all_printable = inner.chars().all(|c| !c.is_ascii_control() && c != '\\');
+        if all_printable && !inner.is_empty() {
+            // Check if the string needs quoting at all
+            // Non-ASCII printable chars (like μ) don't need quoting
+            let needs_quoting = inner
+                .chars()
+                .any(|c| c.is_ascii() && !c.is_ascii_alphanumeric() && !"@%_+:,./=-".contains(c));
+            if !needs_quoting {
+                return inner.to_string();
+            }
+        }
+
         return out;
     }
+
     // Check if the string needs quoting at all
     let needs_quoting = s
         .chars()
@@ -3595,10 +3687,12 @@ fn printf_shell_quote(s: &str) -> String {
     if !needs_quoting {
         return s.to_string();
     }
+
     // Use backslash escaping (bash's default %q behavior)
+    // Non-ASCII printable chars (like μ) are output literally by bash
     let mut result = String::new();
     for ch in s.chars() {
-        if ch.is_ascii_alphanumeric() || "@%_+:,./=-".contains(ch) {
+        if ch.is_ascii_alphanumeric() || "@%_+:,./=-".contains(ch) || !ch.is_ascii() {
             result.push(ch);
         } else {
             result.push('\\');
@@ -3606,6 +3700,23 @@ fn printf_shell_quote(s: &str) -> String {
         }
     }
     result
+}
+
+fn printf_shell_quote_char(ch: char, out: &mut String) {
+    match ch {
+        '\'' => out.push_str("\\'"),
+        '\\' => out.push_str("\\\\"),
+        '\n' => out.push_str("\\n"),
+        '\t' => out.push_str("\\t"),
+        '\r' => out.push_str("\\r"),
+        '\x07' => out.push_str("\\a"),
+        '\x08' => out.push_str("\\b"),
+        '\x0C' => out.push_str("\\f"),
+        '\x0B' => out.push_str("\\v"),
+        '\x1B' => out.push_str("\\E"),
+        c if c.is_ascii_control() => out.push_str(&format!("\\{:03o}", c as u32)),
+        c => out.push(c),
+    }
 }
 
 // ── paste ────────────────────────────────────────────────────────────
