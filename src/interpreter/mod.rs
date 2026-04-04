@@ -443,12 +443,17 @@ pub struct InterpreterState {
     /// Stderr accumulated from command substitutions during word expansion.
     /// Drained by the enclosing command execution into its `ExecResult.stderr`.
     pub(crate) pending_cmdsub_stderr: String,
+    /// Stderr accumulated from `[[ -v ]]` tests (e.g. OOB negative array indices).
+    pub(crate) pending_test_stderr: String,
     /// Set when a fatal parameter expansion error terminates the current shell.
     pub(crate) fatal_expansion_error: bool,
     /// Distinguishes shell/runtime errors from ordinary non-zero command exits.
     pub(crate) last_command_had_error: bool,
     /// True when the last non-zero status came from a context exempt from `set -e`.
     pub(crate) last_status_immune_to_errexit: bool,
+    /// When set, the current execution context was invoked as a script file
+    /// (not `-c` or sourced). Used to synthesize a "main" FUNCNAME entry.
+    pub(crate) script_source: Option<String>,
 }
 
 pub(crate) const DEFAULT_PATH: &str = "/usr/bin:/bin";
@@ -1119,6 +1124,21 @@ pub(crate) fn set_variable(
     // Resolve nameref chain to find the actual target variable.
     let target = resolve_nameref(name, state)?;
 
+    // Empty nameref target (e.g. `typeset -n ref` with no value): assignment
+    // sets the nameref's target to `value`, not the pointed-to variable.
+    if target.is_empty()
+        && state
+            .env
+            .get(name)
+            .is_some_and(|v| v.attrs.contains(VariableAttrs::NAMEREF))
+    {
+        if let Some(var) = state.env.get_mut(name) {
+            var.value = VariableValue::Scalar(value);
+            var.attrs.remove(VariableAttrs::DECLARED_ONLY);
+        }
+        return Ok(());
+    }
+
     // If the resolved target is an array subscript (e.g. from a nameref to "a[2]"),
     // set the array element directly.
     if let Some(bracket_pos) = target.find('[')
@@ -1609,9 +1629,11 @@ mod tests {
             proc_sub_prealloc: HashMap::new(),
             pipe_stdin_bytes: None,
             pending_cmdsub_stderr: String::new(),
+            pending_test_stderr: String::new(),
             fatal_expansion_error: false,
             last_command_had_error: false,
             last_status_immune_to_errexit: false,
+            script_source: None,
         }
     }
 }

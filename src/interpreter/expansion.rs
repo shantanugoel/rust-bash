@@ -466,9 +466,11 @@ fn execute_command_substitution(
         proc_sub_prealloc: HashMap::new(),
         pipe_stdin_bytes: None,
         pending_cmdsub_stderr: String::new(),
+        pending_test_stderr: String::new(),
         fatal_expansion_error: false,
         last_command_had_error: false,
         last_status_immune_to_errexit: false,
+        script_source: None,
     };
 
     let result = execute_program(&program, &mut sub_state);
@@ -1606,6 +1608,21 @@ fn resolve_parameter_maybe_mut(
         _ => resolve_parameter_direct(parameter, state),
     };
     if indirect {
+        // Nameref inversion: when ref IS a nameref, ${!ref} returns the target
+        // name, not a further indirect lookup.
+        if let Parameter::Named(name) = parameter {
+            let is_nameref = state
+                .env
+                .get(name.as_str())
+                .is_some_and(|v| v.attrs.contains(crate::interpreter::VariableAttrs::NAMEREF));
+            if is_nameref {
+                return Ok(state
+                    .env
+                    .get(name.as_str())
+                    .map(|v| v.value.as_scalar().to_string())
+                    .unwrap_or_default());
+            }
+        }
         Ok(resolve_indirect_value(&val, state))
     } else {
         Ok(val)
@@ -2207,33 +2224,47 @@ fn apply_transform(
 }
 
 /// Shell-quote a value so it can be safely reused as input (@Q).
-/// Empty strings → `''`. Strings without single quotes → `'val'`.
-/// Strings with single quotes → `$'...'` with escaping.
+/// Empty strings → `''`. Strings without special chars → `'val'`.
+/// Strings with single quotes (no control chars) → POSIX-style `'..'\''...'`.
+/// Strings with control chars → `$'...'` with escaping.
 fn shell_quote(val: &str) -> String {
     if val.is_empty() {
         return "''".to_string();
     }
-    // Use $'...' if the string contains single quotes or non-printable chars
-    let needs_dollar_quote = val.chars().any(|c| c == '\'' || c.is_ascii_control());
-    if !needs_dollar_quote {
+    let has_control = val.chars().any(|c| c.is_ascii_control());
+    let has_single_quote = val.contains('\'');
+    if !has_single_quote && !has_control {
         return format!("'{val}'");
     }
-    // Use $'...' notation for strings with single quotes
-    let mut out = String::from("$'");
+    if has_control {
+        // Use $'...' notation for strings with control characters
+        let mut out = String::from("$'");
+        for ch in val.chars() {
+            match ch {
+                '\'' => out.push_str("\\'"),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\t' => out.push_str("\\t"),
+                '\r' => out.push_str("\\r"),
+                '\x07' => out.push_str("\\a"),
+                '\x08' => out.push_str("\\b"),
+                '\x0C' => out.push_str("\\f"),
+                '\x0B' => out.push_str("\\v"),
+                '\x1B' => out.push_str("\\E"),
+                c if c.is_ascii_control() => out.push_str(&format!("\\{:03o}", c as u32)),
+                c => out.push(c),
+            }
+        }
+        out.push('\'');
+        return out;
+    }
+    // POSIX-style: close quote, backslash-escape the single quote, reopen
+    let mut out = String::from("'");
     for ch in val.chars() {
-        match ch {
-            '\'' => out.push_str("\\'"),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
-            '\x07' => out.push_str("\\a"),
-            '\x08' => out.push_str("\\b"),
-            '\x0C' => out.push_str("\\f"),
-            '\x0B' => out.push_str("\\v"),
-            '\x1B' => out.push_str("\\E"),
-            c if c.is_ascii_control() => out.push_str(&format!("\\{:03o}", c as u32)),
-            c => out.push(c),
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
         }
     }
     out.push('\'');
@@ -2921,15 +2952,72 @@ fn validate_indirect_reference(
         )));
     }
 
+    // Validate that the indirect target value is a valid variable reference.
+    if indirect {
+        let val = resolve_parameter_direct(parameter, state);
+        if !val.is_empty() && !is_valid_indirect_target(&val) {
+            return Err(RustBashError::Execution(format!("{val}: bad substitution")));
+        }
+    }
+
     Ok(())
 }
 
+/// Check if a string is a valid target for indirect expansion.
+/// Valid: empty, simple var name, arr[idx], numeric (positional), @, *, #, ?, -, $, !
+fn is_valid_indirect_target(target: &str) -> bool {
+    if target.is_empty() {
+        return true;
+    }
+    // Special params
+    if matches!(target, "@" | "*" | "#" | "?" | "-" | "$" | "!") {
+        return true;
+    }
+    // Positional param (pure digits)
+    if target.chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    // Array subscript: name[index]
+    if let Some(bracket_pos) = target.find('[') {
+        if target.ends_with(']') {
+            let name = &target[..bracket_pos];
+            return is_valid_var_name(name);
+        }
+        return false;
+    }
+    // Simple variable name
+    is_valid_var_name(target)
+}
+
+fn is_valid_var_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with(|c: char| c.is_ascii_digit())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 fn resolve_parameter(parameter: &Parameter, state: &InterpreterState, indirect: bool) -> String {
-    let val = resolve_parameter_direct(parameter, state);
     if indirect {
+        if let Parameter::Named(name) = parameter {
+            // Check if the variable is a nameref. Bash inverts the meaning of
+            // `${!ref}` when ref IS a nameref: it returns the nameref target
+            // name instead of performing an additional indirect lookup.
+            let is_nameref = state
+                .env
+                .get(name.as_str())
+                .is_some_and(|v| v.attrs.contains(crate::interpreter::VariableAttrs::NAMEREF));
+            if is_nameref {
+                // Return the target name (the scalar value stored in the nameref).
+                return state
+                    .env
+                    .get(name.as_str())
+                    .map(|v| v.value.as_scalar().to_string())
+                    .unwrap_or_default();
+            }
+        }
+        let val = resolve_parameter_direct(parameter, state);
         resolve_indirect_value(&val, state)
     } else {
-        val
+        resolve_parameter_direct(parameter, state)
     }
 }
 
@@ -2980,7 +3068,17 @@ fn resolve_indirect_value(target: &str, state: &InterpreterState) -> String {
         "-" => String::new(),
         "$" => "1".to_string(),
         "!" => String::new(),
-        _ => get_var(state, target).unwrap_or_default(),
+        _ => {
+            // Validate that the target is a valid variable name.
+            if !target
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                || target.starts_with(|c: char| c.is_ascii_digit())
+            {
+                return String::new();
+            }
+            get_var(state, target).unwrap_or_default()
+        }
     }
 }
 
@@ -3122,6 +3220,10 @@ fn resolve_array_element_mut(
                     let max_key = map.keys().next_back().copied().unwrap_or(0);
                     let resolved_idx = max_key as i64 + 1 + idx;
                     if resolved_idx < 0 {
+                        let ln = state.current_lineno;
+                        state.pending_cmdsub_stderr.push_str(&format!(
+                            "rust-bash: line {ln}: {resolved}: bad array subscript\n"
+                        ));
                         return String::new();
                     }
                     resolved_idx as usize
@@ -3150,12 +3252,25 @@ fn resolve_call_stack_element(name: &str, index: &str, state: &InterpreterState)
         "FUNCNAME" | "BASH_SOURCE" | "BASH_LINENO" => {}
         _ => return None,
     }
+
+    // FUNCNAME is empty outside of functions.
+    if name == "FUNCNAME" && state.in_function_depth == 0 {
+        return Some(String::new());
+    }
+
     let raw_idx = simple_arith_eval(index, state);
-    // The call stack is ordered innermost-last; bash indexes 0 = current (innermost).
-    // Build a reversed view: index 0 = top of stack, last = bottom ("main").
-    let len = state.call_stack.len();
+
+    // Build the virtual array: call_stack frames (reversed) + optional main frame.
+    let need_main = state.script_source.is_some()
+        && state
+            .call_stack
+            .first()
+            .map(|f| f.func_name != "source")
+            .unwrap_or(false);
+    let virtual_len = state.call_stack.len() + if need_main { 1 } else { 0 };
+
     let idx = if raw_idx < 0 {
-        let resolved = len as i64 + raw_idx;
+        let resolved = virtual_len as i64 + raw_idx;
         if resolved < 0 {
             return Some(String::new());
         }
@@ -3163,17 +3278,30 @@ fn resolve_call_stack_element(name: &str, index: &str, state: &InterpreterState)
     } else {
         raw_idx as usize
     };
-    if idx >= len {
+    if idx >= virtual_len {
         return Some(String::new());
     }
-    let frame_idx = len - 1 - idx;
-    let frame = &state.call_stack[frame_idx];
-    Some(match name {
-        "FUNCNAME" => frame.func_name.clone(),
-        "BASH_SOURCE" => frame.source.clone(),
-        "BASH_LINENO" => frame.lineno.to_string(),
-        _ => String::new(),
-    })
+
+    // Index into the reversed call_stack, with main at the end.
+    let len = state.call_stack.len();
+    if idx < len {
+        let frame_idx = len - 1 - idx;
+        let frame = &state.call_stack[frame_idx];
+        Some(match name {
+            "FUNCNAME" => frame.func_name.clone(),
+            "BASH_SOURCE" => frame.source.clone(),
+            "BASH_LINENO" => frame.lineno.to_string(),
+            _ => String::new(),
+        })
+    } else {
+        // This is the synthetic "main" frame.
+        Some(match name {
+            "FUNCNAME" => "main".to_string(),
+            "BASH_SOURCE" => state.script_source.clone().unwrap_or_default(),
+            "BASH_LINENO" => "0".to_string(),
+            _ => String::new(),
+        })
+    }
 }
 
 /// Simple arithmetic evaluation for array indices in immutable contexts.
@@ -3250,31 +3378,64 @@ fn resolve_all_elements(name: &str, concatenate: bool, state: &InterpreterState)
 /// Get all values of call-stack pseudo-arrays as a Vec of owned Strings.
 /// Returns `None` if `name` is not a call-stack array.
 fn get_call_stack_values(name: &str, state: &InterpreterState) -> Option<Vec<String>> {
+    if state.call_stack.is_empty() {
+        return match name {
+            "FUNCNAME" | "BASH_SOURCE" | "BASH_LINENO" => Some(vec![]),
+            _ => None,
+        };
+    }
+
+    // FUNCNAME is only populated when inside a function.
+    if name == "FUNCNAME" && state.in_function_depth == 0 {
+        return Some(vec![]);
+    }
+
+    // Add a synthetic "main" frame at the bottom when we're executing a script
+    // file (not -c, not sourced). The main frame represents the script entry point.
+    let need_main = state.script_source.is_some()
+        && state
+            .call_stack
+            .first()
+            .map(|f| f.func_name != "source")
+            .unwrap_or(false);
+
     match name {
-        "FUNCNAME" => Some(
-            state
+        "FUNCNAME" => {
+            let mut vals: Vec<String> = state
                 .call_stack
                 .iter()
                 .rev()
                 .map(|f| f.func_name.clone())
-                .collect(),
-        ),
-        "BASH_SOURCE" => Some(
-            state
+                .collect();
+            if need_main {
+                vals.push("main".to_string());
+            }
+            Some(vals)
+        }
+        "BASH_SOURCE" => {
+            let mut vals: Vec<String> = state
                 .call_stack
                 .iter()
                 .rev()
                 .map(|f| f.source.clone())
-                .collect(),
-        ),
-        "BASH_LINENO" => Some(
-            state
+                .collect();
+            if need_main && let Some(ref src) = state.script_source {
+                vals.push(src.clone());
+            }
+            Some(vals)
+        }
+        "BASH_LINENO" => {
+            let mut vals: Vec<String> = state
                 .call_stack
                 .iter()
                 .rev()
                 .map(|f| f.lineno.to_string())
-                .collect(),
-        ),
+                .collect();
+            if need_main {
+                vals.push("0".to_string());
+            }
+            Some(vals)
+        }
         _ => None,
     }
 }
@@ -3404,19 +3565,34 @@ fn positional_slice_values_and_start(
     state: &InterpreterState,
     offset: i64,
 ) -> (Vec<String>, usize) {
-    let mut values = state.positional_params.clone();
     if offset == 0 {
-        values.insert(0, state.shell_name.clone());
+        let mut values = vec![state.shell_name.clone()];
+        values.extend(state.positional_params.iter().cloned());
         return (values, 0);
     }
 
-    let start = if offset > 0 {
-        (offset - 1) as usize
-    } else {
-        (values.len() as i64 + offset).max(0) as usize
-    };
+    if offset < 0 {
+        // Negative offsets count from end of the full [$0, $1, ..., $n] array.
+        let full_len = 1 + state.positional_params.len() as i64; // includes $0
+        let resolved = full_len + offset;
+        if resolved <= 0 {
+            // Wraps past $0 or OOB — include everything from $0
+            if resolved == 0 {
+                let mut values = vec![state.shell_name.clone()];
+                values.extend(state.positional_params.iter().cloned());
+                return (values, 0);
+            }
+            // Completely out of bounds — return empty
+            return (Vec::new(), 0);
+        }
+        // resolved > 0: start is within positional params (1-based index)
+        let start = (resolved - 1) as usize;
+        return (state.positional_params.clone(), start);
+    }
 
-    (values, start)
+    // Positive offset > 0: 1-based index into positional params
+    let start = (offset - 1) as usize;
+    (state.positional_params.clone(), start)
 }
 
 /// Get keys/indices of an array variable.
@@ -3667,7 +3843,11 @@ fn compute_bashopts(state: &InterpreterState) -> String {
 
 /// Resolve `FUNCNAME`, `BASH_SOURCE`, or `BASH_LINENO` as a scalar
 /// (returns value at index 0, i.e. current/innermost frame).
-fn resolve_call_stack_scalar(name: &str, state: &InterpreterState) -> String {
+pub(crate) fn resolve_call_stack_scalar(name: &str, state: &InterpreterState) -> String {
+    // FUNCNAME is empty outside of functions (in_function_depth == 0).
+    if name == "FUNCNAME" && state.in_function_depth == 0 {
+        return String::new();
+    }
     if state.call_stack.is_empty() {
         return String::new();
     }
@@ -4074,6 +4254,10 @@ fn is_dynamic_special(name: &str) -> bool {
 fn is_unset(state: &InterpreterState, parameter: &Parameter) -> bool {
     match parameter {
         Parameter::Named(name) => {
+            // FUNCNAME is unset when not inside a function.
+            if name == "FUNCNAME" && state.in_function_depth == 0 {
+                return true;
+            }
             if is_dynamic_special(name) {
                 return false;
             }
@@ -4108,6 +4292,9 @@ fn is_unset(state: &InterpreterState, parameter: &Parameter) -> bool {
         }
         Parameter::Special(_) => false,
         Parameter::NamedWithIndex { name, index } => {
+            if name == "FUNCNAME" && state.in_function_depth == 0 {
+                return true;
+            }
             if is_dynamic_special(name) {
                 return false;
             }
@@ -4146,6 +4333,9 @@ fn is_unset(state: &InterpreterState, parameter: &Parameter) -> bool {
             }
         }
         Parameter::NamedWithAllIndices { name, .. } => {
+            if name == "FUNCNAME" && state.in_function_depth == 0 {
+                return true;
+            }
             if is_dynamic_special(name) {
                 return false;
             }
@@ -4228,6 +4418,9 @@ fn parameter_scalar_is_unset(
         return true;
     }
     if let Parameter::Named(name) = parameter {
+        if name == "FUNCNAME" && state.in_function_depth == 0 {
+            return true;
+        }
         if is_dynamic_special(name) {
             return false;
         }
@@ -4832,9 +5025,11 @@ mod tests {
             proc_sub_prealloc: HashMap::new(),
             pipe_stdin_bytes: None,
             pending_cmdsub_stderr: String::new(),
+            pending_test_stderr: String::new(),
             fatal_expansion_error: false,
             last_command_had_error: false,
             last_status_immune_to_errexit: false,
+            script_source: None,
         }
     }
 

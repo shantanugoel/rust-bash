@@ -451,9 +451,11 @@ impl RustBashBuilder {
             proc_sub_prealloc: HashMap::new(),
             pipe_stdin_bytes: None,
             pending_cmdsub_stderr: String::new(),
+            pending_test_stderr: String::new(),
             fatal_expansion_error: false,
             last_command_had_error: false,
             last_status_immune_to_errexit: false,
+            script_source: None,
         };
         interpreter::ensure_shell_internal_vars(&mut state);
 

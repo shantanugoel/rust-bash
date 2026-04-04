@@ -167,6 +167,7 @@ array-assoc.test:printf -v and assoc array
 array-assoc.test:readonly associative array can't be modified
 array-assoc.test:retrieve keys with !
 array-assoc.test:retrieve values with ${A[@]}
+array-assoc.test:setting key to itself (from bash-bug mailing list)
 array-assoc.test:test -v assoc[key]
 array-assoc.test:test -v with dynamic parsing
 array-assoc.test:unset -v and assoc array
@@ -187,6 +188,8 @@ array-compat.test:++ on a whole array increments the first element (disallowed w
 array-compat.test:strict_array: ${array} is not valid in OSH, is ${array[0]} in ksh/bash
 array-compat.test:strict_array: $array is not valid in OSH, is ${array[0]} in ksh/bash
 array-compat.test:User arrays decay
+array-compat.test:value.BashArray internal representation - Assoc (ordering is a problem)
+array-compat.test:value.BashArray internal representation - Indexed
 array-literal.test:append to element (BashArray)
 array-literal.test:append to element (BashAssoc)
 array-literal.test:BashArray cannot be changed to BashAssoc and vice versa
@@ -218,21 +221,31 @@ array-sparse.test:${a[@]:offset:length}
 array-sparse.test:${a[@]@P}, ${a[@]@Q}, and ${a[@]@a}
 array-sparse.test:${a[@]/pat/rep}
 array-sparse.test:${a[@]-unset}, ${a[@]:-empty}, etc.
+array-sparse.test:${@:offset:length}
 array-sparse.test:${sp[i]}
+array-sparse.test:${sp[i]} with negative invalid index
 array-sparse.test:a[i]=v
 array-sparse.test:a[i]=v with BigInt
 array-sparse.test:compadjust
+array-sparse.test:crash dump
 array-sparse.test:Negative index with a[i]=v
+array-sparse.test:Negative out-of-bound index with a[i]=v (1/2)
+array-sparse.test:Negative out-of-bound index with a[i]=v (2/2)
 array-sparse.test:Performance demo
+array-sparse.test:Regression: a[-1]=1
 array-sparse.test:((sp[i])) and ((sp[i]++))
+array-sparse.test:((sp[i])) and ((sp[i]++)) with invalid negative index
 array-sparse.test:test "declare -p sp"
 array-sparse.test:test length
 array-sparse.test:unset -v a[i]
 array-sparse.test:unset -v a[i] for max index
+array-sparse.test:unset -v a[i] with out-of-bound negative index
 array-sparse.test:[[ -v a[i] ]]
+array-sparse.test:[[ -v a[i] ]] with invalid negative index
 array-sparse.test:xtrace a+=()
 array-sparse.test:(YSH) $[a1 === a2]
 array-sparse.test:(YSH) $[bool(a)]
+array-sparse.test:(YSH) append v1 v2... (a)
 array-sparse.test:(YSH) @[sp] and @sp
 array.test:"$*"
 array.test:$*
@@ -278,8 +291,12 @@ array.test:nounset / set -u with empty array (bug in bash 4.3, fixed in 4.4)
 array.test:Number of elements
 array.test:Regression: ${a[@]@Q} crash with `a[0]=x a[2]=y`
 array.test:Regression: Array length after unset
+array.test:Regression: Assigning with out-of-range negative index
 array.test:Regression: Negative index in [[ -v a[index] ]]
+array.test:Regression: Negative out-of-range index in [[ -v a[index] ]]
 array.test:Regression: Out-of-bound negative offset for ${a[@]:offset}
+array.test:Regression: silent out-of-bound negative index in ${a[-2]} and $((a[-2]))
+array.test:Regression: unset a[-2]: out-of-bound negative index should cause error
 array.test:Retrieve array indices with ${!a}
 array.test:Retrieve index
 array.test:Retrieve index that is a command sub
@@ -479,8 +496,8 @@ bugs.test:unset readonly -- one line
 builtin-bash.test:help
 builtin-bash.test:mapfile
 builtin-bash.test:mapfile (array name): arr
-builtin-bash.test:mapfile (delimiter): -d '' (null-separated)
 builtin-bash.test:mapfile (delimiter): -d delim
+builtin-bash.test:mapfile (delimiter): -d '' (null-separated)
 builtin-bash.test:mapfile (input range): -s start -n count
 builtin-bash.test:mapfile / readarray stdin  TODO: Fix me.
 builtin-bash.test:mapfile (store position): -O start
@@ -569,8 +586,8 @@ builtin-dirs.test:dirs test of path alias `.`
 builtin-dirs.test:dirs tilde test when $HOME is exactly $PWD
 builtin-dirs.test:dirs to print using tilde-prefix format
 builtin-dirs.test:dirs -v to print numbered stack, one entry per line
-builtin-dirs.test:popd usage error
 builtin-dirs.test:popd returns error on empty directory stack
+builtin-dirs.test:popd usage error
 builtin-dirs.test:pushd does not take more than one argument
 builtin-dirs.test:pushd/popd
 builtin-dirs.test:pushd usage
@@ -929,11 +946,11 @@ case_.test:Case with empty condition
 case_.test:\(\) in pattern (regression)
 case_.test:Match a literal with a glob character
 case_.test:Match a literal with a glob character with a dynamic pattern
-case_.test:Quoted literal in glob pattern
 case_.test:matching every byte against itself
 case_.test:matching the byte 0xff against empty string - DISABLED - CI only bug?
 case_.test:Multiple Patterns Match
 case_.test:Pattern ? matches 1 code point (many bytes), but not multiple code points
+case_.test:Quoted literal in glob pattern
 command-parsing.test:Prefix env on assignment
 command-parsing.test:Prefix env on control flow
 command-parsing.test:Redirect on assignment (enabled 7/2019)
@@ -1265,8 +1282,14 @@ if_.test:else
 if_.test:If
 if_.test:if break corner case
 if_.test:Long style
+introspect.test:$((BASH_LINENO)) (scalar form in arith)
+introspect.test:${FUNCNAME} and "set -u" (OSH regression)
 introspect.test:${FUNCNAME} with prefix/suffix operators
+introspect.test:FUNCNAME with source (scalar or array)
+introspect.test:Locations when sourcing
+introspect.test:Locations with temp frame
 introspect.test:operators on FUNCNAME
+introspect.test:Sourcing inside function grows the debug stack
 let.test:let
 let.test:let with ()
 loop.test:$b break, $c continue, $r return, $e exit
@@ -1297,17 +1320,27 @@ loop.test:while in pipe
 loop.test:while in pipe with subshell
 loop.test:while in while condition
 nameref.test:a[2] in nameref
+nameref.test:assign to empty nameref and invalid nameref
+nameref.test:assign to invalid ref
 nameref.test:assign to invalid ref with strict_nameref
 nameref.test:Chain of namerefs
 nameref.test:change reference itself
 nameref.test:Dynamic scope with namerefs
 nameref.test:exported nameref
+nameref.test:flag -n and +n
+nameref.test:flag -n combined ${!ref} -- bash INVERTS
+nameref.test:@ in nameref isn't supported, unlike in ${!ref}
 nameref.test:mutate array by reference
 nameref.test:mutate through nameref: ref[0]=
 nameref.test:mutating through nameref: ref=
 nameref.test:Mutually recursive namerefs detected on READ
 nameref.test:Mutually recursive namerefs detected on WRITE
+nameref.test:named ref with $# and shopt -s strict_nameref
+nameref.test:named ref with $# doesn't work
+nameref.test:named ref with 1 $1 etc.
 nameref.test:name ref on Undef cell
+nameref.test:-n attribute before it has a value
+nameref.test:-n attribute on array is hard error, not a warning
 nameref.test:pass array by reference
 nameref.test:pass assoc array by reference
 nameref.test:pass local array by reference, relying on DYNAMIC SCOPING
@@ -1540,11 +1573,11 @@ sh-func.test:Return statement
 sh-func.test:Return without args gives previous
 sh-func.test:Scope of global variable when sourced in function (Shell Functions aren't Closures)
 sh-func.test:Subshell function
+sh-options-bash.test:export SHELLOPTS does cross-process tracing
+sh-options-bash.test:export SHELLOPTS does cross-process tracing with bash
 sh-options-bash.test:If shopt --set xtrace is allowed, it should update SHELLOPTS, not BASHOPTS
 sh-options-bash.test:OSH calling bash with SHELLOPTS does not change braceexpand
 sh-options-bash.test:SHELLOPTS and BASHOPTS are non-empty
-sh-options-bash.test:export SHELLOPTS does cross-process tracing
-sh-options-bash.test:export SHELLOPTS does cross-process tracing with bash
 sh-options-bash.test:SHELLOPTS is readonly
 sh-options-bash.test:SHELLOPTS is updated when options are changed
 sh-options-bash.test:SHELLOPTS reflects flags like sh -x
@@ -1810,11 +1843,14 @@ var-op-test.test:op-test for unquoted ${a[*]:-empty} with IFS=
 var-op-test.test:Quoted with array as default value
 var-op-test.test:Unquoted with array as default value
 var-op-test.test:"\z" as arg
+var-ref.test:${!a[@]-'default'} is legal but fails with more than one element
 var-ref.test:${!OPTIND} (used by bash completion
 var-ref.test:${!ref-default}
 var-ref.test:${!undef:-}
 var-ref.test:array ref
 var-ref.test:array ref with strict_array
+var-ref.test:Bad var ref
+var-ref.test:Bad var ref 2
 var-ref.test:comparison to ${!array[@]} keys (similar SYNTAX)
 var-ref.test:Indirect expansion, THEN suffix operators
 var-ref.test:var ref ${!a}

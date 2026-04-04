@@ -1069,8 +1069,11 @@ fn builtin_unset(
 
             if is_indexed {
                 if index_str.contains('"') || index_str.contains('\'') {
+                    let ln = state.current_lineno;
                     return Ok(ExecResult {
-                        stderr: format!("unset: {name}[{index_str}]: bad array subscript\n"),
+                        stderr: format!(
+                            "rust-bash: line {ln}: unset: [{index_str}]: bad array subscript\n"
+                        ),
                         exit_code: 1,
                         ..ExecResult::default()
                     });
@@ -1078,8 +1081,11 @@ fn builtin_unset(
                 let idx = match crate::interpreter::arithmetic::eval_arithmetic(index_str, state) {
                     Ok(idx) => idx,
                     Err(_) => {
+                        let ln = state.current_lineno;
                         return Ok(ExecResult {
-                            stderr: format!("unset: {name}[{index_str}]: bad array subscript\n"),
+                            stderr: format!(
+                                "rust-bash: line {ln}: unset: [{index_str}]: bad array subscript\n"
+                            ),
                             exit_code: 1,
                             ..ExecResult::default()
                         });
@@ -1097,9 +1103,10 @@ fn builtin_unset(
                     if let Some(mk) = max_key {
                         let resolved = mk as i64 + 1 + idx;
                         if resolved < 0 {
+                            let ln = state.current_lineno;
                             return Ok(ExecResult {
                                 stderr: format!(
-                                    "unset: {name}[{index_str}]: bad array subscript\n"
+                                    "rust-bash: line {ln}: unset: [{index_str}]: bad array subscript\n"
                                 ),
                                 exit_code: 1,
                                 ..ExecResult::default()
@@ -1137,8 +1144,11 @@ fn builtin_unset(
                         var.value = VariableValue::Scalar(String::new());
                     }
                 } else {
+                    let ln = state.current_lineno;
                     return Ok(ExecResult {
-                        stderr: format!("unset: {name}[{index_str}]: bad array subscript\n"),
+                        stderr: format!(
+                            "rust-bash: line {ln}: unset: [{index_str}]: bad array subscript\n"
+                        ),
                         exit_code: 1,
                         ..ExecResult::default()
                     });
@@ -1740,6 +1750,7 @@ fn builtin_declare(
     let mut global_mode = false; // -g
     let mut remove_exported = false; // +x
     let mut remove_readonly = false; // +r
+    let mut remove_nameref = false; // +n
     let mut var_args: Vec<&String> = Vec::new();
 
     for arg in args {
@@ -1770,6 +1781,7 @@ fn builtin_declare(
                 match c {
                     'x' => remove_exported = true,
                     'r' => remove_readonly = true,
+                    'n' => remove_nameref = true,
                     _ => {}
                 }
             }
@@ -1799,7 +1811,7 @@ fn builtin_declare(
     // typeset +x / +r — remove attributes
     // Note: +r is accepted but ignored per bash behavior (readonly cannot
     // be removed once set).
-    if remove_exported || remove_readonly {
+    if remove_exported || remove_readonly || remove_nameref {
         for arg in &var_args {
             let (name, opt_value) = if let Some((n, v)) = arg.split_once('=') {
                 (n, Some(v))
@@ -1808,6 +1820,9 @@ fn builtin_declare(
             };
             if remove_exported && let Some(var) = state.env.get_mut(name) {
                 var.attrs.remove(VariableAttrs::EXPORTED);
+            }
+            if remove_nameref && let Some(var) = state.env.get_mut(name) {
+                var.attrs.remove(VariableAttrs::NAMEREF);
             }
             // +r: only assign value if the variable is not readonly
             if let Some(value) = opt_value {
@@ -1836,6 +1851,19 @@ fn builtin_declare(
     if var_args.is_empty() && !has_any_flag {
         // declare with no args — list all variables
         return declare_list_all(state);
+    }
+
+    // `declare -a` / `declare -A` / etc. with no var args = list matching vars
+    if var_args.is_empty() {
+        return declare_print(
+            state,
+            &var_args,
+            make_readonly,
+            make_exported,
+            make_nameref,
+            make_indexed_array,
+            make_assoc_array,
+        );
     }
 
     // Build the attribute bitmask from flags.
@@ -2375,6 +2403,12 @@ fn declare_with_value(
     }
 
     if make_nameref {
+        // Validate the target value.
+        if !value.is_empty() && !is_valid_nameref_target(value) {
+            return Err(RustBashError::Execution(format!(
+                "declare: `{value}': not a valid identifier"
+            )));
+        }
         // Nameref: set the variable directly (don't follow existing nameref).
         let var = state
             .env
@@ -2484,7 +2518,38 @@ fn declare_without_value(
     make_assoc_array: bool,
     make_indexed_array: bool,
 ) -> Result<(), RustBashError> {
+    // When adding the nameref attribute, validate the target value.
+    if flag_attrs.contains(VariableAttrs::NAMEREF)
+        && let Some(var) = state.env.get(name)
+    {
+        let target = var.value.as_scalar().to_string();
+        if !target.is_empty() && !is_valid_nameref_target(&target) {
+            return Err(RustBashError::Execution(format!(
+                "declare: `{target}': not a valid identifier"
+            )));
+        }
+        // Nameref on array is a hard error.
+        if matches!(
+            var.value,
+            VariableValue::IndexedArray(_) | VariableValue::AssociativeArray(_)
+        ) {
+            return Err(RustBashError::Execution(
+                "declare: nameref variable cannot be an array".to_string(),
+            ));
+        }
+    }
     if let Some(var) = state.env.get_mut(name) {
+        // Prevent converting between indexed and associative arrays.
+        if make_assoc_array && matches!(var.value, VariableValue::IndexedArray(_)) {
+            return Err(RustBashError::Execution(format!(
+                "declare: {name}: cannot convert indexed array to associative array"
+            )));
+        }
+        if make_indexed_array && matches!(var.value, VariableValue::AssociativeArray(_)) {
+            return Err(RustBashError::Execution(format!(
+                "declare: {name}: cannot convert associative array to indexed array"
+            )));
+        }
         var.attrs.insert(flag_attrs);
         if make_assoc_array && !matches!(var.value, VariableValue::AssociativeArray(_)) {
             var.value = VariableValue::AssociativeArray(std::collections::BTreeMap::new());
@@ -2509,6 +2574,31 @@ fn declare_without_value(
         );
     }
     Ok(())
+}
+
+/// Check if a string is a valid nameref target (valid variable identifier,
+/// or an array subscript like `a[2]`).
+fn is_valid_nameref_target(s: &str) -> bool {
+    // Allow array subscript form: name[...]
+    let name_part = if let Some(bracket_pos) = s.find('[') {
+        if s.ends_with(']') {
+            &s[..bracket_pos]
+        } else {
+            return false;
+        }
+    } else {
+        s
+    };
+    if name_part.is_empty() {
+        return false;
+    }
+    let first = name_part.as_bytes()[0];
+    if !(first == b'_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+    name_part
+        .bytes()
+        .all(|b| b == b'_' || b.is_ascii_alphanumeric())
 }
 
 /// Parse an array literal body like `x y z` or `[0]="x" [1]="y"` and populate
@@ -4135,7 +4225,7 @@ fn builtin_source(
             });
         }
     };
-    let saved_source = std::mem::replace(&mut state.current_source, resolved.clone());
+    let saved_source = std::mem::replace(&mut state.current_source, path_arg.to_string());
     let saved_source_text = std::mem::replace(&mut state.current_source_text, content.clone());
     let override_params = args.len() > 1;
     let saved_params = override_params.then(|| state.positional_params.clone());
@@ -4143,7 +4233,16 @@ fn builtin_source(
         state.positional_params = args[1..].to_vec();
     }
     state.source_depth += 1;
+    // Push a call stack frame so FUNCNAME/BASH_SOURCE/BASH_LINENO work.
+    // Use the original path argument (not the resolved absolute path) for
+    // BASH_SOURCE, matching bash behavior.
+    state.call_stack.push(crate::interpreter::CallFrame {
+        func_name: "source".to_string(),
+        source: path_arg.to_string(),
+        lineno: state.current_lineno,
+    });
     let result = execute_program(&program, state);
+    state.call_stack.pop();
     state.source_depth = state.source_depth.saturating_sub(1);
     state.current_source = saved_source;
     state.current_source_text = saved_source_text;
@@ -6475,6 +6574,16 @@ fn run_in_subshell(
     config: SubshellConfig<'_>,
 ) -> Result<ExecResult, RustBashError> {
     use std::collections::HashMap;
+    // Track whether this is a script file invocation (not -c) for FUNCNAME "main" frame.
+    // Use the shell_name_override (original path argument) for relative paths.
+    let script_source = if !config.invoked_with_c && config.source_override.is_some() {
+        config
+            .shell_name_override
+            .map(|s| s.to_string())
+            .or_else(|| config.source_override.clone())
+    } else {
+        None
+    };
     let cloned_fs = state.fs.deep_clone();
     let child_pid = next_child_pid(state);
     let env = if config.shell_process {
@@ -6563,7 +6672,9 @@ fn run_in_subshell(
         },
         current_lineno: state.current_lineno,
         current_source: config
-            .source_override
+            .shell_name_override
+            .map(|s| s.to_string())
+            .or(config.source_override)
             .unwrap_or_else(|| state.current_source.clone()),
         current_source_text: config
             .source_text_override
@@ -6581,9 +6692,11 @@ fn run_in_subshell(
         proc_sub_prealloc: HashMap::new(),
         pipe_stdin_bytes: None,
         pending_cmdsub_stderr: String::new(),
+        pending_test_stderr: String::new(),
         fatal_expansion_error: false,
         last_command_had_error: false,
         last_status_immune_to_errexit: false,
+        script_source,
     };
     ensure_nested_shell_startup_vars(&mut sub_state);
 
@@ -6769,9 +6882,11 @@ mod tests {
             proc_sub_prealloc: HashMap::new(),
             pipe_stdin_bytes: None,
             pending_cmdsub_stderr: String::new(),
+            pending_test_stderr: String::new(),
             fatal_expansion_error: false,
             last_command_had_error: false,
             last_status_immune_to_errexit: false,
+            script_source: None,
         }
     }
 

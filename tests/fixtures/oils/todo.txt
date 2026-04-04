@@ -1,7 +1,7 @@
 # Ordered Oils fix queue as of 2026-04-03.
 # Source of truth: current `tests/fixtures/oils/pass-list.txt` plus `tests/oils_spec.rs`
 # skip rules and `tests/common/oils_format.rs` case parsing.
-# Current totals: 1998 pass / 201 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
+# Current totals: 2176 pass / 165 xfail / 79 skip, with 42 whole-file skips in `tests/oils_spec.rs`.
 #
 # ── How the Oils test infra works ──
 # Runner:      tests/oils_spec.rs (datatest_stable harness, discovers .test.sh files)
@@ -25,16 +25,6 @@
 # `nul-bytes.test` and `unicode.test` stay deferred to Milestone 9 work.
 # `builtin-cd.test` and `redirect.test` stay on the queue, but expect a small VFS/symlink/fd tail to remain until M9.
 
-## Arrays, Indirection, Regex, Introspection
-- array-sparse.test (xfail=12) sparse-array semantics and negative-index handling
-- var-ref.test (xfail=15) indirect expansion and guarded expansion semantics
-- array.test (xfail=10) array assignment / env-binding / strict-array behavior
-- nameref.test (xfail=13) `declare -n` and reference semantics
-- regex.test (xfail=7) `[[ ... =~ ... ]]` parse/runtime regex behavior
-- array-assign.test (xfail=10) assignment forms for arrays
-- array-assoc.test (xfail=5) associative-array tail
-- introspect.test (xfail=7) introspection / serialization tail
-- array-compat.test (xfail=2) compatibility behavior for array corner cases
 
 ## Execution, Redirects, Globs, Filesystem Fidelity
 - sh-usage.test (xfail=8) `sh` / `bash` invocation and argument handling
@@ -62,3 +52,12 @@
 - alias.test (xfail=26) keep at the end; current blocker is moving alias expansion earlier than the post-AST `split_whitespace()` hack in `src/interpreter/walker.rs`, likely between tokenization and parsing in `src/interpreter/mod.rs` and/or by changing `RustBash::exec()` parse granularity; this is not proven to require `brush_parser` changes
 - parse-errors.test (xfail=6) remaining: long token (needs python2), `${%}` parser literal, `}` on second line, interactive parse error, array literal inside array
 - command-sub.test (xfail=15) command-sub quoting and newline semantics; exit-code propagation fixed
+- array-sparse.test (xfail=2) compgen -F, non-numeric keys in indexed init
+- var-ref.test (xfail=12) indirect expansion: subscripts, suffix ops, @Q, code injection, tilde
+- array.test (xfail=4) parser-blocked: space before (, env bindings, multiple subscripts
+- nameref.test (xfail=3) a[expr], a[@] subscript namerefs, ref[0]= mutation
+- regex.test (xfail=7) parser-blocked (6): spaces in patterns, operator chars; interpreter (1): quoted char-class
+- array-assign.test (xfail=10) ALL parser-blocked: spaces in subscripts, nested subscripts, etc.
+- array-assoc.test (xfail=4) hash-order-dependent slicing/quoting, parser-blocked brace expansion, surprising indexed-literal reset
+- introspect.test (xfail=1) BASH_LINENO off-by-2 in sourced files
+- array-compat.test (xfail=0) COMPLETE

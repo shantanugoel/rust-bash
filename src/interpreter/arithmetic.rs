@@ -1218,6 +1218,12 @@ fn resolve_var_recursive(
     depth: usize,
 ) -> Result<i64, RustBashError> {
     const MAX_DEPTH: usize = 10;
+    // Call-stack pseudo-variables (BASH_LINENO, etc.) are not stored in env;
+    // resolve them via the expansion helper so $((BASH_LINENO)) works.
+    if matches!(name, "BASH_LINENO" | "BASH_SOURCE" | "FUNCNAME") {
+        let scalar = crate::interpreter::expansion::resolve_call_stack_scalar(name, state);
+        return Ok(scalar.parse::<i64>().unwrap_or(0));
+    }
     let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
     let val_str = state
         .env
@@ -1317,6 +1323,10 @@ fn read_array_element(
                             let max_key = map.keys().next_back().copied().unwrap_or(0);
                             let resolved = max_key as i64 + 1 + index;
                             if resolved < 0 {
+                                let ln = state.current_lineno;
+                                state.pending_cmdsub_stderr.push_str(&format!(
+                                    "rust-bash: line {ln}: {resolved_name}: bad array subscript\n"
+                                ));
                                 return Ok(0);
                             }
                             resolved as usize
@@ -1569,6 +1579,8 @@ mod tests {
             proc_sub_prealloc: HashMap::new(),
             pipe_stdin_bytes: None,
             pending_cmdsub_stderr: String::new(),
+            pending_test_stderr: String::new(),
+            script_source: None,
             fatal_expansion_error: false,
             last_command_had_error: false,
             last_status_immune_to_errexit: false,

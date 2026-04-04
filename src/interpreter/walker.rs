@@ -456,8 +456,9 @@ fn execute_compound_list(
                         i += 1;
                     }
                 }
+                let ln = state.current_lineno;
                 ExecResult {
-                    stderr: format!("rust-bash: {msg}\n"),
+                    stderr: format!("rust-bash: line {ln}: {msg}\n"),
                     exit_code: 1,
                     ..Default::default()
                 }
@@ -466,8 +467,9 @@ fn execute_compound_list(
                 // Arithmetic errors are non-fatal: print to stderr, set $?=1, continue
                 state.last_command_had_error = true;
                 state.last_exit_code = 1;
+                let ln = state.current_lineno;
                 ExecResult {
-                    stderr: format!("rust-bash: {msg}\n"),
+                    stderr: format!("rust-bash: line {ln}: {msg}\n"),
                     exit_code: 1,
                     ..Default::default()
                 }
@@ -476,8 +478,9 @@ fn execute_compound_list(
                 // Bad substitution errors are non-fatal: print to stderr, set $?=1
                 state.last_command_had_error = true;
                 state.last_exit_code = 1;
+                let ln = state.current_lineno;
                 ExecResult {
-                    stderr: format!("rust-bash: {msg}\n"),
+                    stderr: format!("rust-bash: line {ln}: {msg}\n"),
                     exit_code: 1,
                     ..Default::default()
                 }
@@ -485,8 +488,9 @@ fn execute_compound_list(
             Err(RustBashError::Execution(msg)) if msg.contains("invalid indirect expansion") => {
                 state.last_command_had_error = true;
                 state.last_exit_code = 1;
+                let ln = state.current_lineno;
                 ExecResult {
-                    stderr: format!("rust-bash: {msg}\n"),
+                    stderr: format!("rust-bash: line {ln}: {msg}\n"),
                     exit_code: 1,
                     ..Default::default()
                 }
@@ -494,8 +498,9 @@ fn execute_compound_list(
             Err(RustBashError::Execution(msg)) if msg.contains("bad array subscript") => {
                 state.last_command_had_error = true;
                 state.last_exit_code = 1;
+                let ln = state.current_lineno;
                 ExecResult {
-                    stderr: format!("rust-bash: {msg}\n"),
+                    stderr: format!("rust-bash: line {ln}: {msg}\n"),
                     exit_code: 1,
                     ..Default::default()
                 }
@@ -939,6 +944,11 @@ fn process_assignment(
                 .get(name)
                 .is_some_and(|v| matches!(v.value, VariableValue::AssociativeArray(_)));
             if is_assoc {
+                // Bash clears the array before expanding values in non-append
+                // reassignment (e.g. foo=([k]="${foo[k]} v2") sees foo[k] as empty).
+                if !append && let Some(var) = state.env.get_mut(name) {
+                    var.value = VariableValue::AssociativeArray(std::collections::BTreeMap::new());
+                }
                 let (elements, warnings) =
                     process_assoc_array_initializer(name, items, append, state)?;
                 Ok(Assignment::AssocArray {
@@ -1255,7 +1265,7 @@ fn current_assoc_array(
 
 fn assoc_array_warning(name: &str, item: &str, state: &InterpreterState) -> String {
     format!(
-        "bash: line {}: {name}: {item}: must use subscript when assigning associative array\n",
+        "rust-bash: line {}: {name}: {item}: must use subscript when assigning associative array\n",
         state.current_lineno
     )
 }
@@ -1366,11 +1376,13 @@ fn apply_assignment(
                     actual_value: elements.len(),
                 });
             }
-            let attrs = state
+            let mut attrs = state
                 .env
                 .get(&name)
                 .map(|v| v.attrs)
                 .unwrap_or(VariableAttrs::empty());
+            // Bash removes the nameref attribute when assigning an array literal.
+            attrs.remove(VariableAttrs::NAMEREF);
             state.env.insert(
                 name,
                 Variable {
@@ -1394,11 +1406,12 @@ fn apply_assignment(
                     actual_value: elements.len(),
                 });
             }
-            let attrs = state
+            let mut attrs = state
                 .env
                 .get(&name)
                 .map(|v| v.attrs)
                 .unwrap_or(VariableAttrs::empty());
+            attrs.remove(VariableAttrs::NAMEREF);
             state.env.insert(
                 name,
                 Variable {
@@ -1505,14 +1518,14 @@ fn resolve_negative_array_index(
             let resolved = mk as i64 + 1 + idx;
             if resolved < 0 {
                 Err(RustBashError::Execution(format!(
-                    "{name}: bad array subscript"
+                    "{name}[{idx}]: bad array subscript"
                 )))
             } else {
                 Ok(resolved as usize)
             }
         }
         None => Err(RustBashError::Execution(format!(
-            "{name}: bad array subscript"
+            "{name}[{idx}]: bad array subscript"
         ))),
     }
 }
@@ -1534,7 +1547,10 @@ fn apply_assignment_shell_error(
     match apply_assignment(assignment, state) {
         Ok(()) => Ok(()),
         Err(RustBashError::Execution(msg)) => {
-            result.stderr.push_str(&format!("rust-bash: {msg}\n"));
+            let ln = state.current_lineno;
+            result
+                .stderr
+                .push_str(&format!("rust-bash: line {ln}: {msg}\n"));
             result.exit_code = 1;
             state.last_exit_code = 1;
             Ok(())
@@ -3057,9 +3073,11 @@ fn execute_subshell(
         proc_sub_prealloc: HashMap::new(),
         pipe_stdin_bytes: None,
         pending_cmdsub_stderr: String::new(),
+        pending_test_stderr: String::new(),
         fatal_expansion_error: false,
         last_command_had_error: false,
         last_status_immune_to_errexit: false,
+        script_source: None,
     };
 
     let result = execute_compound_list(list, &mut sub_state, stdin);
@@ -3141,9 +3159,11 @@ fn make_pipeline_stage_state(state: &mut InterpreterState) -> InterpreterState {
         proc_sub_prealloc: HashMap::new(),
         pipe_stdin_bytes: None,
         pending_cmdsub_stderr: String::new(),
+        pending_test_stderr: String::new(),
         fatal_expansion_error: false,
         last_command_had_error: false,
         last_status_immune_to_errexit: false,
+        script_source: None,
     }
 }
 
@@ -3346,9 +3366,11 @@ pub(crate) fn make_exec_callback(
             proc_sub_prealloc: HashMap::new(),
             pipe_stdin_bytes: None,
             pending_cmdsub_stderr: String::new(),
+            pending_test_stderr: String::new(),
             fatal_expansion_error: false,
             last_command_had_error: false,
             last_status_immune_to_errexit: false,
+            script_source: None,
         };
         ensure_shell_internal_vars(&mut sub_state);
 
@@ -4932,9 +4954,11 @@ fn make_proc_sub_state(state: &mut InterpreterState) -> InterpreterState {
         proc_sub_prealloc: HashMap::new(),
         pipe_stdin_bytes: None,
         pending_cmdsub_stderr: String::new(),
+        pending_test_stderr: String::new(),
         fatal_expansion_error: false,
         last_command_had_error: false,
         last_status_immune_to_errexit: false,
+        script_source: None,
     }
 }
 
@@ -4987,6 +5011,7 @@ fn execute_extended_test(
     state: &mut InterpreterState,
 ) -> Result<ExecResult, RustBashError> {
     let should_trace = state.shell_opts.xtrace;
+    state.pending_test_stderr.clear();
     let mut exec_result = match eval_extended_test_expr(expr, state) {
         Ok(result) => ExecResult {
             exit_code: if result { 0 } else { 1 },
@@ -5003,6 +5028,12 @@ fn execute_extended_test(
         }
         Err(e) => return Err(e),
     };
+    // Collect any stderr accumulated by [[ -v ]] checks (e.g. OOB negative index).
+    if !state.pending_test_stderr.is_empty() {
+        exec_result
+            .stderr
+            .push_str(&std::mem::take(&mut state.pending_test_stderr));
+    }
     if should_trace {
         let repr = format_extended_test_expr_expanded(expr, state);
         let ps4 = expand_ps4(state);
@@ -5130,7 +5161,15 @@ fn eval_extended_test_expr(
             // Handle -v specially: we need access to full interpreter state for array elements
             if matches!(pred, UnaryPredicate::ShellVariableIsSetAndAssigned) {
                 let operand = expand_word_to_string_mut(word, state)?;
-                return Ok(test_variable_is_set(&operand, state));
+                let (is_set, stderr) = test_variable_is_set(&operand, state);
+                if !stderr.is_empty() {
+                    // Propagate the stderr by returning a value that execute_extended_test
+                    // can merge. We encode it via a special ExpansionError so the caller
+                    // can pick up the stderr while still knowing the test result.
+                    // Actually, we use state to stash it since eval returns bool.
+                    state.pending_test_stderr.push_str(&stderr);
+                }
+                return Ok(is_set);
             }
             let operand = expand_word_to_string_mut(word, state)?;
             let env: HashMap<String, String> = state
@@ -5284,7 +5323,8 @@ fn eval_extended_test_expr(
 
 /// Check if a variable (possibly an array element) is set.
 /// Handles `a[i]` syntax for array element checks.
-fn test_variable_is_set(operand: &str, state: &mut InterpreterState) -> bool {
+fn test_variable_is_set(operand: &str, state: &mut InterpreterState) -> (bool, String) {
+    let mut stderr = String::new();
     // Check for array subscript syntax: name[index]
     if let Some(bracket_pos) = operand.find('[')
         && operand.ends_with(']')
@@ -5294,14 +5334,17 @@ fn test_variable_is_set(operand: &str, state: &mut InterpreterState) -> bool {
         let resolved = crate::interpreter::resolve_nameref_or_self(name, state);
 
         if index == "@" || index == "*" {
-            return state
-                .env
-                .get(&resolved)
-                .is_some_and(|var| match &var.value {
-                    VariableValue::IndexedArray(map) => !map.is_empty(),
-                    VariableValue::AssociativeArray(map) => !map.is_empty(),
-                    _ => false,
-                });
+            return (
+                state
+                    .env
+                    .get(&resolved)
+                    .is_some_and(|var| match &var.value {
+                        VariableValue::IndexedArray(map) => !map.is_empty(),
+                        VariableValue::AssociativeArray(map) => !map.is_empty(),
+                        _ => false,
+                    }),
+                stderr,
+            );
         }
 
         // Determine variable type before evaluating arithmetic.
@@ -5316,49 +5359,60 @@ fn test_variable_is_set(operand: &str, state: &mut InterpreterState) -> bool {
                 // Indexed array: evaluate index as arithmetic.
                 let idx = eval_index_arithmetic(index, state);
                 let Some(var) = state.env.get(&resolved) else {
-                    return false;
+                    return (false, stderr);
                 };
                 if let VariableValue::IndexedArray(map) = &var.value {
                     let actual_idx = if idx < 0 {
-                        let max_key = map.keys().next_back().copied().unwrap_or(0);
-                        let resolved_idx = max_key as i64 + 1 + idx;
+                        let max_key_opt = map.keys().next_back().copied();
+                        let array_len = match max_key_opt {
+                            Some(mk) => mk as i64 + 1,
+                            None => 0,
+                        };
+                        let resolved_idx = array_len + idx;
                         if resolved_idx < 0 {
-                            return false;
+                            let ln = state.current_lineno;
+                            stderr.push_str(&format!(
+                                "rust-bash: line {ln}: {resolved}: bad array subscript\n"
+                            ));
+                            return (false, stderr);
                         }
                         resolved_idx as usize
                     } else {
                         idx as usize
                     };
-                    map.contains_key(&actual_idx)
+                    (map.contains_key(&actual_idx), stderr)
                 } else {
-                    false
+                    (false, stderr)
                 }
             }
             Some(1) => {
                 // Associative array: use index as string key.
-                state
-                    .env
-                    .get(&resolved)
-                    .and_then(|var| {
-                        if let VariableValue::AssociativeArray(map) = &var.value {
-                            Some(map.contains_key(index))
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(false)
+                (
+                    state
+                        .env
+                        .get(&resolved)
+                        .and_then(|var| {
+                            if let VariableValue::AssociativeArray(map) = &var.value {
+                                Some(map.contains_key(index))
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(false),
+                    stderr,
+                )
             }
             Some(2) => {
                 // Scalar: index 0 or -1 means it's set.
                 let idx = eval_index_arithmetic(index, state);
-                idx == 0 || idx == -1
+                (idx == 0 || idx == -1, stderr)
             }
-            _ => false,
+            _ => (false, stderr),
         };
     }
     // Plain variable name
     let resolved = crate::interpreter::resolve_nameref_or_self(operand, state);
-    state.env.contains_key(&resolved)
+    (state.env.contains_key(&resolved), stderr)
 }
 
 /// Evaluate an array index expression using full arithmetic evaluation.

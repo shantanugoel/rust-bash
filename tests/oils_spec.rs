@@ -158,6 +158,12 @@ fn execute_oils_case(file_stem: &str, case: &OilsTestCase) -> Option<String> {
     {
         return None;
     }
+    // Same pattern: YSH-only syntax guarded by `case $SH in bash|mksh) exit ;; esac`.
+    if file_stem == "array-sparse.test"
+        && (case.name == "(YSH) append v1 v2... (a)" || case.name == "crash dump")
+    {
+        return None;
+    }
 
     let mut env_map = common::base_env();
 
@@ -246,6 +252,26 @@ fn execute_oils_case(file_stem: &str, case: &OilsTestCase) -> Option<String> {
             "/repo/spec/testdata/return.sh".into(),
             include_bytes!("../oil/spec/testdata/return.sh").to_vec(),
         ),
+        (
+            "/repo/spec/testdata/echo-funcname.sh".into(),
+            include_bytes!("../oil/spec/testdata/echo-funcname.sh").to_vec(),
+        ),
+        (
+            "/repo/spec/testdata/bash-source-string.sh".into(),
+            include_bytes!("../oil/spec/testdata/bash-source-string.sh").to_vec(),
+        ),
+        (
+            "/repo/spec/testdata/bash-source-string2.sh".into(),
+            include_bytes!("../oil/spec/testdata/bash-source-string2.sh").to_vec(),
+        ),
+        (
+            "/repo/spec/testdata/bash-source-pushtemp.sh".into(),
+            include_bytes!("../oil/spec/testdata/bash-source-pushtemp.sh").to_vec(),
+        ),
+        (
+            "/repo/spec/testdata/bash-source-source.sh".into(),
+            include_bytes!("../oil/spec/testdata/bash-source-source.sh").to_vec(),
+        ),
     ]));
 
     let mut sh = match builder.build() {
@@ -254,6 +280,9 @@ fn execute_oils_case(file_stem: &str, case: &OilsTestCase) -> Option<String> {
             return Some(format!("[{}] Failed to build shell: {e}", case.name));
         }
     };
+
+    // Set shell_name ($0) to "bash" to match the $SH env variable used by tests.
+    sh.set_shell_name("bash".to_string());
 
     // Pre-create directories that oils spec tests expect to exist.
     let _ = sh.exec(
@@ -284,13 +313,16 @@ fn execute_oils_case(file_stem: &str, case: &OilsTestCase) -> Option<String> {
             }
 
             // Stderr comparison is lenient: only compare when expected_stderr is set.
-            if let Some(expected) = &case.expected_stderr
-                && r.stderr != *expected
-            {
-                mismatches.push(format!(
-                    "[{}] STDERR mismatch:\n  expected: {:?}\n  got:      {:?}",
-                    case.name, expected, r.stderr
-                ));
+            // Normalize the shell name: upstream Oils fixtures use literal "bash:" in
+            // expected stderr while we emit "rust-bash:".
+            if let Some(expected) = &case.expected_stderr {
+                let normalized = expected.replace("bash:", "rust-bash:");
+                if r.stderr != normalized {
+                    mismatches.push(format!(
+                        "[{}] STDERR mismatch:\n  expected: {:?}\n  got:      {:?}",
+                        case.name, normalized, r.stderr
+                    ));
+                }
             }
 
             if mismatches.is_empty() {
