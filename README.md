@@ -2,10 +2,6 @@
 
 A sandboxed bash interpreter for AI Agents, built in Rust. Execute bash scripts safely with a virtual filesystem — no containers, no VMs, no host access.
 
-> **Status: alpha / Milestones 1–7 Complete** — Core interpreter, text processing,
-> execution safety, filesystem backends, CLI binary, C FFI, WASM target, npm package,
-> AI SDK integration, shell language completeness, and command coverage are implemented.
-
 ### 🌐 [Try it in the browser →](https://rustbash.dev)
 
 Interactive showcase with 80+ commands running via WASM. Includes an AI agent you can talk to. See [`examples/website/`](examples/website/) for the source.
@@ -571,17 +567,8 @@ For complete Python and Go examples, see [`examples/ffi/`](examples/ffi/). For t
 
 ## Roadmap
 
-The following milestones track the project's progress:
-
-- ✅ **Milestone 1–4**: Core interpreter, text processing, execution safety, filesystem backends
-- ✅ **Milestone 5.1**: Standalone CLI binary — interactive REPL, `-c` commands, script files, stdin piping, `--json` output
-- ✅ **Milestone 5.2**: C FFI — shared library, generated C header, JSON config, 6 exported functions
-- ✅ **Milestone 5.3**: WASM target — `wasm32-unknown-unknown`, npm package `rust-bash` with TypeScript types
-- ✅ **Milestone 5.4**: AI SDK integration — framework-agnostic tool definitions, MCP server, documented adapters
-- ✅ **Milestone 6**: Shell language completeness — arrays, shopt, process substitution, special variables, advanced redirections, missing builtins, differential testing
-- ✅ **Milestone 7**: Command coverage & discoverability — 80 commands with `--help`, compression/archiving, search (`rg`), binary inspection, command fidelity infrastructure, AI agent documentation
-- Planned: Embedded runtimes — SQLite, yq, Python, JavaScript (M8)
-- Planned: Platform features — cancellation, lazy files, AST transforms, fuzz testing (M9)
+- Planned: Embedded runtimes — SQLite, yq, Python, JavaScript
+- Planned: Platform features — cancellation, lazy files, AST transforms, fuzz testing
 
 ## License
 
